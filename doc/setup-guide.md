@@ -1,16 +1,18 @@
 # Setup Guide
 
-`lore-auth-bridge` の設定項目、TLS/JWKS、`loreserver` 連携、管理 CLI の使い方をまとめます。
+[日本語](setup-guide.ja.md)
 
-`lore-auth-bridge` は Lore の `UrcAuthApi` と `RebacApi` を実装する bridge です。
+This guide covers `lore-auth-bridge` configuration, TLS/JWKS setup, `loreserver` integration, and administrative CLI usage.
 
-ログインに使う IdP は差し替え可能です。
+`lore-auth-bridge` is a bridge that implements Lore's `UrcAuthApi` and `RebacApi`.
 
-Google OIDC は、この文書セットで扱う具体例の一つです。
+The identity provider used for login is replaceable.
 
-## 読む順番
+Google OIDC is one concrete example covered by this documentation set.
 
-最初に全体を把握する場合は、次の順に読みます。
+## Reading Order
+
+Read these pages first to understand the full setup:
 
 1. [Configuration](setup/configuration.md)
 2. [TLS](setup/tls.md)
@@ -18,52 +20,52 @@ Google OIDC は、この文書セットで扱う具体例の一つです。
 4. [Loreserver](setup/loreserver.md)
 5. [Authctl](setup/authctl.md)
 
-IdP 連携を使う場合は、次も読みます。
+If you use IdP integration, also read:
 
 1. [Identity Providers](setup/identity-providers.md)
-2. [Google OIDC](setup/google-oidc.md)（Google を使う場合の例）
+2. [Google OIDC](setup/google-oidc.md) for the Google-specific example
 
-ローカルで bridge、`loreserver`、`lore` CLI を一通り動かす場合は、最後に [Local Smoke Test](setup/local-smoke-test.md) に進みます。
+To run the bridge, `loreserver`, and the `lore` CLI locally end to end, continue with [Local Smoke Test](setup/local-smoke-test.md).
 
-## 構成要素
+## Components
 
-bridge を使う構成は、主に次の要素で成り立ちます。
+A bridge deployment mainly consists of these parts:
 
-- **bridge HTTP**：JWKS、ブラウザログイン、device flow、health check を提供する。
-- **bridge gRPC**：`UrcAuthApi` と `RebacApi` を TLS で提供する。
-- **loreserver**：auth 有効化状態で bridge の JWKS と auth gRPC endpoint を使う。
-- **lore CLI**：authn token を保存し、repo 操作時に authz token を bridge から交換取得する。
+- **bridge HTTP**: serves JWKS, browser login, device flow, and health checks.
+- **bridge gRPC**: serves `UrcAuthApi` and `RebacApi` over TLS.
+- **loreserver**: runs with auth enabled and uses the bridge JWKS and auth gRPC endpoint.
+- **lore CLI**: stores an authn token and exchanges it for authz tokens when operating on repositories.
 
-## ログインとユーザー登録
+## Login And User Registration
 
-bridge は、Lore CLI が使う authn token を発行します。
+The bridge issues the authn token used by the Lore CLI.
 
-authn token の元になるユーザー identity は、設定した IdP から取得するか、管理 CLI で登録します。
+The user identity behind the authn token comes either from the configured IdP or from administrative CLI registration.
 
-IdP login を使う場合、ユーザーはブラウザでログインします。
+When IdP login is enabled, the user signs in through a browser.
 
-bridge は IdP から受け取った `issuer` と `subject` を、bridge DB の登録済みユーザーと照合します。
+The bridge matches the `issuer` and `subject` returned by the IdP against registered users in the bridge DB.
 
-登録されていないユーザーには token を発行しません。
+The bridge does not issue tokens to unregistered users.
 
-Google OIDC では、管理者が `lore-authctl user invite` でユーザーの email を登録できます。
+With Google OIDC, an administrator can preregister a user email with `lore-authctl user invite`.
 
-登録したユーザーが初回 login し、IdP で確認済みの email が一致した場合、その login で利用できるようになります。
+When that user logs in for the first time and Google returns the same verified email, the login becomes usable.
 
-subject を既に知っている場合は、管理者が `lore-authctl user add` でも登録できます。
+If the subject is already known, an administrator can also register the user with `lore-authctl user add`.
 
-IdP login を使わない場合は、管理 CLI で authn token を発行できます。
+When IdP login is not used, an administrator can issue an authn token with the CLI.
 
-この場合、管理者が `lore-authctl token mint-authn` で token を発行し、`lore auth login --token-type lore` に渡して Lore CLI に登録します。
+In that mode, the administrator runs `lore-authctl token mint-authn` and passes the token to `lore auth login --token-type lore`.
 
-## 運用設定の流れ
+## Operational Setup Flow
 
-運用では、bridge の HTTP endpoint、gRPC endpoint、SQLite database、JWT issuer/audience、RS256 signing key、`loreserver` 側の auth 設定をそろえます。
+In operation, align the bridge HTTP endpoint, gRPC endpoint, SQLite database, JWT issuer/audience, RS256 signing key, and `loreserver` auth settings.
 
-IdP login を使う場合は、IdP 側の client 設定と bridge 側の設定を一致させます。
+When IdP login is enabled, the IdP client configuration and the bridge configuration must also match.
 
-ユーザーとリポジトリ権限は `lore-authctl` で管理します。
+Manage users and repository permissions with `lore-authctl`.
 
-## ローカル動作確認
+## Local Verification
 
-ローカルで bridge、`loreserver`、`lore` CLI をまとめて動かすための具体的なコマンドは [Local Smoke Test](setup/local-smoke-test.md) に分けています。
+Concrete commands for running the bridge, `loreserver`, and the `lore` CLI locally are kept in [Local Smoke Test](setup/local-smoke-test.md).

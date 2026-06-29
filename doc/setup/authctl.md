@@ -1,10 +1,12 @@
 # Authctl
 
-`lore-authctl` は bridge の管理 CLI です。
+[日本語](authctl.ja.md)
 
-user、group、repository、grant、signing key、手動発行 token を管理します。
+`lore-authctl` is the administrative CLI for the bridge.
 
-以下の例では config path を変数にします。
+It manages users, groups, repositories, grants, signing keys, and manually issued tokens.
+
+The examples below store the config path in a variable.
 
 ```bash
 CONFIG=.manual/lore-auth.yaml
@@ -12,7 +14,7 @@ CONFIG=.manual/lore-auth.yaml
 
 ## init-db
 
-SQLite database を作成し、migration を適用します。
+Create the SQLite database and apply migrations.
 
 ```bash
 go run ./cmd/lore-authctl init-db --config "$CONFIG"
@@ -20,7 +22,7 @@ go run ./cmd/lore-authctl init-db --config "$CONFIG"
 
 ## key generate
 
-RS256 signing key を作り、DB に public JWK metadata を登録します。
+Create an RS256 signing key and register public JWK metadata in the DB.
 
 ```bash
 go run ./cmd/lore-authctl key generate \
@@ -28,7 +30,7 @@ go run ./cmd/lore-authctl key generate \
   --kid manual-1
 ```
 
-`--kid` は `jwt.active_kid` と一致させます。
+`--kid` must match `jwt.active_kid`.
 
 ## key list
 
@@ -38,7 +40,7 @@ go run ./cmd/lore-authctl key list --config "$CONFIG"
 
 ## user invite
 
-Google OIDC を使う場合、管理者は Google アカウントの email でユーザーを登録できます。
+When Google OIDC is enabled, an administrator can preregister a user by Google account email.
 
 ```bash
 go run ./cmd/lore-authctl user invite \
@@ -47,9 +49,9 @@ go run ./cmd/lore-authctl user invite \
   --name "Alice Example"
 ```
 
-この登録だけでは、まだ token は発行されません。
+This registration alone does not issue a token.
 
-ユーザーが `/login` し、Google ID token の `email_verified=true` な email が一致した場合、その login で利用できるようになります。
+When the user opens `/login` and Google returns an `email_verified=true` email that matches the invitation, that login becomes usable.
 
 ## user add
 
@@ -64,9 +66,9 @@ go run ./cmd/lore-authctl user add \
   --name "Manual User"
 ```
 
-この例の `provider`、`issuer`、`subject` はローカル確認用です。
+The `provider`, `issuer`, and `subject` values in this example are for local verification.
 
-Google OIDC の実ログインで subject を明示登録する場合は、whoami 画面に出た `issuer` と `subject` を使います。
+When explicitly registering a Google OIDC subject for real login, use the `issuer` and `subject` shown on the whoami page.
 
 ## user list
 
@@ -80,13 +82,13 @@ go run ./cmd/lore-authctl user list --config "$CONFIG"
 go run ./cmd/lore-authctl user disable --config "$CONFIG" manual@example.com
 ```
 
-disabled user は token exchange で拒否されます。
+Disabled users are rejected during token exchange.
 
 ## repo add
 
-通常は `loreserver` からの ReBAC `CreateResource` で repository が登録されます。
+Repositories are normally registered through ReBAC `CreateResource` calls from `loreserver`.
 
-手動で登録する場合は次を使います。
+Use the following command for manual registration.
 
 ```bash
 go run ./cmd/lore-authctl repo add \
@@ -96,9 +98,9 @@ go run ./cmd/lore-authctl repo add \
   --lore-repository-id 11111111111111111111111111111111
 ```
 
-JWT claim の `resources[].resource_id` は `urc-{lore_repository_id}` です。
+The JWT `resources[].resource_id` value is `urc-{lore_repository_id}`.
 
-repo 名ではありません。
+It is not the repository name.
 
 ## repo list
 
@@ -116,11 +118,11 @@ go run ./cmd/lore-authctl grant add \
   writer
 ```
 
-subject は `user:<email-or-id>`、`group:<name>`、`service_account:<id>` の形式です。
+Subjects use the form `user:<email-or-id>`, `group:<name>`, or `service_account:<id>`.
 
-この文書では repository 操作用に `writer` を使います。
+This documentation uses `writer` for repository operations.
 
-`reader` を read-only 権限として使う運用は、この文書では扱いません。
+It does not cover using `reader` as a read-only role.
 
 ## grant list
 
@@ -142,7 +144,7 @@ go run ./cmd/lore-authctl grant remove \
 
 ## check
 
-bridge 側の authorization backend 判定を確認します。
+Check the bridge-side authorization backend decision.
 
 ```bash
 go run ./cmd/lore-authctl check \
@@ -152,11 +154,11 @@ go run ./cmd/lore-authctl check \
   write
 ```
 
-許可されていれば `allow` を返します。
+The command returns `allow` when access is permitted.
 
 ## token mint-authn
 
-Google OIDC を使わずにログインする場合は、authn token を手動発行します。
+When logging in without Google OIDC, manually issue an authn token.
 
 ```bash
 go run ./cmd/lore-authctl token mint-authn \
@@ -165,13 +167,13 @@ go run ./cmd/lore-authctl token mint-authn \
   manual@example.com
 ```
 
-`--out` を指定すると、token は `0600` の file に書かれ、token 入り login command は表示されません。
+When `--out` is specified, the token is written to a file with mode `0600`, and the login command containing the token is not printed.
 
-`--print-login-command` を明示すると、token 入りの `lore auth login` command を stderr に表示します。
+If `--print-login-command` is set explicitly, the `lore auth login` command containing the token is printed to stderr.
 
-その出力は terminal log に残り得るため、共有 terminal や CI log では使わないでください。
+That output can remain in terminal logs, so do not use it in shared terminals or CI logs.
 
-発行した token は `lore auth login --token-type lore` に渡します。
+Pass the issued token to `lore auth login --token-type lore`.
 
 ```bash
 lore auth login \
@@ -183,9 +185,9 @@ lore auth login \
 
 ## token mint
 
-repo scoped authz token を手動発行します。
+Manually issue a repository-scoped authz token.
 
-通常の repository 操作では、Lore CLI が `ExchangeUserTokenForMultiresourceToken` を呼んで authz token を取得します。
+During normal repository operations, the Lore CLI obtains authz tokens by calling `ExchangeUserTokenForMultiresourceToken`.
 
 ```bash
 go run ./cmd/lore-authctl token mint \
@@ -195,4 +197,4 @@ go run ./cmd/lore-authctl token mint \
   --role writer
 ```
 
-`token mint` も、`--print-login-command` を付けない限り token 入り login command を stderr に出しません。
+`token mint` also avoids printing a login command containing the token unless `--print-login-command` is set.

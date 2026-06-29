@@ -1,16 +1,12 @@
 # Local Smoke Test
 
-[日本語](local-smoke-test.ja.md)
+このページは、bridge、`loreserver`、`lore` CLI をローカルで起動し、repository create から clone まで動かす手順です。
 
-This page shows how to run the bridge, `loreserver`, and the `lore` CLI locally, then verify the path from repository creation to clone.
+Google OIDC を使わず、`lore-authctl token mint-authn` で authn token を発行します。
 
-It does not use Google OIDC.
+Google OIDC でログインする場合は [Google OIDC](google-oidc.md) を参照してください。
 
-Instead, it issues an authn token with `lore-authctl token mint-authn`.
-
-For Google OIDC login, see [Google OIDC](google-oidc.md).
-
-## Prerequisites
+## 事前確認
 
 ```bash
 which lore
@@ -21,7 +17,7 @@ go vet ./...
 go build ./...
 ```
 
-## Verification Directories
+## 検証用ディレクトリ
 
 ```bash
 mkdir -p .manual/{keys,grpc,data,loreconfig,home}
@@ -29,7 +25,7 @@ mkdir -p .manual/{keys,grpc,data,loreconfig,home}
 
 ## TLS
 
-Use `mkcert` when it is available.
+`mkcert` がある場合は次を使います。
 
 ```bash
 mkcert -cert-file .manual/grpc/tls.crt -key-file .manual/grpc/tls.key localhost 127.0.0.1
@@ -37,7 +33,7 @@ export TRUST_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
 ```
 
-If `mkcert` is unavailable, use a self-signed certificate.
+`mkcert` がない場合は自己署名証明書を使います。
 
 ```bash
 openssl req -x509 -newkey rsa:2048 -nodes \
@@ -51,7 +47,7 @@ export TRUST_CERT_FILE="$PWD/.manual/grpc/tls.crt"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
 ```
 
-Save the environment variables so the same values can be reused in other terminals.
+別のターミナルでも同じ値を使うため、環境変数をファイルに保存します。
 
 ```bash
 cat > .manual/env <<EOF
@@ -107,7 +103,7 @@ security:
 YAML
 ```
 
-## DB, key, user
+## DB、鍵、user
 
 ```bash
 CONFIG=.manual/lore-auth.yaml
@@ -128,15 +124,15 @@ go run ./cmd/lore-authctl user add \
   --name "Manual User"
 ```
 
-## Start bridge
+## bridge 起動
 
-Start the bridge in another terminal.
+別のターミナルで起動します。
 
 ```bash
 go run ./cmd/lore-auth-server -config .manual/lore-auth.yaml
 ```
 
-Check the HTTP side.
+HTTP 側を確認します。
 
 ```bash
 curl -f http://localhost:8080/healthz
@@ -174,13 +170,13 @@ path = "$PWD/.manual/data"
 EOF
 ```
 
-Some `loreserver` distributions require a base config bundled with Lore.
+`loreserver` が base config を要求する配布形態では、Lore に同梱された `default.toml` が必要です。
 
-In that case, copy the bundled `default.toml` to `.manual/loreconfig/default.toml`.
+その場合は、配布物に含まれる `default.toml` を `.manual/loreconfig/default.toml` にコピーします。
 
-## Start loreserver
+## loreserver 起動
 
-Start `loreserver` in another terminal.
+別のターミナルで起動します。
 
 ```bash
 source .manual/env
@@ -190,13 +186,13 @@ loreserver
 
 ## lore CLI
 
-Run the following in another terminal.
+別のターミナルで実行します。
 
 ```bash
 source .manual/env
 ```
 
-Register the authn token.
+authn token を登録します。
 
 ```bash
 lore auth login \
@@ -206,19 +202,19 @@ lore auth login \
   lore://localhost:41337
 ```
 
-Create a repository.
+repository を作成します。
 
 ```bash
 lore repository create lore://localhost:41337/manual-repo
 ```
 
-Check that the repository was recorded by the bridge.
+bridge 側に repository が入ったことを確認します。
 
 ```bash
 go run ./cmd/lore-authctl repo list --config "$CONFIG"
 ```
 
-Add a grant.
+grant を付けます。
 
 ```bash
 go run ./cmd/lore-authctl grant add \
@@ -228,7 +224,7 @@ go run ./cmd/lore-authctl grant add \
   writer
 ```
 
-Check the ACL decision.
+ACL 判定を確認します。
 
 ```bash
 go run ./cmd/lore-authctl check \
@@ -238,40 +234,40 @@ go run ./cmd/lore-authctl check \
   write
 ```
 
-If the command prints `allow`, the grant is effective.
+`allow` が出れば grant は有効です。
 
-Check clone.
+clone を確認します。
 
 ```bash
 lore clone lore://localhost:41337/manual-repo .manual/clone-manual-repo
 ```
 
-## Failure Checks
+## 失敗時の確認点
 
-If `loreserver` cannot connect to the bridge, check `auth_url`, the gRPC TLS certificate, and `SSL_CERT_FILE`.
+`loreserver` が bridge に接続できない場合は、`auth_url`、gRPC TLS 証明書、`SSL_CERT_FILE` を確認します。
 
-If `lore repository create` fails with `"Failed to connect to rebac service"`, `loreserver` cannot establish a TLS connection to the bridge `RebacApi`.
+`lore repository create` が `"Failed to connect to rebac service"` で失敗する場合は、`loreserver` から bridge の `RebacApi` へ TLS 接続できていません。
 
-When using `mkcert`, especially check that `SSL_CERT_FILE` does not point to `.manual/grpc/tls.crt`.
+特に mkcert を使っている場合、`SSL_CERT_FILE` に `.manual/grpc/tls.crt` を指定していないか確認してください。
 
-With `mkcert`, `.manual/grpc/tls.crt` is a leaf certificate, not the trust anchor.
+mkcert では `.manual/grpc/tls.crt` は leaf 証明書であり、信頼 anchor ではありません。
 
-Set `SSL_CERT_FILE` to `$(mkcert -CAROOT)/rootCA.pem`.
+`SSL_CERT_FILE` には `$(mkcert -CAROOT)/rootCA.pem` を指定します。
 
 ```bash
 openssl verify -CAfile "$SSL_CERT_FILE" .manual/grpc/tls.crt
 ```
 
-If this check does not return `OK`, `loreserver` cannot verify the bridge gRPC TLS certificate.
+この確認が `OK` にならない場合、`loreserver` は bridge gRPC の TLS 証明書を検証できません。
 
-After fixing `SSL_CERT_FILE`, restart `loreserver`.
+`SSL_CERT_FILE` を直した後は、`loreserver` を再起動してください。
 
-If `lore auth login` succeeds but repository operations fail, authz token exchange may be failing.
+`lore auth login` は成功するが repository 操作が失敗する場合は、authz token exchange が失敗している可能性があります。
 
-Check the bridge gRPC logs, `loreserver` logs, and the result of `lore-authctl check` in that order.
+bridge の gRPC log、`loreserver` log、`lore-authctl check` の結果を順に確認してください。
 
-If `PermissionDenied` is returned, check that the grant is attached to the repository name and that the user's email or ID resolves correctly.
+`PermissionDenied` が返る場合は、repository 名に grant を付けているか、user の email または ID が解決できているかを確認します。
 
-If JWT verification fails, check `jwt.issuer`, `jwt_issuer` in `loreserver`, `jwt.audience`, and `jwt_audience`.
+JWT 検証が失敗する場合は、`jwt.issuer`、loreserver の `jwt_issuer`、`jwt.audience`、`jwt_audience` を確認します。
 
-For local verification, do not mix `localhost` and `127.0.0.1`.
+ローカル確認では `localhost` と `127.0.0.1` を混ぜないでください。

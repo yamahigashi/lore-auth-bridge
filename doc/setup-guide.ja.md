@@ -1,0 +1,69 @@
+# Setup Guide
+
+`lore-auth-bridge` の設定項目、TLS/JWKS、`loreserver` 連携、管理 CLI の使い方をまとめます。
+
+`lore-auth-bridge` は Lore の `UrcAuthApi` と `RebacApi` を実装する bridge です。
+
+ログインに使う IdP は差し替え可能です。
+
+Google OIDC は、この文書セットで扱う具体例の一つです。
+
+## 読む順番
+
+最初に全体を把握する場合は、次の順に読みます。
+
+1. [Configuration](setup/configuration.md)
+2. [TLS](setup/tls.md)
+3. [Signing Keys](setup/signing-keys.md)
+4. [Loreserver](setup/loreserver.md)
+5. [Authctl](setup/authctl.md)
+
+IdP 連携を使う場合は、次も読みます。
+
+1. [Identity Providers](setup/identity-providers.md)
+2. [Google OIDC](setup/google-oidc.md)（Google を使う場合の例）
+
+ローカルで bridge、`loreserver`、`lore` CLI を一通り動かす場合は、最後に [Local Smoke Test](setup/local-smoke-test.md) に進みます。
+
+## 構成要素
+
+bridge を使う構成は、主に次の要素で成り立ちます。
+
+- **bridge HTTP**：JWKS、ブラウザログイン、device flow、health check を提供する。
+- **bridge gRPC**：`UrcAuthApi` と `RebacApi` を TLS で提供する。
+- **loreserver**：auth 有効化状態で bridge の JWKS と auth gRPC endpoint を使う。
+- **lore CLI**：authn token を保存し、repo 操作時に authz token を bridge から交換取得する。
+
+## ログインとユーザー登録
+
+bridge は、Lore CLI が使う authn token を発行します。
+
+authn token の元になるユーザー identity は、設定した IdP から取得するか、管理 CLI で登録します。
+
+IdP login を使う場合、ユーザーはブラウザでログインします。
+
+bridge は IdP から受け取った `issuer` と `subject` を、bridge DB の登録済みユーザーと照合します。
+
+登録されていないユーザーには token を発行しません。
+
+Google OIDC では、管理者が `lore-authctl user invite` でユーザーの email を登録できます。
+
+登録したユーザーが初回 login し、IdP で確認済みの email が一致した場合、その login で利用できるようになります。
+
+subject を既に知っている場合は、管理者が `lore-authctl user add` でも登録できます。
+
+IdP login を使わない場合は、管理 CLI で authn token を発行できます。
+
+この場合、管理者が `lore-authctl token mint-authn` で token を発行し、`lore auth login --token-type lore` に渡して Lore CLI に登録します。
+
+## 運用設定の流れ
+
+運用では、bridge の HTTP endpoint、gRPC endpoint、SQLite database、JWT issuer/audience、RS256 signing key、`loreserver` 側の auth 設定をそろえます。
+
+IdP login を使う場合は、IdP 側の client 設定と bridge 側の設定を一致させます。
+
+ユーザーとリポジトリ権限は `lore-authctl` で管理します。
+
+## ローカル動作確認
+
+ローカルで bridge、`loreserver`、`lore` CLI をまとめて動かすための具体的なコマンドは [Local Smoke Test](setup/local-smoke-test.md) に分けています。

@@ -1,42 +1,44 @@
 # Identity Providers
 
-identity provider は、bridge がユーザーの identity を得るための外部サービスまたは認証元です。
+[日本語](identity-providers.ja.md)
 
-bridge は、IdP から受け取った identity を bridge DB のユーザーと照合します。
+An identity provider is an external service or authentication source from which the bridge obtains a user identity.
 
-IdP を使わない運用では、管理 CLI で authn token を発行できます。
+The bridge matches the identity returned by the IdP against users in the bridge DB.
 
-Google OIDC は、この文書セットで扱う IdP 設定の具体例です。
+When an operation does not use an IdP, an administrator can issue authn tokens with the CLI.
 
-Keycloak、Auth0、社内 OIDC などを使う場合は、対応する IdP 実装が必要です。
+Google OIDC is the concrete IdP setup example in this documentation set.
+
+Using Keycloak, Auth0, or an internal OIDC provider requires a corresponding IdP implementation.
 
 ## IdP login
 
-IdP login では、ユーザーはブラウザで IdP にログインします。
+With IdP login, the user signs in through the IdP in a browser.
 
-bridge は IdP から返された `issuer` と `subject` を、登録済みユーザーと照合します。
+The bridge matches the returned `issuer` and `subject` against registered users.
 
-登録済みユーザーならブラウザセッションまたは CLI auth session が完了します。
+If the user is registered, the browser session or CLI auth session completes.
 
-未登録ユーザーなら token は発行されず、whoami 画面に identity が表示されます。
+If the user is not registered, no token is issued and the whoami page displays the identity.
 
-Google OIDC では、管理者が `lore-authctl user invite --email <address>` でユーザーを登録できます。
+With Google OIDC, an administrator can register a user with `lore-authctl user invite --email <address>`.
 
-登録したユーザーの初回 login で Google の確認済み email が一致すると、その login が完了します。
+If the registered user's first login returns a verified Google email that matches the invitation, that login completes.
 
-subject を既に知っている場合、管理者は whoami 画面の `issuer` と `subject` を使って、`lore-authctl user add` でも登録できます。
+If the subject is already known, an administrator can also register the user with `lore-authctl user add` using the `issuer` and `subject` shown on the whoami page.
 
-Google OIDC を使う場合の具体的な設定は [Google OIDC](google-oidc.md) を参照してください。
+See [Google OIDC](google-oidc.md) for concrete Google OIDC settings.
 
-## 管理 CLI で発行する authn token
+## Authn Tokens Issued By The Administrative CLI
 
-IdP login を使わない場合は、管理 CLI で authn token を発行できます。
+If IdP login is not used, an administrator can issue authn tokens with the administrative CLI.
 
-管理 CLI で user を登録し、`lore-authctl token mint-authn` で authn token を発行します。
+Register a user with the CLI, then issue an authn token with `lore-authctl token mint-authn`.
 
-次の `--provider manual`、`--issuer local`、`--subject manual-subject` は、IdP を使わない例の識別子です。
+The `--provider manual`, `--issuer local`, and `--subject manual-subject` values below are identifiers for the no-IdP example.
 
-IdP login で subject を明示登録する場合は、利用する IdP が返す `issuer` と `subject` を登録します。
+When explicitly registering a subject for IdP login, register the `issuer` and `subject` returned by that IdP.
 
 ```bash
 go run ./cmd/lore-authctl user add \
@@ -54,4 +56,4 @@ go run ./cmd/lore-authctl token mint-authn \
   manual@example.com
 ```
 
-この方法では、管理者が発行した token を `lore auth login --token-type lore` に渡して Lore CLI に登録します。
+With this method, the administrator passes the issued token to `lore auth login --token-type lore` to register it in the Lore CLI.

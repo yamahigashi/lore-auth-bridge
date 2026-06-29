@@ -1,85 +1,87 @@
 # Google OIDC
 
-Google OIDC をログインに使う場合は、Google Cloud で OAuth client を作り、その Client ID、Client secret、redirect URL を bridge に設定します。
+[日本語](google-oidc.ja.md)
 
-bridge は Google login で得た identity を、bridge DB に登録されたユーザーと照合します。
+To use Google OIDC for login, create an OAuth client in Google Cloud and configure its Client ID, Client secret, and redirect URL in the bridge.
 
-Google login に成功しただけでは、Lore の利用者にはなりません。
+The bridge matches the identity obtained from Google login against users registered in the bridge DB.
 
-## 必要なもの
+A successful Google login alone does not make the user a Lore user.
 
-Google OIDC を有効にするには、次の値を用意します。
+## Required Values
 
-- **Client ID**：Google Cloud の OAuth client ID。
-- **Client secret**：Google Cloud の OAuth client secret。
-- **Redirect URL**：Google login 後に Google が戻す bridge の callback URL。
-- **User email**：登録する Google アカウントの email。
+Prepare the following values to enable Google OIDC:
 
-`client_secret_file` には secret の値ではなく、secret を保存したファイルパスを書きます。
+- **Client ID**: OAuth client ID from Google Cloud.
+- **Client secret**: OAuth client secret from Google Cloud.
+- **Redirect URL**: bridge callback URL to which Google returns after login.
+- **User email**: email address of the Google account to register.
 
-通常は、管理者が email でユーザーを登録し、ユーザーの初回 login で `iss` と `sub` を記録します。
+`client_secret_file` must contain the path to a file that stores the secret, not the secret value itself.
 
-email は初回 login の照合と表示に使います。
+Normally, an administrator registers the user by email, and the first user login records `iss` and `sub`.
 
-Google identity の主キーは、login 後に記録された `iss` と `sub` です。
+The email is used for first-login matching and display.
 
-## Google Cloud で取得する値
+The primary key for the Google identity is the recorded `iss` and `sub`.
 
-Google Cloud project を選択または作成します。
+## Values From Google Cloud
 
-次に OAuth consent screen を設定し、OAuth client ID を作成します。
+Select or create a Google Cloud project.
 
-Google Cloud Console の画面名や導線は変わることがあるため、迷った場合は公式ドキュメントを参照します。
+Then configure the OAuth consent screen and create an OAuth client ID.
+
+Google Cloud Console screen names and navigation can change, so refer to the official documentation if the UI differs.
 
 - OAuth 2.0 for Web Server Applications: https://developers.google.com/identity/protocols/oauth2/web-server
 - OAuth consent screen and scopes: https://developers.google.com/workspace/guides/configure-oauth-consent
 - OpenID Connect: https://developers.google.com/identity/openid-connect/openid-connect
 
-## OAuth consent screen
+## OAuth Consent Screen
 
-OAuth consent screen では、ユーザーに表示する app name、support email、利用者範囲、scope を設定します。
+On the OAuth consent screen, configure the app name, support email, user type, and scopes shown to users.
 
-Workspace 内だけで使う場合は、利用者範囲を Internal にできます。
+If the app is used only inside a Workspace, the user type can be Internal.
 
-個人 Google アカウントや Workspace 外のアカウントで試す場合は External を選びます。
+For personal Google accounts or accounts outside the Workspace, choose External.
 
-External の testing 状態では、ログインに使う Google アカウントを test users に追加します。
+When External is in testing mode, add the Google accounts used for login to test users.
 
-bridge が要求する scope は `openid`、`email`、`profile` です。
+The bridge requests the `openid`, `email`, and `profile` scopes.
 
-追加の Google API を呼ばない限り、Google Drive や Gmail などの API scope は不要です。
+Unless the bridge calls additional Google APIs, it does not need Google Drive, Gmail, or other API scopes.
 
-## OAuth client
+## OAuth Client
 
-OAuth client は Web application として作成します。
+Create the OAuth client as a Web application.
 
-Desktop app ではありません。
+Do not use a Desktop app client.
 
-Authorized redirect URIs には、bridge の callback URL を完全一致で登録します。
+Register the exact bridge callback URL in Authorized redirect URIs.
 
-ローカルでは次の URI を登録します。
+For local use, register:
 
 ```text
 http://localhost:8080/oauth/google/callback
 ```
 
-本番では公開 URL に合わせます。
+For production, use the public URL.
 
 ```text
 https://auth.example.com/oauth/google/callback
 ```
 
-作成後に表示される Client ID を `google.client_id` に設定します。
+Set the displayed Client ID as `google.client_id`.
 
-Client secret はファイルに保存し、そのパスを `google.client_secret_file` に設定します。
+Save the Client secret to a file and set that path as `google.client_secret_file`.
 
-Google Cloud 側の Authorized redirect URI と、bridge config の `google.redirect_url` は同じ文字列にします。
+The Authorized redirect URI in Google Cloud and `google.redirect_url` in the bridge config must be the same string.
 
-scheme、host、port、path、末尾の slash が違うと callback は失敗します。
+Callback handling fails if the scheme, host, port, path, or trailing slash differs.
 
-## bridge 設定
+## Bridge Settings
 
-ローカルで Google OIDC を試す場合は次のように設定します。
+For local Google OIDC verification, use settings like these:
 
 ```yaml
 server:
@@ -93,14 +95,16 @@ google:
   allow_personal_accounts: true
 ```
 
-Client secret は YAML に直接書かず、ファイルに保存します。
+Do not write the Client secret directly into YAML.
+
+Store it in a file.
 
 ```bash
 printf '%s' '<Google OAuth Client Secret>' > .manual/google_client_secret
 chmod 600 .manual/google_client_secret
 ```
 
-本番では HTTPS の公開 URL を使います。
+In production, use an HTTPS public URL.
 
 ```yaml
 server:
@@ -115,19 +119,19 @@ google:
   allow_personal_accounts: false
 ```
 
-`allowed_hosted_domains` は、Google ID token の `hd` claim で許可する Workspace domain です。
+`allowed_hosted_domains` is the set of Workspace domains allowed through the Google ID token `hd` claim.
 
-値を入れると、`hd` が一致しない login は拒否されます。
+When set, logins whose `hd` claim does not match are rejected.
 
-`allow_personal_accounts: false` にすると、`hd` claim を持たない個人 Google アカウントを拒否します。
+`allow_personal_accounts: false` rejects personal Google accounts that do not have an `hd` claim.
 
-Google Workspace だけに絞る本番運用では、`allowed_hosted_domains` を設定し、`allow_personal_accounts: false` にします。
+For production restricted to Google Workspace, set `allowed_hosted_domains` and use `allow_personal_accounts: false`.
 
-## ユーザー登録
+## User Registration
 
-Google login が成功しても、対応するユーザーが bridge DB に登録されていなければ token は発行されません。
+Even after Google login succeeds, the bridge does not issue a token unless the corresponding user is registered in the bridge DB.
 
-通常は、管理者が対象ユーザーの email を登録します。
+Usually, an administrator registers the target user's email.
 
 ```bash
 go run ./cmd/lore-authctl user invite \
@@ -136,53 +140,53 @@ go run ./cmd/lore-authctl user invite \
   --name '<display name>'
 ```
 
-この時点では Google アカウントとの連携がまだ完了していないため、token は発行されません。
+At this point, linkage with the Google account is not complete, so no token is issued.
 
-ユーザーが `/login` を開き、Google が `email_verified=true` の同じ email を返した場合、その login で browser session または CLI auth session が完了します。
+When the user opens `/login` and Google returns the same `email_verified=true` email, that login completes the browser session or CLI auth session.
 
-## subject を明示登録する場合
+## Explicit Subject Registration
 
-email 登録を使わない場合、未登録ユーザーで `/login` を開くと whoami 画面に `issuer`、`subject`、`email`、`email_verified` が表示されます。
+If email registration is not used, an unregistered user can open `/login` and see `issuer`, `subject`, `email`, and `email_verified` on the whoami page.
 
-管理者は、その `issuer` と `subject` を使ってユーザーを登録できます。
+An administrator can register the user with that `issuer` and `subject`.
 
 ```bash
 go run ./cmd/lore-authctl user add \
   --config .manual/lore-auth.yaml \
   --provider google \
-  --issuer '<whoami に出た issuer>' \
-  --subject '<whoami に出た subject>' \
+  --issuer '<issuer from whoami>' \
+  --subject '<subject from whoami>' \
   --email '<Google email>' \
   --email-verified \
   --name '<display name>'
 ```
 
-Google の issuer は通常 `https://accounts.google.com` ですが、登録時は whoami 画面に出た値を使います。
+Google's issuer is normally `https://accounts.google.com`, but use the exact value shown on the whoami page.
 
-登録後にもう一度 `/login` を開くと、bridge のブラウザセッションが作成されます。
+After registration, open `/login` again to create the bridge browser session.
 
 ```text
 http://localhost:8080/login
 ```
 
-## 動作
+## Behavior
 
-bridge は callback で Google ID token を検証します。
+The bridge verifies the Google ID token in the callback.
 
-検証後、ID token の `iss` と `sub` を bridge DB のユーザーと照合します。
+After verification, it matches the ID token `iss` and `sub` against users in the bridge DB.
 
-登録済みユーザーならブラウザセッションまたは CLI auth session が完了します。
+If the user is registered, the browser session or CLI auth session completes.
 
-subject が未登録でも、`email_verified=true` の email が登録済みユーザーと一致すれば、bridge は login を完了します。
+If the subject is not registered but an `email_verified=true` email matches a registered pending user, the bridge completes the login.
 
-登録済みユーザーと照合できない場合は token を発行せず、whoami 画面を表示します。
+If no registered user matches, the bridge does not issue a token and displays the whoami page.
 
-## よくある失敗
+## Common Failures
 
-`redirect_uri_mismatch` が出る場合は、Google Cloud 側の Authorized redirect URI と `google.redirect_url` が完全一致しているか確認します。
+If `redirect_uri_mismatch` appears, check that the Authorized redirect URI in Google Cloud exactly matches `google.redirect_url`.
 
-External の testing 状態で login が拒否される場合は、ログインに使う Google アカウントが test users に入っているか確認します。
+If login is rejected while an External app is in testing mode, check that the Google account used for login is listed in test users.
 
-`google.client_id`、`google.client_secret_file`、`google.redirect_url` のどれかが空の場合、Google login は有効になりません。
+If any of `google.client_id`, `google.client_secret_file`, or `google.redirect_url` is empty, Google login is not enabled.
 
-管理 CLI で authn token を発行する方法だけを使うなら、Google OIDC の設定は空で構いません。
+If only CLI-issued authn tokens are used, Google OIDC settings may stay empty.

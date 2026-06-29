@@ -1,14 +1,16 @@
 # TLS
 
-Lore の auth exchange は gRPC over TLS で到達できる必要があります。
+[日本語](tls.ja.md)
 
-bridge の HTTP/JWKS endpoint と、`UrcAuthApi` / `RebacApi` の gRPC endpoint は別です。
+Lore auth exchange must be reachable through gRPC over TLS.
 
-ローカル動作確認では HTTP を `http://localhost:8080`、gRPC TLS を `https://localhost:8081` として扱います。
+The bridge HTTP/JWKS endpoint and the `UrcAuthApi` / `RebacApi` gRPC endpoint are separate endpoints.
+
+For local verification, treat HTTP as `http://localhost:8080` and gRPC TLS as `https://localhost:8081`.
 
 ## mkcert
 
-`mkcert` が使える環境では、ローカル CA を使うのが簡単です。
+When `mkcert` is available, using a local CA is the simplest option.
 
 ```bash
 mkdir -p .manual/grpc
@@ -19,13 +21,13 @@ export TRUST_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
 ```
 
-`TRUST_CERT_FILE` は、`lore` と `loreserver` に渡す信頼 anchor です。
+`TRUST_CERT_FILE` is the trust anchor passed to `lore` and `loreserver`.
 
-`mkcert` の場合は leaf certificate ではなく root CA を指定します。
+With `mkcert`, point it at the root CA, not the leaf certificate.
 
-## 自己署名証明書
+## Self-signed Certificate
 
-`mkcert` がない場合は、短命の自己署名証明書でも確認できます。
+If `mkcert` is unavailable, a short-lived self-signed certificate is enough for verification.
 
 ```bash
 mkdir -p .manual/grpc
@@ -41,15 +43,15 @@ export TRUST_CERT_FILE="$PWD/.manual/grpc/tls.crt"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
 ```
 
-証明書には `localhost` または `127.0.0.1` を Subject Alternative Name として含めます。
+The certificate must include `localhost` or `127.0.0.1` as a Subject Alternative Name.
 
-CLI と config で `localhost` と `127.0.0.1` を混ぜると、証明書検証や JWT audience の切り分けが難しくなります。
+Mixing `localhost` and `127.0.0.1` across CLI commands and config makes certificate verification and JWT audience debugging harder.
 
-ローカル確認ではどちらか一方に揃えます。
+For local verification, choose one host form and keep it consistent.
 
-## 本番証明書
+## Production Certificate
 
-本番では、bridge の gRPC endpoint に公開 hostname の証明書を設定します。
+In production, configure the bridge gRPC endpoint with a certificate for the public hostname.
 
 ```yaml
 server:
@@ -58,11 +60,11 @@ server:
   grpc_tls_key_file: "/etc/lore-auth/grpc/tls.key"
 ```
 
-証明書を reverse proxy や load balancer で終端する場合も、Lore が見る `auth_url` は TLS endpoint として到達できる必要があります。
+Even when TLS terminates at a reverse proxy or load balancer, the `auth_url` seen by Lore must be reachable as a TLS endpoint.
 
-## loreserver と lore CLI の信頼設定
+## Trust Settings For loreserver And lore CLI
 
-ローカル確認では、`loreserver` と `lore` CLI の両方に同じ `SSL_CERT_FILE` を渡します。
+For local verification, pass the same `SSL_CERT_FILE` to both `loreserver` and the `lore` CLI.
 
 ```bash
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
@@ -71,51 +73,53 @@ export LORE_ENV=e2e
 export HOME="$PWD/.manual/home"
 ```
 
-`SSL_CERT_FILE` を設定していない場合、`lore auth login` が成功しても repository 操作時の authz exchange で失敗することがあります。
+If `SSL_CERT_FILE` is not set, `lore auth login` may succeed while authz exchange during repository operations fails.
 
-## よくある失敗: `SSL_CERT_FILE` が leaf 証明書を指している
+## Common Failure: `SSL_CERT_FILE` Points To The Leaf Certificate
 
-次の症状が出たら、まずここを疑ってください。
+Check this first when the following symptoms appear:
 
-- `lore auth login` は `Authentication successful` になる。
-- しかし `lore repository create` が `code: 'Internal error', message: "Failed to connect to rebac service"` で失敗する。
+- `lore auth login` returns `Authentication successful`.
+- `lore repository create` fails with `code: 'Internal error', message: "Failed to connect to rebac service"`.
 
-原因は、`SSL_CERT_FILE` が mkcert の **leaf 証明書（`.manual/grpc/tls.crt`）** を指していることです。
+The usual cause is that `SSL_CERT_FILE` points to the `mkcert` leaf certificate, `.manual/grpc/tls.crt`.
 
-`loreserver` は repository create のときに `auth_url`（gRPC TLS）へ ReBAC 同期で接続します。
+During repository creation, `loreserver` connects to `auth_url` over gRPC TLS for ReBAC sync.
 
-その TLS 検証は `rustls` の native-roots で行われ、`rustls` は `SSL_CERT_FILE` が設定されているとそのファイルだけを信頼 anchor として使い、OS 証明書ストアを無視します。
+TLS verification is performed through `rustls` native-roots.
 
-mkcert の leaf は root CA（`rootCA.pem`）が発行したもので、それ自身は CA ではありません。
+When `SSL_CERT_FILE` is set, `rustls` uses only that file as the trust anchor and ignores the OS certificate store.
 
-そのため leaf だけを信頼 anchor にすると、bridge が提示する証明書の検証経路を作れず、TLS handshake が失敗し、`connect()` が失敗して "Failed to connect to rebac service" になります。
+The `mkcert` leaf certificate is issued by the root CA (`rootCA.pem`) and is not itself a CA.
 
-`lore auth login --token` はトークンをローカルに保存するオフライン処理で、bridge への TLS 接続を伴いません。
+If only the leaf is trusted as the anchor, no verification path can be built for the certificate presented by the bridge, the TLS handshake fails, and `connect()` reports "Failed to connect to rebac service".
 
-このため login だけは成功してしまい、原因に気づきにくくなります。
+`lore auth login --token` only stores the token locally and does not make a TLS connection to the bridge.
 
-### 直し方
+That is why login can succeed while repository operations fail.
 
-mkcert を使う場合は、`SSL_CERT_FILE` に leaf ではなく **root CA** を指定します。
+### Fix
+
+When using `mkcert`, set `SSL_CERT_FILE` to the root CA, not the leaf.
 
 ```bash
 export SSL_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"
 ```
 
-自己署名証明書（leaf 自身が自己の発行者）の場合のみ、leaf を指定してかまいません。
+Only with a self-signed certificate where the leaf is its own issuer should the leaf be used as `SSL_CERT_FILE`.
 
-環境変数は起動時にしか読まれないため、変更後は `loreserver`（および同じ変数を使う `lore` CLI）を再起動します。
+Environment variables are read at startup, so restart `loreserver` and any `lore` CLI process using the same variable after changing it.
 
-### 確認方法
+### Verify
 
-`SSL_CERT_FILE` が信頼 anchor として正しいかは `openssl` で確認できます。
+Use `openssl` to check whether `SSL_CERT_FILE` is a valid trust anchor.
 
 ```bash
 openssl verify -CAfile "$SSL_CERT_FILE" .manual/grpc/tls.crt
 ```
 
-`OK` が返れば信頼 anchor として使えます。
+If the command returns `OK`, the file can be used as a trust anchor.
 
-`unable to get local issuer certificate` が返る場合は、`SSL_CERT_FILE` が leaf を指しています。
+If it returns `unable to get local issuer certificate`, `SSL_CERT_FILE` points to the leaf.
 
-native-roots 方式をやめて OS ストアに統一したい場合は、`SSL_CERT_FILE` を設定せず `mkcert -install` で root CA を OS ストアに入れる方法もあります。
+If you prefer OS store trust instead of native-roots through `SSL_CERT_FILE`, unset `SSL_CERT_FILE` and install the root CA into the OS store with `mkcert -install`.

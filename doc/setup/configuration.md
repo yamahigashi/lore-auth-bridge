@@ -1,10 +1,12 @@
 # Configuration
 
-`lore-auth.yaml` は bridge の HTTP、gRPC、DB、JWT、Lore 連携、ログイン方式を設定します。
+[日本語](configuration.ja.md)
 
-このページでは、各項目の意味を説明します。
+`lore-auth.yaml` configures the bridge HTTP server, gRPC server, DB, JWT settings, Lore integration, and login method.
 
-ローカルで一通り動かす手順は [Local Smoke Test](local-smoke-test.md) を参照してください。
+This page explains each setting.
+
+See [Local Smoke Test](local-smoke-test.md) for an end-to-end local run.
 
 ## server
 
@@ -17,21 +19,21 @@ server:
   public_base_url: "http://localhost:8080"
 ```
 
-`listen` は HTTP server の listen address です。
+`listen` is the HTTP server listen address.
 
-HTTP server は JWKS、health check、browser login、device flow を提供します。
+The HTTP server provides JWKS, health checks, browser login, and device flow.
 
-`grpc_listen` は `UrcAuthApi` と `RebacApi` の listen address です。
+`grpc_listen` is the listen address for `UrcAuthApi` and `RebacApi`.
 
-Lore CLI と loreserver が auth exchange と ReBAC sync で接続します。
+The Lore CLI and `loreserver` connect to it for auth exchange and ReBAC sync.
 
-`grpc_tls_cert_file` と `grpc_tls_key_file` は gRPC TLS server certificate です。
+`grpc_tls_cert_file` and `grpc_tls_key_file` are the gRPC TLS server certificate and key.
 
-TLS の作成と信頼設定は [TLS](tls.md) を参照してください。
+See [TLS](tls.md) for certificate generation and trust configuration.
 
-`public_base_url` は bridge の HTTP/JWKS 側の外部 URL です。
+`public_base_url` is the external URL for the bridge HTTP/JWKS side.
 
-`jwt.issuer` と揃えると検証が分かりやすくなります。
+Keeping it aligned with `jwt.issuer` makes verification easier.
 
 ## database
 
@@ -40,13 +42,13 @@ database:
   path: ".manual/lore-auth.sqlite3"
 ```
 
-`path` は SQLite database のパスです。
+`path` is the SQLite database path.
 
-user、group、repository、grant、auth session、issued token、signing key metadata を保存します。
+The database stores users, groups, repositories, grants, auth sessions, issued tokens, and signing key metadata.
 
-schema には `audit_events` table もありますが、現時点の実装は管理操作や token 発行を audit event として記録しません。
+The schema also contains an `audit_events` table, but the current implementation does not record administrative actions or token issuance as audit events.
 
-監査が必要な運用では、reverse proxy、systemd journal、SQLite backup、CLI 実行ログなど別の記録を用意してください。
+If an operation requires auditing, provide separate records through a reverse proxy, systemd journal, SQLite backups, CLI execution logs, or another operational log.
 
 ## jwt
 
@@ -61,25 +63,25 @@ jwt:
   active_kid: "manual-1"
 ```
 
-`issuer` は bridge が発行する JWT の `iss` です。
+`issuer` is the `iss` value in JWTs issued by the bridge.
 
-loreserver の `[server.auth].jwt_issuer` と一致させます。
+It must match `[server.auth].jwt_issuer` in `loreserver`.
 
-`audience` は JWT の `aud` です。
+`audience` is the JWT `aud` value.
 
-ローカルでは `lore-service` と remote host（例：`localhost`）を含めます。
+For local use, include both `lore-service` and the remote host, for example `localhost`.
 
-本番では `lore-service` と実際の remote host（例：`lore.example.com`）を含めます。
+In production, include `lore-service` and the actual remote host, for example `lore.example.com`.
 
-`ttl_seconds` は authn token の既定 TTL です。
+`ttl_seconds` is the default TTL for authn tokens.
 
-authz token の TTL は server と CLI の起動時設定で 15 分にしています。
+Authz token TTL is configured at server and CLI startup and is currently 15 minutes.
 
-`signing_key_dir` は private key file を置く directory です。
+`signing_key_dir` is the directory that stores private key files.
 
-`active_kid` は署名に使う active key の key ID です。
+`active_kid` is the key ID used for signing.
 
-鍵の作成は [Signing Keys](signing-keys.md) を参照してください。
+See [Signing Keys](signing-keys.md) for key generation.
 
 ## lore
 
@@ -89,15 +91,15 @@ lore:
   auth_url: "https://localhost:8081"
 ```
 
-`default_remote_url` は token mint command や UI が表示する既定の Lore remote URL です。
+`default_remote_url` is the default Lore remote URL shown by token mint commands and UI.
 
-`auth_url` は Lore が `UrcAuthApi` と `RebacApi` に到達する auth gRPC endpoint です。
+`auth_url` is the auth gRPC endpoint through which Lore reaches `UrcAuthApi` and `RebacApi`.
 
-ローカル動作確認では `https://localhost:8081` を使います。
+For local verification, use `https://localhost:8081`.
 
-`auth_url` には HTTPS の gRPC endpoint を指定します。
+`auth_url` must be an HTTPS gRPC endpoint.
 
-`ucs-auth://...` はここでは使いません。
+Do not use `ucs-auth://...` in this field.
 
 ## security
 
@@ -111,31 +113,31 @@ security:
     - "::1/128"
 ```
 
-`device_code_ttl_seconds` は device flow の user code と device code の TTL です。
+`device_code_ttl_seconds` is the TTL for device flow user codes and device codes.
 
-`device_poll_interval_seconds` は device flow の polling interval です。
+`device_poll_interval_seconds` is the device flow polling interval.
 
-`session_ttl_seconds` はブラウザセッションと interactive login session の TTL です。
+`session_ttl_seconds` is the TTL for browser sessions and interactive login sessions.
 
-`rebac_allowed_peer_cidrs` は `ucs.auth.RebacApi` の peer allowlist です。
+`rebac_allowed_peer_cidrs` is the peer allowlist for `ucs.auth.RebacApi`.
 
-`RebacApi` は loreserver からの resource lifecycle sync 専用 API として扱います。
+`RebacApi` is treated as a service-to-service API dedicated to resource lifecycle sync from `loreserver`.
 
-空にした場合、bridge は ReBAC gRPC method を loopback peer からだけ受けます。
+When this list is empty, the bridge only accepts ReBAC gRPC methods from loopback peers.
 
-loreserver が別 host で動く場合は、loreserver から bridge へ到達する送信元 CIDR を追加します。
+If `loreserver` runs on another host, add the source CIDR from which `loreserver` reaches the bridge.
 
-この判定は bridge が直接受け取る TCP peer を見ます。
+This check uses the TCP peer as seen directly by the bridge.
 
-公開 reverse proxy が bridge の loopback listener に転送する構成では、bridge から見える peer は proxy になります。
+If a public reverse proxy forwards traffic to a loopback bridge listener, the peer seen by the bridge is the proxy.
 
-その場合は reverse proxy 側でも `/ucs.auth.RebacApi/*` を loreserver からの通信だけに制限してください。
+In that topology, also restrict `/ucs.auth.RebacApi/*` at the reverse proxy to traffic from `loreserver`.
 
-公開 endpoint の rate limit は reverse proxy または load balancer 側で設定します。
+Configure rate limiting for public endpoints at the reverse proxy or load balancer.
 
-対象は `/api/device/start`、`/api/device/token`、`/oauth/google/start`、gRPC の `/epic_urc.UrcAuthApi/StartAuthSession` です。
+The relevant endpoints are `/api/device/start`, `/api/device/token`, `/oauth/google/start`, and the gRPC `/epic_urc.UrcAuthApi/StartAuthSession`.
 
-device flow と OAuth start は匿名 caller から到達するため、IP、forwarded client IP、または edge identity に基づいて制限してください。
+Device flow and OAuth start endpoints are reachable by anonymous callers, so limit them by IP, forwarded client IP, or edge identity.
 
 ## google
 
@@ -148,18 +150,18 @@ google:
   allow_personal_accounts: true
 ```
 
-`google` は Google OIDC の設定欄です。
+`google` configures Google OIDC.
 
-OIDC 全体を Google に固定するものではありません。
+It does not make the whole OIDC design Google-specific.
 
-Google OIDC を使わずに `lore-authctl token mint-authn` で authn token を発行する場合、`client_id`、`client_secret_file`、`redirect_url` は空で構いません。
+If you do not use Google OIDC and only issue authn tokens with `lore-authctl token mint-authn`, `client_id`, `client_secret_file`, and `redirect_url` may be empty.
 
-Google OIDC の具体的な設定は [Google OIDC](google-oidc.md) を参照してください。
+See [Google OIDC](google-oidc.md) for concrete Google settings.
 
-`allowed_hosted_domains` は、Google ID token の `hd` claim で許可する Workspace domain です。
+`allowed_hosted_domains` is the set of Workspace domains allowed through the Google ID token `hd` claim.
 
-値を入れると、`hd` がその一覧に一致しない login を拒否します。
+When set, logins whose `hd` claim is not in the list are rejected.
 
-`allow_personal_accounts` は、`hd` claim を持たない個人 Google アカウントを許可するかどうかです。
+`allow_personal_accounts` controls whether personal Google accounts without an `hd` claim are allowed.
 
-`allowed_hosted_domains` が空で `allow_personal_accounts: true` の場合、bridge に登録済みの Workspace アカウントと個人 Google アカウントの両方を許可します。
+If `allowed_hosted_domains` is empty and `allow_personal_accounts: true`, the bridge allows both registered Workspace accounts and registered personal Google accounts.
