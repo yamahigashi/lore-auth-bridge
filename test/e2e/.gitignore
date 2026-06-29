@@ -1,0 +1,8 @@
+# E2E runtime artifacts (none are committed; tests use t.TempDir()).
+*.log
+*.sqlite3
+*.pem
+*.jwt
+data/
+keys/
+loreconfig/

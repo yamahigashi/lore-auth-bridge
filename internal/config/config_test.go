@@ -1,0 +1,215 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func TestLoadConfigWithDefaults(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Listen != "127.0.0.1:8080" {
+		t.Fatalf("unexpected listen: %s", cfg.Server.Listen)
+	}
+	if cfg.Lore.AuthURL != "ucs-auth://auth.example.com" {
+		t.Fatalf("unexpected auth URL: %s", cfg.Lore.AuthURL)
+	}
+	if cfg.JWT.TTLSeconds != 3600 {
+		t.Fatalf("unexpected ttl: %d", cfg.JWT.TTLSeconds)
+	}
+	if len(cfg.Security.RebacAllowedPeerCIDRs) != 0 {
+		t.Fatalf("unexpected rebac peer allowlist: %#v", cfg.Security.RebacAllowedPeerCIDRs)
+	}
+}
+
+func TestLoadRejectsPartialGoogleConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+google:
+  client_id: "client"
+  redirect_url: "https://auth.example.com/oauth/google/callback"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected partial google config to fail")
+	}
+}
+
+func TestLoadRejectsCookieSecretFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+  cookie_secret_file: "` + filepath.Join(dir, "cookie_secret") + `"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected cookie_secret_file to be rejected")
+	}
+	if !strings.Contains(err.Error(), "cookie_secret_file") {
+		t.Fatalf("error = %q, want cookie_secret_file context", err)
+	}
+}
+
+func TestLoadRejectsInvalidOperationalConfig(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		mutate  func(*configParts)
+		wantErr string
+	}{
+		{
+			name:    "grpc tls cert without key",
+			mutate:  func(p *configParts) { p.grpcTLSCertFile = filepath.Join(p.dir, "tls.crt") },
+			wantErr: "server.grpc_tls_key_file",
+		},
+		{
+			name:    "negative jwt ttl",
+			mutate:  func(p *configParts) { p.jwtTTLSeconds = -1 },
+			wantErr: "jwt.ttl_seconds",
+		},
+		{
+			name:    "empty audience element",
+			mutate:  func(p *configParts) { p.audience = `["lore-service", ""]` },
+			wantErr: "jwt.audience",
+		},
+		{
+			name:    "remote host missing from audience",
+			mutate:  func(p *configParts) { p.audience = `["lore-service"]` },
+			wantErr: "jwt.audience",
+		},
+		{
+			name:    "invalid public base url",
+			mutate:  func(p *configParts) { p.publicBaseURL = "://bad" },
+			wantErr: "server.public_base_url",
+		},
+		{
+			name:    "invalid lore auth url",
+			mutate:  func(p *configParts) { p.authURL = "not-a-url" },
+			wantErr: "lore.auth_url",
+		},
+		{
+			name:    "invalid rebac peer cidr",
+			mutate:  func(p *configParts) { p.rebacAllowedPeerCIDRs = `["not-a-cidr"]` },
+			wantErr: "security.rebac_allowed_peer_cidrs",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			parts := defaultConfigParts(dir)
+			tc.mutate(&parts)
+			path := filepath.Join(dir, "config.yaml")
+			if err := os.WriteFile(path, []byte(parts.yaml()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected config load to fail")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+type configParts struct {
+	dir                   string
+	grpcTLSCertFile       string
+	grpcTLSKeyFile        string
+	publicBaseURL         string
+	audience              string
+	jwtTTLSeconds         int
+	defaultRemoteURL      string
+	authURL               string
+	rebacAllowedPeerCIDRs string
+}
+
+func defaultConfigParts(dir string) configParts {
+	return configParts{
+		dir:                   dir,
+		publicBaseURL:         "https://auth.example.com",
+		audience:              `["lore-service", "lore.example.com"]`,
+		jwtTTLSeconds:         3600,
+		defaultRemoteURL:      "lore://lore.example.com:41337",
+		authURL:               "https://auth.example.com",
+		rebacAllowedPeerCIDRs: `[]`,
+	}
+}
+
+func (p configParts) yaml() string {
+	return `
+server:
+  public_base_url: "` + p.publicBaseURL + `"
+  grpc_tls_cert_file: "` + p.grpcTLSCertFile + `"
+  grpc_tls_key_file: "` + p.grpcTLSKeyFile + `"
+database:
+  path: "` + filepath.Join(p.dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ` + p.audience + `
+  ttl_seconds: ` + strconv.Itoa(p.jwtTTLSeconds) + `
+  signing_key_dir: "` + filepath.Join(p.dir, "keys") + `"
+lore:
+  default_remote_url: "` + p.defaultRemoteURL + `"
+  auth_url: "` + p.authURL + `"
+security:
+  rebac_allowed_peer_cidrs: ` + p.rebacAllowedPeerCIDRs + `
+`
+}

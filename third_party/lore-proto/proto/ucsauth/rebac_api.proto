@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package ucs.auth;
+
+option go_package = "github.com/yamahigashi/lore-auth-bridge/internal/loreproto/ucsauth;ucsauth";
+
+service RebacApi {
+  rpc CreateResource(CreateResourceRequest) returns (CreateResourceResponse) {};
+  rpc DeleteResource(DeleteResourceRequest) returns (DeleteResourceResponse) {};
+}
+
+// Messages for requests/responses
+
+message CreateResourceRequest {
+  string resource_id = 1;
+  string resource_name = 2;
+}
+message CreateResourceResponse {}
+
+message DeleteResourceRequest { string resource_id = 1; }
+message DeleteResourceResponse {}

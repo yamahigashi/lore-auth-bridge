@@ -1,0 +1,60 @@
+server:
+  # This example assumes a reverse proxy or load balancer exposes
+  # https://auth.example.com and forwards to these loopback listeners.
+  # If bridge is exposed directly, bind to a non-loopback address instead.
+  # Apply rate limits for login and device-flow endpoints at the public proxy.
+  # When exposing gRPC through a public proxy, restrict /ucs.auth.RebacApi/*
+  # at the proxy so only loreserver can call ReBAC resource sync.
+  listen: "127.0.0.1:8080"
+  grpc_listen: "127.0.0.1:8081"
+  # gRPC must be TLS for the lore CLI (it always dials https:// for ucs-auth).
+  # Provide a cert trusted by the CLI/loreserver, or terminate TLS at a proxy.
+  grpc_tls_cert_file: "/etc/lore-auth/grpc/tls.crt"
+  grpc_tls_key_file: "/etc/lore-auth/grpc/tls.key"
+  public_base_url: "https://auth.example.com"
+
+google:
+  # Optional Google OIDC settings.
+  # Leave these three fields empty when testing with lore-authctl token mint-authn.
+  # Other OIDC providers should be added as separate IdP integrations rather
+  # than making Lore auth Google-specific.
+  client_id: "xxx.apps.googleusercontent.com"
+  # Store the secret itself in this file. Do not put the secret value in YAML.
+  client_secret_file: "/etc/lore-auth/google_client_secret"
+  # Must exactly match an authorized redirect URI in the Google OAuth client.
+  redirect_url: "https://auth.example.com/oauth/google/callback"
+  # Restrict accepted Google accounts by the ID token hd claim.
+  # Leave allowed_hosted_domains empty and allow_personal_accounts true
+  # to allow both Workspace and personal Google accounts after bridge user registration.
+  allowed_hosted_domains: []
+  allow_personal_accounts: true
+
+database:
+  path: "/var/lib/lore-auth/lore-auth.sqlite3"
+
+jwt:
+  issuer: "https://auth.example.com"
+  audience:
+    - "lore-service"
+    - "lore.example.com"
+  ttl_seconds: 3600
+  signing_key_dir: "/etc/lore-auth/keys"
+  active_kid: "lore-2026-06-29-01"
+
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+  # Auth gRPC endpoint advertised to Lore.
+  # Use an HTTPS gRPC endpoint here.
+  auth_url: "https://auth.example.com"
+
+security:
+  device_code_ttl_seconds: 600
+  device_poll_interval_seconds: 3
+  session_ttl_seconds: 3600
+  # ReBAC is a service-to-service API called by loreserver.
+  # If omitted, bridge allows only loopback peers for ReBAC gRPC methods.
+  # This check sees the immediate TCP peer; behind a public reverse proxy,
+  # enforce the loreserver-only rule at the proxy as well.
+  rebac_allowed_peer_cidrs:
+    - "127.0.0.1/32"
+    - "::1/128"
