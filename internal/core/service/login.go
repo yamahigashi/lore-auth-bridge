@@ -19,14 +19,14 @@ type LoginConfig struct {
 
 type LoginService struct {
 	cfg    LoginConfig
-	idp    ports.IdentityProvider
+	idps   ports.IdentityProviderRegistry
 	users  ports.UserDirectory
 	state  ports.StateStore
 	tokens *TokenService
 }
 
-func NewLoginService(cfg LoginConfig, idp ports.IdentityProvider, users ports.UserDirectory, state ports.StateStore, tokens *TokenService) *LoginService {
-	return &LoginService{cfg: cfg, idp: idp, users: users, state: state, tokens: tokens}
+func NewLoginService(cfg LoginConfig, idps ports.IdentityProviderRegistry, users ports.UserDirectory, state ports.StateStore, tokens *TokenService) *LoginService {
+	return &LoginService{cfg: cfg, idps: idps, users: users, state: state, tokens: tokens}
 }
 
 type StartAuthSessionResult struct {
@@ -49,10 +49,47 @@ type OAuthCallbackResult struct {
 }
 
 func (s *LoginService) AuthCodeURL(state string) (string, error) {
-	if s.idp == nil {
-		return "", model.ErrUnsupported
+	res, err := s.BeginAuth(context.Background(), "", ports.BeginAuthRequest{State: state})
+	if err != nil {
+		return "", err
 	}
-	return s.idp.AuthCodeURL(state), nil
+	return res.RedirectURL, nil
+}
+
+func (s *LoginService) BeginAuth(ctx context.Context, providerID string, req ports.BeginAuthRequest) (ports.BeginAuthResult, error) {
+	provider, _, err := s.identityProvider(providerID)
+	if err != nil {
+		return ports.BeginAuthResult{}, err
+	}
+	return provider.BeginAuth(ctx, req)
+}
+
+func (s *LoginService) Providers() []ports.IdentityProviderDescriptor {
+	if s.idps == nil {
+		return nil
+	}
+	return s.idps.List()
+}
+
+func (s *LoginService) DefaultProviderID() string {
+	if s.idps == nil {
+		return ""
+	}
+	return s.idps.DefaultID()
+}
+
+func (s *LoginService) HasProvider(providerID string) bool {
+	if s.idps == nil {
+		return false
+	}
+	if providerID == "" {
+		providerID = s.idps.DefaultID()
+	}
+	if providerID == "" {
+		return false
+	}
+	_, ok := s.idps.Get(providerID)
+	return ok
 }
 
 func (s *LoginService) StartAuthSession(ctx context.Context, clientState string) (StartAuthSessionResult, error) {
@@ -99,15 +136,29 @@ func (s *LoginService) GetAuthSession(ctx context.Context, sessionCode, clientSt
 }
 
 func (s *LoginService) CompleteOAuthCallback(ctx context.Context, code, loginNonce string) (OAuthCallbackResult, error) {
-	if s.idp == nil {
-		return OAuthCallbackResult{}, model.ErrUnsupported
+	return s.CompleteAuth(ctx, "", ports.CompleteAuthRequest{Code: code}, loginNonce)
+}
+
+func (s *LoginService) CompleteAuth(ctx context.Context, providerID string, req ports.CompleteAuthRequest, loginNonce string) (OAuthCallbackResult, error) {
+	provider, descriptor, err := s.identityProvider(providerID)
+	if err != nil {
+		return OAuthCallbackResult{}, err
 	}
-	identity, err := s.idp.ExchangeAndVerify(ctx, code)
+	identity, err := provider.CompleteAuth(ctx, req)
 	if err != nil {
 		return OAuthCallbackResult{}, fmt.Errorf("%w: oauth identity exchange: %w", model.ErrUnauthenticated, err)
 	}
 	if identity.Provider == "" {
-		identity.Provider = "google"
+		identity.Provider = descriptor.ID
+	}
+	if identity.Provider != descriptor.ID {
+		return OAuthCallbackResult{}, fmt.Errorf("%w: identity provider mismatch", model.ErrUnauthenticated)
+	}
+	if identity.Issuer == "" {
+		identity.Issuer = descriptor.Issuer
+	}
+	if descriptor.Issuer != "" && identity.Issuer != descriptor.Issuer {
+		return OAuthCallbackResult{}, fmt.Errorf("%w: identity issuer mismatch", model.ErrUnauthenticated)
 	}
 	user, err := s.users.FindByIdentity(ctx, identity.Provider, identity.Issuer, identity.Subject)
 	if errors.Is(err, model.ErrNotFound) {
@@ -143,4 +194,25 @@ func (s *LoginService) CompleteOAuthCallback(ctx context.Context, code, loginNon
 		return OAuthCallbackResult{}, err
 	}
 	return OAuthCallbackResult{Identity: identity, User: user, BrowserSession: session}, nil
+}
+
+func (s *LoginService) identityProvider(providerID string) (ports.IdentityProvider, ports.IdentityProviderDescriptor, error) {
+	if s.idps == nil {
+		return nil, ports.IdentityProviderDescriptor{}, model.ErrUnsupported
+	}
+	if providerID == "" {
+		providerID = s.idps.DefaultID()
+	}
+	if providerID == "" {
+		return nil, ports.IdentityProviderDescriptor{}, model.ErrUnsupported
+	}
+	provider, ok := s.idps.Get(providerID)
+	if !ok {
+		return nil, ports.IdentityProviderDescriptor{}, model.ErrNotFound
+	}
+	descriptor := provider.Descriptor()
+	if descriptor.ID == "" {
+		descriptor.ID = providerID
+	}
+	return provider, descriptor, nil
 }

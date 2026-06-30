@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/model"
+	"github.com/yamahigashi/lore-auth-bridge/internal/core/ports"
 )
 
 func TestGetAuthSessionClientStateMismatchReturnsInvalidArgument(t *testing.T) {
@@ -19,6 +20,26 @@ func TestGetAuthSessionClientStateMismatchReturnsInvalidArgument(t *testing.T) {
 	_, err := svc.GetAuthSession(context.Background(), "session-code", "wrong-client-state")
 	if !errors.Is(err, model.ErrInvalidArgument) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
+	}
+}
+
+func TestBeginAuthUsesRequestedProvider(t *testing.T) {
+	t.Parallel()
+	idps := loginRegistryStub{
+		defaultID: "google",
+		providers: map[string]loginIDPStub{
+			"google":        {descriptor: ports.IdentityProviderDescriptor{ID: "google", Issuer: "https://accounts.google.com"}, authURL: "https://google.example/auth"},
+			"keycloak-prod": {descriptor: ports.IdentityProviderDescriptor{ID: "keycloak-prod", Issuer: "https://sso.example.com/realms/prod"}, authURL: "https://sso.example.com/auth"},
+		},
+	}
+	svc := NewLoginService(LoginConfig{}, idps, nil, nil, nil)
+
+	res, err := svc.BeginAuth(context.Background(), "keycloak-prod", ports.BeginAuthRequest{State: "state-1", Nonce: "nonce-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RedirectURL != "https://sso.example.com/auth?state=state-1&nonce=nonce-1" {
+		t.Fatalf("redirect URL = %q", res.RedirectURL)
 	}
 }
 
@@ -36,14 +57,13 @@ func TestCompleteOAuthCallbackBindsVerifiedEmailPreRegistration(t *testing.T) {
 	state := &callbackStateStub{}
 	svc := NewLoginService(
 		LoginConfig{SessionTTL: time.Hour},
-		loginIDPStub{id: model.Identity{
-			Provider:      "google",
+		loginRegistryStub{defaultID: "google", providers: map[string]loginIDPStub{"google": {descriptor: ports.IdentityProviderDescriptor{ID: "google", Issuer: "https://accounts.google.com"}, id: model.Identity{
 			Issuer:        "https://accounts.google.com",
 			Subject:       "google-sub",
 			Email:         "Alice@Example.com",
 			EmailVerified: true,
 			Name:          "Alice",
-		}},
+		}}}},
 		users,
 		state,
 		nil,
@@ -77,13 +97,12 @@ func TestCompleteOAuthCallbackDoesNotBindUnverifiedEmail(t *testing.T) {
 	}
 	svc := NewLoginService(
 		LoginConfig{SessionTTL: time.Hour},
-		loginIDPStub{id: model.Identity{
-			Provider:      "google",
+		loginRegistryStub{defaultID: "google", providers: map[string]loginIDPStub{"google": {descriptor: ports.IdentityProviderDescriptor{ID: "google", Issuer: "https://accounts.google.com"}, id: model.Identity{
 			Issuer:        "https://accounts.google.com",
 			Subject:       "google-sub",
 			Email:         "alice@example.com",
 			EmailVerified: false,
-		}},
+		}}}},
 		users,
 		&callbackStateStub{},
 		nil,
@@ -126,6 +145,14 @@ func (s *loginStateStub) ConsumeAuthSession(ctx context.Context, id string) erro
 	panic("not used")
 }
 
+func (s *loginStateStub) CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (string, model.LoginState, error) {
+	panic("not used")
+}
+
+func (s *loginStateStub) ConsumeLoginState(ctx context.Context, state string) (model.LoginState, error) {
+	panic("not used")
+}
+
 func (s *loginStateStub) CreateBrowserSession(ctx context.Context, userID string, ttl time.Duration) (model.BrowserSession, error) {
 	panic("not used")
 }
@@ -165,18 +192,42 @@ func TestGetAuthSessionExpiredCompletedSessionReturnsNotFound(t *testing.T) {
 }
 
 type loginIDPStub struct {
-	id model.Identity
+	descriptor ports.IdentityProviderDescriptor
+	authURL    string
+	id         model.Identity
 }
 
-func (s loginIDPStub) AuthCodeURL(state string) string {
-	return "https://idp.example/auth?state=" + state
+func (s loginIDPStub) Descriptor() ports.IdentityProviderDescriptor {
+	return s.descriptor
 }
 
-func (s loginIDPStub) ExchangeAndVerify(ctx context.Context, code string) (model.Identity, error) {
+func (s loginIDPStub) BeginAuth(ctx context.Context, req ports.BeginAuthRequest) (ports.BeginAuthResult, error) {
+	return ports.BeginAuthResult{RedirectURL: s.authURL + "?state=" + req.State + "&nonce=" + req.Nonce}, nil
+}
+
+func (s loginIDPStub) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.Identity, error) {
 	return s.id, nil
 }
 
-func (s loginIDPStub) Issuer() string { return s.id.Issuer }
+type loginRegistryStub struct {
+	defaultID string
+	providers map[string]loginIDPStub
+}
+
+func (s loginRegistryStub) Get(id string) (ports.IdentityProvider, bool) {
+	provider, ok := s.providers[id]
+	return provider, ok
+}
+
+func (s loginRegistryStub) DefaultID() string { return s.defaultID }
+
+func (s loginRegistryStub) List() []ports.IdentityProviderDescriptor {
+	out := make([]ports.IdentityProviderDescriptor, 0, len(s.providers))
+	for _, provider := range s.providers {
+		out = append(out, provider.Descriptor())
+	}
+	return out
+}
 
 type preRegistrationUsersStub struct {
 	pending model.User
@@ -255,6 +306,14 @@ func (s *callbackStateStub) CompleteAuthSession(ctx context.Context, id, userID 
 }
 
 func (s *callbackStateStub) ConsumeAuthSession(ctx context.Context, id string) error {
+	panic("not used")
+}
+
+func (s *callbackStateStub) CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (string, model.LoginState, error) {
+	panic("not used")
+}
+
+func (s *callbackStateStub) ConsumeLoginState(ctx context.Context, state string) (model.LoginState, error) {
 	panic("not used")
 }
 

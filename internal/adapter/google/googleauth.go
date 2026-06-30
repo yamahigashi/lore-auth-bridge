@@ -10,16 +10,19 @@ import (
 	"google.golang.org/api/idtoken"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/model"
+	"github.com/yamahigashi/lore-auth-bridge/internal/core/ports"
 )
 
 type Identity = model.Identity
 
 type Authenticator interface {
-	AuthCodeURL(state string) string
-	ExchangeAndVerify(ctx context.Context, code string) (Identity, error)
+	ports.IdentityProvider
 }
 
 type GoogleAuthenticator struct {
+	id                    string
+	displayName           string
+	issuer                string
 	clientID              string
 	config                oauth2.Config
 	allowedHostedDomains  map[string]struct{}
@@ -27,28 +30,62 @@ type GoogleAuthenticator struct {
 }
 
 type Config struct {
+	ProviderID            string
+	DisplayName           string
+	Issuer                string
 	ClientID              string
 	ClientSecret          string
 	RedirectURL           string
+	Scopes                []string
 	AllowedHostedDomains  []string
 	AllowPersonalAccounts bool
 }
 
 func New(cfg Config) *GoogleAuthenticator {
+	providerID := cfg.ProviderID
+	if providerID == "" {
+		providerID = "google"
+	}
+	displayName := cfg.DisplayName
+	if displayName == "" {
+		displayName = "Google"
+	}
+	issuer := cfg.Issuer
+	if issuer == "" {
+		issuer = "https://accounts.google.com"
+	}
+	scopes := append([]string(nil), cfg.Scopes...)
+	if len(scopes) == 0 {
+		scopes = []string{"openid", "email", "profile"}
+	}
 	return &GoogleAuthenticator{
+		id:                    providerID,
+		displayName:           displayName,
+		issuer:                issuer,
 		clientID:              cfg.ClientID,
-		config:                oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: cfg.RedirectURL, Scopes: []string{"openid", "email", "profile"}, Endpoint: googleoauth.Endpoint},
+		config:                oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: cfg.RedirectURL, Scopes: scopes, Endpoint: googleoauth.Endpoint},
 		allowedHostedDomains:  normalizeHostedDomains(cfg.AllowedHostedDomains),
 		allowPersonalAccounts: cfg.AllowPersonalAccounts,
 	}
 }
 
-func (g *GoogleAuthenticator) AuthCodeURL(state string) string {
-	return g.config.AuthCodeURL(state, oauth2.AccessTypeOnline)
+func (g *GoogleAuthenticator) Descriptor() ports.IdentityProviderDescriptor {
+	return ports.IdentityProviderDescriptor{ID: g.id, Type: "google_oidc", DisplayName: g.displayName, Issuer: g.issuer}
 }
 
-func (g *GoogleAuthenticator) ExchangeAndVerify(ctx context.Context, code string) (model.Identity, error) {
-	tok, err := g.config.Exchange(ctx, code)
+func (g *GoogleAuthenticator) BeginAuth(ctx context.Context, req ports.BeginAuthRequest) (ports.BeginAuthResult, error) {
+	options := []oauth2.AuthCodeOption{oauth2.AccessTypeOnline}
+	if req.Nonce != "" {
+		options = append(options, oauth2.SetAuthURLParam("nonce", req.Nonce))
+	}
+	if req.LoginHint != "" {
+		options = append(options, oauth2.SetAuthURLParam("login_hint", req.LoginHint))
+	}
+	return ports.BeginAuthResult{RedirectURL: g.config.AuthCodeURL(req.State, options...)}, nil
+}
+
+func (g *GoogleAuthenticator) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.Identity, error) {
+	tok, err := g.config.Exchange(ctx, req.Code)
 	if err != nil {
 		return model.Identity{}, fmt.Errorf("googleauth: exchange code: %w", err)
 	}
@@ -60,7 +97,13 @@ func (g *GoogleAuthenticator) ExchangeAndVerify(ctx context.Context, code string
 	if err != nil {
 		return model.Identity{}, fmt.Errorf("googleauth: validate id token: %w", err)
 	}
-	id := model.Identity{Provider: "google", Issuer: payload.Issuer, Subject: payload.Subject}
+	if req.Nonce != "" {
+		nonce, _ := payload.Claims["nonce"].(string)
+		if nonce != req.Nonce {
+			return model.Identity{}, fmt.Errorf("googleauth: id token nonce mismatch")
+		}
+	}
+	id := model.Identity{Provider: g.id, Issuer: payload.Issuer, Subject: payload.Subject}
 	if v, ok := payload.Claims["email"].(string); ok {
 		id.Email = v
 	}
@@ -81,8 +124,6 @@ func (g *GoogleAuthenticator) ExchangeAndVerify(ctx context.Context, code string
 	}
 	return id, nil
 }
-
-func (g *GoogleAuthenticator) Issuer() string { return "https://accounts.google.com" }
 
 func normalizeHostedDomains(values []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(values))
