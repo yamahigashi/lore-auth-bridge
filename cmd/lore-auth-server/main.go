@@ -16,10 +16,13 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/casbin"
-	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/google"
+	googleid "github.com/yamahigashi/lore-auth-bridge/internal/adapter/google"
+	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/idpregistry"
+	oidcadapter "github.com/yamahigashi/lore-auth-bridge/internal/adapter/oidc"
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/rs256"
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/sqlite"
 	"github.com/yamahigashi/lore-auth-bridge/internal/config"
+	"github.com/yamahigashi/lore-auth-bridge/internal/core/ports"
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/service"
 	"github.com/yamahigashi/lore-auth-bridge/internal/device"
 	"github.com/yamahigashi/lore-auth-bridge/internal/grpcauth"
@@ -28,6 +31,8 @@ import (
 	pbAuth "github.com/yamahigashi/lore-auth-bridge/internal/loreproto/epicurc"
 	pbRebac "github.com/yamahigashi/lore-auth-bridge/internal/loreproto/ucsauth"
 )
+
+const identityProviderStartupTimeout = 10 * time.Second
 
 func main() {
 	log.SetFlags(0)
@@ -51,16 +56,11 @@ func run() error {
 	}
 	defer st.Close()
 
-	var googleAuthenticator *googleid.GoogleAuthenticator
-	if cfg.Google.Enabled() {
-		googleSecret, err := config.ReadSecretFile(cfg.Google.ClientSecretFile)
-		if err != nil {
-			return fmt.Errorf("startup: read google.client_secret_file: %w", err)
-		}
-		if googleSecret == "" {
-			return fmt.Errorf("startup: google.client_secret_file %q is empty", cfg.Google.ClientSecretFile)
-		}
-		googleAuthenticator = googleid.New(googleConfigFromConfig(cfg, googleSecret))
+	idpCtx, cancelIDP := context.WithTimeout(context.Background(), identityProviderStartupTimeout)
+	defer cancelIDP()
+	idps, err := buildIdentityProviders(idpCtx, cfg)
+	if err != nil {
+		return err
 	}
 
 	coreStore := sqlite.NewCoreStore(st)
@@ -79,12 +79,12 @@ func run() error {
 		AuthServiceAudience: authServiceAudience,
 		AuthnTTL:            time.Duration(cfg.JWT.TTLSeconds) * time.Second,
 		AuthzTTL:            15 * time.Minute,
-	}, coreStore, coreStore, authz, signer, coreStore)
+	}, coreStore, coreStore, authz, signer, coreStore, coreStore)
 	loginSvc := service.NewLoginService(service.LoginConfig{
 		PublicBaseURL:  cfg.Server.PublicBaseURL,
 		SessionTTL:     time.Duration(cfg.Security.SessionTTLSeconds) * time.Second,
 		AuthSessionTTL: time.Duration(cfg.Security.AuthSessionTTLSeconds) * time.Second,
-	}, googleAuthenticator, coreStore, coreStore, tokenSvc)
+	}, idps, coreStore, coreStore, tokenSvc)
 	permissionSvc := service.NewPermissionService(coreStore, authz)
 	resourceSvc := service.NewResourceService(coreStore)
 
@@ -147,13 +147,77 @@ func rebacAllowedPeerCIDRs(cfg *config.Config) []string {
 	return cfg.Security.RebacAllowedPeerCIDRs
 }
 
-func googleConfigFromConfig(cfg *config.Config, clientSecret string) googleid.Config {
+func buildIdentityProviders(ctx context.Context, cfg *config.Config) (ports.IdentityProviderRegistry, error) {
+	if cfg == nil || len(cfg.IdentityProviders.Providers) == 0 {
+		return nil, nil
+	}
+	reg := idpregistry.New(cfg.IdentityProviders.Default)
+	for id, providerCfg := range cfg.IdentityProviders.Providers {
+		switch providerCfg.Type {
+		case "google_oidc":
+			secret, err := readIdentityProviderClientSecret(id, providerCfg)
+			if err != nil {
+				return nil, err
+			}
+			provider := googleid.New(googleConfigFromProvider(id, providerCfg, secret))
+			if err := reg.Register(provider); err != nil {
+				return nil, fmt.Errorf("startup: register identity provider %q: %w", id, err)
+			}
+		case "oidc":
+			secret, err := readIdentityProviderClientSecret(id, providerCfg)
+			if err != nil {
+				return nil, err
+			}
+			provider, err := oidcadapter.New(ctx, oidcConfigFromProvider(id, providerCfg, secret))
+			if err != nil {
+				return nil, fmt.Errorf("startup: initialize identity provider %q: %w", id, err)
+			}
+			if err := reg.Register(provider); err != nil {
+				return nil, fmt.Errorf("startup: register identity provider %q: %w", id, err)
+			}
+		default:
+			return nil, fmt.Errorf("startup: unknown identity provider type %q for %q", providerCfg.Type, id)
+		}
+	}
+	return reg, nil
+}
+
+func readIdentityProviderClientSecret(id string, providerCfg config.IdentityProviderConfig) (string, error) {
+	secret, err := config.ReadSecretFile(providerCfg.ClientSecretFile)
+	if err != nil {
+		return "", fmt.Errorf("startup: read identity_providers.providers[%q].client_secret_file: %w", id, err)
+	}
+	if secret == "" {
+		return "", fmt.Errorf("startup: identity provider %q client_secret_file %q is empty", id, providerCfg.ClientSecretFile)
+	}
+	return secret, nil
+}
+
+func googleConfigFromProvider(id string, providerCfg config.IdentityProviderConfig, clientSecret string) googleid.Config {
 	return googleid.Config{
-		ClientID:              cfg.Google.ClientID,
+		ProviderID:            id,
+		DisplayName:           providerCfg.DisplayName,
+		Issuer:                providerCfg.Issuer,
+		ClientID:              providerCfg.ClientID,
 		ClientSecret:          clientSecret,
-		RedirectURL:           cfg.Google.RedirectURL,
-		AllowedHostedDomains:  cfg.Google.AllowedHostedDomains,
-		AllowPersonalAccounts: cfg.Google.AllowPersonalAccounts,
+		RedirectURL:           providerCfg.RedirectURL,
+		Scopes:                providerCfg.Scopes,
+		AllowedHostedDomains:  providerCfg.AllowedHostedDomains,
+		AllowPersonalAccounts: providerCfg.AllowPersonalAccounts,
+	}
+}
+
+func oidcConfigFromProvider(id string, providerCfg config.IdentityProviderConfig, clientSecret string) oidcadapter.Config {
+	return oidcadapter.Config{
+		ProviderID:          id,
+		DisplayName:         providerCfg.DisplayName,
+		Issuer:              providerCfg.Issuer,
+		ClientID:            providerCfg.ClientID,
+		ClientSecret:        clientSecret,
+		RedirectURL:         providerCfg.RedirectURL,
+		Scopes:              providerCfg.Scopes,
+		ClaimMapping:        providerCfg.ClaimMapping,
+		AllowedEmailDomains: providerCfg.AllowedEmailDomains,
 	}
 }
 

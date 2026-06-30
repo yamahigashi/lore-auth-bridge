@@ -61,17 +61,24 @@ func TestRebacAllowedPeerCIDRsUsesConfiguredValues(t *testing.T) {
 	}
 }
 
-func TestGoogleConfigFromConfigIncludesAccountPolicy(t *testing.T) {
+func TestGoogleConfigFromProviderIncludesAccountPolicy(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{}
-	cfg.Google.ClientID = "client"
-	cfg.Google.ClientSecretFile = "secret"
-	cfg.Google.RedirectURL = "https://auth.example.com/oauth/google/callback"
-	cfg.Google.AllowedHostedDomains = []string{"example.com"}
-	cfg.Google.AllowPersonalAccounts = true
+	providerCfg := config.IdentityProviderConfig{
+		Type:                  "google_oidc",
+		DisplayName:           "Google",
+		Issuer:                "https://accounts.google.com",
+		ClientID:              "client",
+		ClientSecretFile:      "secret",
+		RedirectURL:           "https://auth.example.com/auth/google/callback",
+		AllowedHostedDomains:  []string{"example.com"},
+		AllowPersonalAccounts: true,
+	}
 
-	got := googleConfigFromConfig(cfg, "client-secret")
-	if got.ClientID != "client" || got.ClientSecret != "client-secret" || got.RedirectURL != cfg.Google.RedirectURL {
+	got := googleConfigFromProvider("google", providerCfg, "client-secret")
+	if got.ProviderID != "google" || got.DisplayName != "Google" || got.Issuer != providerCfg.Issuer {
+		t.Fatalf("unexpected google descriptor config: %#v", got)
+	}
+	if got.ClientID != "client" || got.ClientSecret != "client-secret" || got.RedirectURL != providerCfg.RedirectURL {
 		t.Fatalf("unexpected google config: %#v", got)
 	}
 	if strings.Join(got.AllowedHostedDomains, ",") != "example.com" {
@@ -79,6 +86,27 @@ func TestGoogleConfigFromConfigIncludesAccountPolicy(t *testing.T) {
 	}
 	if !got.AllowPersonalAccounts {
 		t.Fatal("allow personal accounts was not propagated")
+	}
+}
+
+func TestBuildIdentityProvidersRejectsStaticProvider(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{}
+	cfg.IdentityProviders.Default = "static"
+	cfg.IdentityProviders.Providers = map[string]config.IdentityProviderConfig{
+		"static": {
+			Type:        "static",
+			DisplayName: "Static Login",
+			Issuer:      "https://auth.example.com/static",
+		},
+	}
+
+	reg, err := buildIdentityProviders(context.Background(), cfg)
+	if err == nil {
+		t.Fatalf("expected static provider to be rejected, got registry %#v", reg)
+	}
+	if !strings.Contains(err.Error(), "unknown identity provider type") {
+		t.Fatalf("error = %q, want unknown provider type", err)
 	}
 }
 

@@ -37,6 +37,7 @@ func TestADR0003ImportBoundaries(t *testing.T) {
 				modulePath+"/internal/adapter/sqlite",
 				modulePath+"/internal/adapter/casbin",
 				modulePath+"/internal/adapter/google",
+				modulePath+"/internal/adapter/oidc",
 				modulePath+"/internal/store",
 				modulePath+"/internal/acl",
 				modulePath+"/internal/googleauth",
@@ -49,6 +50,10 @@ func TestADR0003ImportBoundaries(t *testing.T) {
 				modulePath+"/internal/acl",
 				modulePath+"/internal/issuer",
 				modulePath+"/internal/token",
+			)
+		case strings.HasPrefix(rel, "cmd/lore-auth-server/"):
+			forbidImports(t, rel, imports,
+				modulePath+"/internal/adapter/staticidp",
 			)
 		}
 	})
