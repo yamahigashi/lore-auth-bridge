@@ -5,10 +5,12 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/google/uuid"
 
@@ -22,9 +24,12 @@ type KeyStore interface {
 }
 
 type KeyAdminStore interface {
+	SigningKeyByKID(ctx context.Context, kid string) (model.SigningKeyMeta, error)
 	AddSigningKeyMeta(ctx context.Context, key model.SigningKeyMeta) (model.SigningKeyMeta, error)
 	ListSigningKeyMeta(ctx context.Context) ([]model.SigningKeyMeta, error)
 }
+
+var validKIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 type Signer struct {
 	activeKID string
@@ -137,8 +142,17 @@ func (s *Signer) JWKS(ctx context.Context) (json.RawMessage, error) {
 }
 
 func (s *Signer) Validate(ctx context.Context) error {
-	if _, _, err := s.activeSigningKey(ctx); err != nil {
+	key, meta, err := s.activeSigningKey(ctx)
+	if err != nil {
 		return fmt.Errorf("token: validate active signing key: %w", err)
+	}
+	jwkPub, err := publicKeyFromJWKJSON(meta.PublicJWKJSON)
+	if err != nil {
+		return fmt.Errorf("token: validate public jwk: %w", err)
+	}
+	privatePub := key.Public()
+	if privatePub.E != jwkPub.E || privatePub.N.Cmp(jwkPub.N) != 0 {
+		return fmt.Errorf("%w: active kid %q public jwk does not match private key", model.ErrSigningKeyUnavailable, meta.Kid)
 	}
 	if _, err := s.JWKS(ctx); err != nil {
 		return fmt.Errorf("token: validate jwks: %w", err)
@@ -174,6 +188,14 @@ func (a *SigningKeyAdmin) GenerateActiveKey(ctx context.Context, kid, alg string
 	if alg != AlgRS256 {
 		return model.SigningKeyMeta{}, fmt.Errorf("only RS256 is supported")
 	}
+	if !validKIDPattern.MatchString(kid) {
+		return model.SigningKeyMeta{}, fmt.Errorf("%w: kid contains unsupported characters", model.ErrInvalidArgument)
+	}
+	if _, err := a.store.SigningKeyByKID(ctx, kid); err == nil {
+		return model.SigningKeyMeta{}, fmt.Errorf("%w: signing key kid %q already exists", model.ErrInvalidArgument, kid)
+	} else if !errors.Is(err, model.ErrNotFound) {
+		return model.SigningKeyMeta{}, fmt.Errorf("token: check existing signing key: %w", err)
+	}
 	key, err := GenerateSigningKey(kid, bits)
 	if err != nil {
 		return model.SigningKeyMeta{}, err
@@ -182,14 +204,22 @@ func (a *SigningKeyAdmin) GenerateActiveKey(ctx context.Context, kid, alg string
 		return model.SigningKeyMeta{}, err
 	}
 	privatePath := filepath.Join(a.dir, kid+".pem")
-	if err := key.WritePrivatePEM(privatePath); err != nil {
+	if err := key.WritePrivatePEMExclusive(privatePath); err != nil {
 		return model.SigningKeyMeta{}, err
 	}
 	jwkJSON, err := json.Marshal(NewRSAJWK(key.Kid, key.Alg, key.Public()))
 	if err != nil {
+		_ = os.Remove(privatePath)
 		return model.SigningKeyMeta{}, err
 	}
-	return a.store.AddSigningKeyMeta(ctx, model.SigningKeyMeta{Kid: key.Kid, Alg: key.Alg, PublicJWKJSON: string(jwkJSON), PrivateKeyPath: privatePath, Status: "active"})
+	meta, err := a.store.AddSigningKeyMeta(ctx, model.SigningKeyMeta{Kid: key.Kid, Alg: key.Alg, PublicJWKJSON: string(jwkJSON), PrivateKeyPath: privatePath, Status: "active"})
+	if err != nil {
+		if removeErr := os.Remove(privatePath); removeErr != nil {
+			return model.SigningKeyMeta{}, errors.Join(err, fmt.Errorf("token: cleanup private key: %w", removeErr))
+		}
+		return model.SigningKeyMeta{}, err
+	}
+	return meta, nil
 }
 
 func (a *SigningKeyAdmin) ListKeys(ctx context.Context) ([]model.SigningKeyMeta, error) {

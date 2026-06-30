@@ -2,11 +2,15 @@ package rs256
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/sqlite"
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/model"
 )
 
@@ -115,6 +119,64 @@ func TestSignerValidateReportsMissingActiveKeyAsSigningKeyUnavailable(t *testing
 	}
 	if errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("Validate error should not expose generic ErrNotFound: %v", err)
+	}
+}
+
+func TestGenerateActiveKeyRejectsExistingKidWithoutOverwritingPrivateKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(dir, "db.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	admin := NewSigningKeyAdmin(filepath.Join(dir, "keys"), sqlite.NewCoreStore(st))
+	first, err := admin.GenerateActiveKey(ctx, "kid-a", AlgRS256, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(first.PrivateKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeDigest := sha256.Sum256(before)
+
+	if _, err := admin.GenerateActiveKey(ctx, "kid-a", AlgRS256, 2048); err == nil {
+		t.Fatal("expected duplicate kid to fail")
+	}
+	after, err := os.ReadFile(first.PrivateKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterDigest := sha256.Sum256(after)
+	if beforeDigest != afterDigest {
+		t.Fatal("duplicate GenerateActiveKey overwrote existing private key")
+	}
+}
+
+func TestGenerateActiveKeyRejectsPathTraversalKid(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(dir, "db.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	admin := NewSigningKeyAdmin(filepath.Join(dir, "keys"), sqlite.NewCoreStore(st))
+
+	if _, err := admin.GenerateActiveKey(ctx, "../escape", AlgRS256, 2048); err == nil {
+		t.Fatal("expected path traversal kid to fail")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "escape.pem")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("escape file stat error = %v, want not exist", err)
 	}
 }
 

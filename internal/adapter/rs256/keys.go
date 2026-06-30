@@ -55,6 +55,14 @@ func (k *SigningKey) Public() *rsa.PublicKey {
 // permissions. The private key never enters the database or the JWKS; the
 // filesystem with restrictive mode is the only place it lives.
 func (k *SigningKey) WritePrivatePEM(path string) error {
+	return k.writePrivatePEM(path, false)
+}
+
+func (k *SigningKey) WritePrivatePEMExclusive(path string) error {
+	return k.writePrivatePEM(path, true)
+}
+
+func (k *SigningKey) writePrivatePEM(path string, exclusive bool) error {
 	der, err := x509.MarshalPKCS8PrivateKey(k.Private)
 	if err != nil {
 		return fmt.Errorf("token: marshal private key: %w", err)
@@ -65,12 +73,40 @@ func (k *SigningKey) WritePrivatePEM(path string) error {
 			return fmt.Errorf("token: create key dir: %w", err)
 		}
 	}
-	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+	if !exclusive {
+		if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+			return fmt.Errorf("token: write private key: %w", err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			return fmt.Errorf("token: chmod private key: %w", err)
+		}
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("token: create private key: %w", err)
+	}
+	closeFile := true
+	cleanupFile := true
+	defer func() {
+		if closeFile {
+			_ = f.Close()
+		}
+		if cleanupFile {
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err := f.Write(pem.EncodeToMemory(block)); err != nil {
 		return fmt.Errorf("token: write private key: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("token: chmod private key: %w", err)
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("token: sync private key: %w", err)
 	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("token: close private key: %w", err)
+	}
+	closeFile = false
+	cleanupFile = false
 	return nil
 }
 
