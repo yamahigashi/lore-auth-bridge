@@ -7,18 +7,22 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
+var providerIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Google   GoogleConfig   `yaml:"google"`
-	Database DatabaseConfig `yaml:"database"`
-	JWT      JWTConfig      `yaml:"jwt"`
-	Lore     LoreConfig     `yaml:"lore"`
-	Security SecurityConfig `yaml:"security"`
+	Server            ServerConfig            `yaml:"server"`
+	Google            GoogleConfig            `yaml:"google"`
+	IdentityProviders IdentityProvidersConfig `yaml:"identity_providers"`
+	Database          DatabaseConfig          `yaml:"database"`
+	JWT               JWTConfig               `yaml:"jwt"`
+	Lore              LoreConfig              `yaml:"lore"`
+	Security          SecurityConfig          `yaml:"security"`
 }
 
 type ServerConfig struct {
@@ -39,6 +43,25 @@ type GoogleConfig struct {
 
 func (c GoogleConfig) Enabled() bool {
 	return c.ClientID != "" || c.ClientSecretFile != "" || c.RedirectURL != ""
+}
+
+type IdentityProvidersConfig struct {
+	Default   string                            `yaml:"default"`
+	Providers map[string]IdentityProviderConfig `yaml:"providers"`
+}
+
+type IdentityProviderConfig struct {
+	Type                  string            `yaml:"type"`
+	DisplayName           string            `yaml:"display_name"`
+	Issuer                string            `yaml:"issuer"`
+	ClientID              string            `yaml:"client_id"`
+	ClientSecretFile      string            `yaml:"client_secret_file"`
+	RedirectURL           string            `yaml:"redirect_url"`
+	Scopes                []string          `yaml:"scopes"`
+	ClaimMapping          map[string]string `yaml:"claim_mapping"`
+	AllowedHostedDomains  []string          `yaml:"allowed_hosted_domains"`
+	AllowPersonalAccounts bool              `yaml:"allow_personal_accounts"`
+	AllowedEmailDomains   []string          `yaml:"allowed_email_domains"`
 }
 
 type DatabaseConfig struct {
@@ -109,6 +132,37 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Lore.AuthURL == "" && c.Server.PublicBaseURL != "" {
 		c.Lore.AuthURL = "ucs-auth://" + stripScheme(c.Server.PublicBaseURL)
+	}
+	c.normalizeIdentityProviders()
+	for id, provider := range c.IdentityProviders.Providers {
+		if len(provider.Scopes) == 0 {
+			provider.Scopes = []string{"openid", "email", "profile"}
+			c.IdentityProviders.Providers[id] = provider
+		}
+	}
+}
+
+func (c *Config) normalizeIdentityProviders() {
+	if c.IdentityProviders.Providers == nil {
+		c.IdentityProviders.Providers = map[string]IdentityProviderConfig{}
+	}
+	if c.Google.Enabled() {
+		if _, exists := c.IdentityProviders.Providers["google"]; !exists {
+			c.IdentityProviders.Providers["google"] = IdentityProviderConfig{
+				Type:                  "google_oidc",
+				DisplayName:           "Google",
+				Issuer:                "https://accounts.google.com",
+				ClientID:              c.Google.ClientID,
+				ClientSecretFile:      c.Google.ClientSecretFile,
+				RedirectURL:           c.Google.RedirectURL,
+				Scopes:                []string{"openid", "email", "profile"},
+				AllowedHostedDomains:  append([]string(nil), c.Google.AllowedHostedDomains...),
+				AllowPersonalAccounts: c.Google.AllowPersonalAccounts,
+			}
+		}
+		if c.IdentityProviders.Default == "" {
+			c.IdentityProviders.Default = "google"
+		}
 	}
 }
 
@@ -194,6 +248,64 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: google.redirect_url is required when Google login is configured")
 		}
 	}
+	if err := c.validateIdentityProviders(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Config) validateIdentityProviders() error {
+	if len(c.IdentityProviders.Providers) == 0 {
+		if strings.TrimSpace(c.IdentityProviders.Default) != "" {
+			return fmt.Errorf("config: identity_providers.default must reference a configured provider")
+		}
+		return nil
+	}
+	if c.IdentityProviders.Default == "" {
+		return fmt.Errorf("config: identity_providers.default is required when identity providers are configured")
+	}
+	if _, ok := c.IdentityProviders.Providers[c.IdentityProviders.Default]; !ok {
+		return fmt.Errorf("config: identity_providers.default %q is not configured", c.IdentityProviders.Default)
+	}
+	for id, provider := range c.IdentityProviders.Providers {
+		if !providerIDPattern.MatchString(id) {
+			return fmt.Errorf("config: identity_providers.providers[%q] has an unsafe provider id", id)
+		}
+		if provider.Type == "" {
+			return fmt.Errorf("config: identity_providers.providers[%q].type is required", id)
+		}
+		switch provider.Type {
+		case "google_oidc", "oidc":
+		default:
+			return fmt.Errorf("config: identity_providers.providers[%q].type %q is unknown", id, provider.Type)
+		}
+		if provider.Issuer == "" {
+			return fmt.Errorf("config: identity_providers.providers[%q].issuer is required", id)
+		}
+		if err := validateURL("identity_providers.providers."+id+".issuer", provider.Issuer, "http", "https"); err != nil {
+			return err
+		}
+		if provider.ClientID == "" {
+			return fmt.Errorf("config: identity_providers.providers[%q].client_id is required", id)
+		}
+		if provider.ClientSecretFile == "" {
+			return fmt.Errorf("config: identity_providers.providers[%q].client_secret_file is required", id)
+		}
+		if provider.RedirectURL == "" {
+			return fmt.Errorf("config: identity_providers.providers[%q].redirect_url is required", id)
+		}
+		redirect, err := parseURL("identity_providers.providers."+id+".redirect_url", provider.RedirectURL, "http", "https")
+		if err != nil {
+			return err
+		}
+		expectedPath := "/auth/" + id + "/callback"
+		if redirect.Path != expectedPath && !(id == "google" && provider.Type == "google_oidc" && redirect.Path == "/oauth/google/callback") {
+			return fmt.Errorf("config: identity_providers.providers[%q].redirect_url path must be %q", id, expectedPath)
+		}
+		if !containsString(provider.Scopes, "openid") {
+			return fmt.Errorf("config: identity_providers.providers[%q].scopes must include openid", id)
+		}
+	}
 	return nil
 }
 
@@ -247,6 +359,15 @@ func parseURL(field, value string, allowedSchemes ...string) (*url.URL, error) {
 func containsStringFold(values []string, want string) bool {
 	for _, value := range values {
 		if strings.EqualFold(value, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

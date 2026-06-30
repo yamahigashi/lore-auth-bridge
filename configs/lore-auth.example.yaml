@@ -13,21 +13,44 @@ server:
   grpc_tls_key_file: "/etc/lore-auth/grpc/tls.key"
   public_base_url: "https://auth.example.com"
 
-google:
-  # Optional Google OIDC settings.
-  # Leave these three fields empty when testing with lore-authctl token mint-authn.
-  # Other OIDC providers should be added as separate IdP integrations rather
-  # than making Lore auth Google-specific.
-  client_id: "xxx.apps.googleusercontent.com"
-  # Store the secret itself in this file. Do not put the secret value in YAML.
-  client_secret_file: "/etc/lore-auth/google_client_secret"
-  # Must exactly match an authorized redirect URI in the Google OAuth client.
-  redirect_url: "https://auth.example.com/oauth/google/callback"
-  # Restrict accepted Google accounts by the ID token hd claim.
-  # Leave allowed_hosted_domains empty and allow_personal_accounts true
-  # to allow both Workspace and personal Google accounts after bridge user registration.
-  allowed_hosted_domains: []
-  allow_personal_accounts: true
+identity_providers:
+  # Provider instance IDs are part of the bridge identity key.
+  # Use stable IDs such as google, keycloak-prod, or auth0-main.
+  default: google
+  providers:
+    google:
+      type: google_oidc
+      display_name: "Google"
+      issuer: "https://accounts.google.com"
+      client_id: "xxx.apps.googleusercontent.com"
+      # Store the secret itself in this file. Do not put the secret value in YAML.
+      client_secret_file: "/etc/lore-auth/google_client_secret"
+      # Must exactly match an authorized redirect URI in the Google OAuth client.
+      redirect_url: "https://auth.example.com/auth/google/callback"
+      scopes:
+        - openid
+        - email
+        - profile
+      # Restrict accepted Google accounts by the ID token hd claim.
+      # Leave allowed_hosted_domains empty and allow_personal_accounts true
+      # to allow both Workspace and personal Google accounts after bridge user registration.
+      allowed_hosted_domains: []
+      allow_personal_accounts: true
+
+    # Example for a generic OIDC provider such as Keycloak or Auth0.
+    # keycloak-prod:
+    #   type: oidc
+    #   display_name: "Company SSO"
+    #   issuer: "https://sso.example.com/realms/prod"
+    #   client_id: "lore-auth-bridge"
+    #   client_secret_file: "/etc/lore-auth/keycloak_client_secret"
+    #   redirect_url: "https://auth.example.com/auth/keycloak-prod/callback"
+    #   scopes:
+    #     - openid
+    #     - email
+    #     - profile
+    #   allowed_email_domains:
+    #     - "example.com"
 
 database:
   path: "/var/lib/lore-auth/lore-auth.sqlite3"

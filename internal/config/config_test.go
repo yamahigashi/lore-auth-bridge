@@ -130,6 +130,242 @@ security: {}
 	}
 }
 
+func TestLoadIdentityProvidersConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+identity_providers:
+  default: keycloak-prod
+  providers:
+    google:
+      type: google_oidc
+      display_name: "Google"
+      issuer: "https://accounts.google.com"
+      client_id: "client"
+      client_secret_file: "` + filepath.Join(dir, "google_secret") + `"
+      redirect_url: "https://auth.example.com/auth/google/callback"
+    keycloak-prod:
+      type: oidc
+      display_name: "Company SSO"
+      issuer: "https://sso.example.com/realms/prod"
+      client_id: "lore-auth-bridge"
+      client_secret_file: "` + filepath.Join(dir, "keycloak_secret") + `"
+      redirect_url: "https://auth.example.com/auth/keycloak-prod/callback"
+      scopes: ["openid", "email"]
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.IdentityProviders.Default != "keycloak-prod" {
+		t.Fatalf("default provider = %q", cfg.IdentityProviders.Default)
+	}
+	if got := cfg.IdentityProviders.Providers["google"].Scopes; strings.Join(got, ",") != "openid,email,profile" {
+		t.Fatalf("google default scopes = %#v", got)
+	}
+	if cfg.IdentityProviders.Providers["keycloak-prod"].DisplayName != "Company SSO" {
+		t.Fatalf("missing keycloak provider: %#v", cfg.IdentityProviders.Providers["keycloak-prod"])
+	}
+}
+
+func TestLoadRejectsStaticIdentityProvider(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+identity_providers:
+  default: static
+  providers:
+    static:
+      type: static
+      issuer: "https://auth.example.com/static"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected static identity provider config to fail")
+	}
+	if !strings.Contains(err.Error(), `type "static"`) {
+		t.Fatalf("error = %q, want static provider rejection", err)
+	}
+}
+
+func TestLoadRejectsStaticOnlyIdentityProviderFields(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+identity_providers:
+  default: keycloak-prod
+  providers:
+    keycloak-prod:
+      type: oidc
+      issuer: "https://sso.example.com/realms/prod"
+      client_id: "client"
+      client_secret_file: "` + filepath.Join(dir, "secret") + `"
+      redirect_url: "https://auth.example.com/auth/keycloak-prod/callback"
+      subject: "static-subject"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected static-only provider field to fail")
+	}
+	if !strings.Contains(err.Error(), "field subject not found") {
+		t.Fatalf("error = %q, want unknown subject field", err)
+	}
+}
+
+func TestLoadRejectsLegacyGoogleCallbackForGenericOIDCProvider(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+identity_providers:
+  default: google
+  providers:
+    google:
+      type: oidc
+      issuer: "https://sso.example.com/realms/prod"
+      client_id: "client"
+      client_secret_file: "` + filepath.Join(dir, "secret") + `"
+      redirect_url: "https://auth.example.com/oauth/google/callback"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected generic OIDC provider to reject legacy Google callback path")
+	}
+	if !strings.Contains(err.Error(), `/auth/google/callback`) {
+		t.Fatalf("error = %q, want new callback path context", err)
+	}
+}
+
+func TestLoadLegacyGoogleNormalizesIdentityProvider(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+google:
+  client_id: "client"
+  client_secret_file: "` + filepath.Join(dir, "google_secret") + `"
+  redirect_url: "https://auth.example.com/oauth/google/callback"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.IdentityProviders.Default != "google" {
+		t.Fatalf("default provider = %q, want google", cfg.IdentityProviders.Default)
+	}
+	if cfg.IdentityProviders.Providers["google"].Type != "google_oidc" {
+		t.Fatalf("legacy google provider not normalized: %#v", cfg.IdentityProviders.Providers["google"])
+	}
+}
+
+func TestLoadRejectsUnsafeIdentityProviderID(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+identity_providers:
+  default: "../bad"
+  providers:
+    "../bad":
+      type: oidc
+      issuer: "https://sso.example.com/realms/prod"
+      client_id: "client"
+      client_secret_file: "` + filepath.Join(dir, "secret") + `"
+      redirect_url: "https://auth.example.com/auth/bad/callback"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "identity_providers.providers") {
+		t.Fatalf("error = %v, want identity provider id validation", err)
+	}
+}
+
 func TestLoadRejectsCookieSecretFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
