@@ -52,6 +52,34 @@ func TestExchangeFlow(t *testing.T) {
 	}
 }
 
+func TestExchangeAuthnTokenUsesJTIForNonGoogleSubject(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem, tokenSvc := newTestServer()
+	u := mem.AddTestUser(model.User{
+		Provider: "keycloak-prod",
+		Issuer:   "https://sso.example.com/realms/prod",
+		Subject:  "subject:with:colon",
+		Email:    "alice@example.com",
+	})
+	resource := addGameAssets(mem)
+	mem.Grant(u.ID, resource.ResourceID)
+
+	authn, _, err := tokenSvc.MintAuthn(ctx, "alice@example.com", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdCtx := metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+authn.Token))
+
+	resp, err := srv.ExchangeUserTokenForMultiresourceToken(mdCtx, &pb.ExchangeUserTokenForMultiresourceTokenRequest{ResourceId: []string{resource.ResourceID}})
+	if err != nil {
+		t.Fatalf("exchange failed: %v", err)
+	}
+	if resp.GetToken().GetUserToken() == "" {
+		t.Fatal("empty authz token")
+	}
+}
+
 func TestExchangeRequiresBearer(t *testing.T) {
 	t.Parallel()
 	srv, _, _ := newTestServer()
@@ -74,7 +102,7 @@ func TestExchangeInternalTokenIssueFailureIsInternal(t *testing.T) {
 		AuthServiceAudience: "auth.example.com",
 		AuthnTTL:            time.Hour,
 		AuthzTTL:            15 * time.Minute,
-	}, mem, mem, mem, mem, mem)
+	}, mem, mem, mem, mem, mem, mem)
 	authn, _, err := authnSvc.MintAuthn(ctx, "alice@example.com", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +114,7 @@ func TestExchangeInternalTokenIssueFailureIsInternal(t *testing.T) {
 		AuthServiceAudience: "auth.example.com",
 		AuthnTTL:            time.Hour,
 		AuthzTTL:            15 * time.Minute,
-	}, mem, mem, mem, mem, failingTokenLog{})
+	}, mem, mem, mem, mem, failingTokenLog{}, mem)
 	srv := New(Services{Login: nil, Tokens: tokenSvc, Permissions: service.NewPermissionService(mem, mem)})
 	mdCtx := metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+authn.Token))
 

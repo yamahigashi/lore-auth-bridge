@@ -64,6 +64,7 @@ func TestSignLoreClaimsCanBeDecodedInsecurely(t *testing.T) {
 		Subject:           "google:TEST",
 		Name:              "Test User",
 		PreferredUsername: "test@example.com",
+		IDP:               "google",
 		ResourceID:        "urc-0194b726b34e72b0b45550b88a967076",
 		Permissions:       []string{"read", "write"},
 		Now:               time.Unix(1000, 0).UTC(),
@@ -92,6 +93,67 @@ func TestSignLoreClaimsCanBeDecodedInsecurely(t *testing.T) {
 	}
 }
 
+func TestNewLoreClaimsRejectsMissingIDP(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewLoreClaims(ClaimsOptions{
+		Issuer:      "https://auth.example.com",
+		Audience:    []string{"lore-service", "lore.example.com"},
+		Subject:     "keycloak-prod:TEST",
+		ResourceID:  "urc-0194b726b34e72b0b45550b88a967076",
+		Permissions: []string{"read", "write"},
+	})
+	if err == nil {
+		t.Fatal("expected missing IDP to fail")
+	}
+}
+
+func TestNewAuthnClaimsRejectsMissingIDP(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewAuthnClaims(AuthnOptions{
+		Issuer:   "https://auth.example.com",
+		Audience: []string{"lore-service", "lore.example.com"},
+		Subject:  "keycloak-prod:TEST",
+	})
+	if err == nil {
+		t.Fatal("expected missing IDP to fail")
+	}
+}
+
+func TestNewAuthnAndAuthzClaimsPreserveNonGoogleIDP(t *testing.T) {
+	t.Parallel()
+
+	authn, err := NewAuthnClaims(AuthnOptions{
+		Issuer:   "https://auth.example.com",
+		Audience: []string{"lore-service", "lore.example.com"},
+		Subject:  "keycloak-prod:TEST",
+		IDP:      "keycloak-prod",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authn.IDP != "keycloak-prod" {
+		t.Fatalf("authn idp = %q, want keycloak-prod", authn.IDP)
+	}
+	authz, err := NewAuthzClaims(AuthzOptions{
+		Issuer:   "https://auth.example.com",
+		Audience: []string{"lore-service", "lore.example.com"},
+		Subject:  "keycloak-prod:TEST",
+		IDP:      "keycloak-prod",
+		Resources: []LoreResourcePermission{{
+			ResourceID: "urc-0194b726b34e72b0b45550b88a967076",
+			Permission: []string{"read", "write"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.IDP != "keycloak-prod" {
+		t.Fatalf("authz idp = %q, want keycloak-prod", authz.IDP)
+	}
+}
+
 func TestNewLoreClaimsCanOmitResourcesForNegativeProbe(t *testing.T) {
 	t.Parallel()
 
@@ -99,6 +161,7 @@ func TestNewLoreClaimsCanOmitResourcesForNegativeProbe(t *testing.T) {
 		Issuer:           "https://auth.example.com",
 		Audience:         []string{"lore-service", "lore.example.com"},
 		Subject:          "google:TEST",
+		IDP:              "google",
 		WithoutResources: true,
 	})
 	if err != nil {

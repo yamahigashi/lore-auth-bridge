@@ -75,7 +75,7 @@ func NewService(cfg *config.Config, st *sqlite.Store, tokenSvc ...*service.Token
 			AuthServiceAudience: authServiceAudience,
 			AuthnTTL:            seconds(cfg.JWT.TTLSeconds),
 			AuthzTTL:            15 * time.Minute,
-		}, coreStore, coreStore, authz, rs256.NewSigner(cfg.JWT.ActiveKID, coreStore), coreStore)
+		}, coreStore, coreStore, authz, rs256.NewSigner(cfg.JWT.ActiveKID, coreStore), coreStore, coreStore)
 	}
 	return &Service{cfg: cfg, store: st, acl: casbin.NewService(st), tokens: tokens}
 }

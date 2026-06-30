@@ -90,6 +90,92 @@ func TestPreRegisteredUserBindsVerifiedIdentity(t *testing.T) {
 	}
 }
 
+func TestPreRegisteredUserDoesNotBindAcrossProviderIssuer(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AddPreRegisteredUser(ctx, AddPreRegisteredUserParams{
+		Provider:    "keycloak-prod",
+		Issuer:      "https://sso.example.com/realms/prod",
+		Email:       "Alice@Example.com",
+		DisplayName: "Alice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.BindPreRegisteredIdentity(ctx, model.Identity{
+		Provider:      "google",
+		Issuer:        "https://accounts.google.com",
+		Subject:       "google-sub",
+		Email:         "alice@example.com",
+		EmailVerified: true,
+		Name:          "Alice Example",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("BindPreRegisteredIdentity error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestFindActiveAuthnTokenUserRejectsExpiredAndRevokedTokens(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	user, err := s.AddUser(ctx, AddUserParams{
+		Provider: "keycloak-prod",
+		Issuer:   "https://sso.example.com/realms/prod",
+		Subject:  "subject:with:colon",
+		Email:    "alice@example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	core := NewCoreStore(s)
+	now := UnixNow()
+
+	if err := core.Record(ctx, model.IssuedToken{JTI: "active-jti", Kind: "authn", UserID: user.ID, Kid: "kid", IssuedAt: now, ExpiresAt: now + 60, Audience: []string{"auth.example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := core.Record(ctx, model.IssuedToken{JTI: "expired-jti", Kind: "authn", UserID: user.ID, Kid: "kid", IssuedAt: now - 120, ExpiresAt: now - 60, Audience: []string{"auth.example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := core.Record(ctx, model.IssuedToken{JTI: "revoked-jti", Kind: "authn", UserID: user.ID, Kid: "kid", IssuedAt: now, ExpiresAt: now + 60, Audience: []string{"auth.example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE issued_tokens SET revoked_at = ? WHERE jti = ?`, now, "revoked-jti"); err != nil {
+		t.Fatal(err)
+	}
+
+	active, err := core.FindActiveAuthnTokenUser(ctx, "active-jti")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.ID != user.ID {
+		t.Fatalf("active token user ID = %q, want %q", active.ID, user.ID)
+	}
+	if _, err := core.FindActiveAuthnTokenUser(ctx, "expired-jti"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired token lookup error = %v, want ErrNotFound", err)
+	}
+	if _, err := core.FindActiveAuthnTokenUser(ctx, "revoked-jti"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked token lookup error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestValidateSchemaRejectsUnmigratedDatabase(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

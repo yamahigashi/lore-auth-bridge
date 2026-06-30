@@ -181,6 +181,11 @@ func (s *CoreStore) Record(ctx context.Context, token model.IssuedToken) error {
 	}, token.Kind, string(audJSON))
 }
 
+func (s *CoreStore) FindActiveAuthnTokenUser(ctx context.Context, jti string) (model.User, error) {
+	u, err := s.Store.ActiveAuthnTokenUser(ctx, jti)
+	return toModelUser(u), err
+}
+
 func (s *CoreStore) AddGroup(ctx context.Context, name, description string) (model.Group, error) {
 	g, err := s.Store.AddGroup(ctx, name, description)
 	return toModelGroup(g), err

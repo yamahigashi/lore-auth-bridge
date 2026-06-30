@@ -26,6 +26,7 @@ type Store struct {
 	sessions  map[string]string
 	csrf      map[string]csrfToken
 	tokens    map[string]model.VerifiedToken
+	issued    map[string]model.IssuedToken
 }
 
 type csrfToken struct {
@@ -45,6 +46,7 @@ func New() *Store {
 		sessions:  map[string]string{},
 		csrf:      map[string]csrfToken{},
 		tokens:    map[string]model.VerifiedToken{},
+		issued:    map[string]model.IssuedToken{},
 	}
 }
 
@@ -396,15 +398,18 @@ func hashAuthCode(code string) string {
 }
 
 func (s *Store) SignAuthn(ctx context.Context, input model.AuthnTokenInput) (model.SignedToken, error) {
+	if input.JTI == "" {
+		input.JTI = uuid.NewString()
+	}
 	token := "authn:" + input.Subject + ":" + uuid.NewString()
 	expires := time.Now().Add(input.TTL).Unix()
 	if input.TTL == 0 {
 		expires = time.Now().Add(time.Hour).Unix()
 	}
 	s.mu.Lock()
-	s.tokens[token] = model.VerifiedToken{Subject: input.Subject, ExpiresAt: expires, Audience: append([]string(nil), input.Audience...)}
+	s.tokens[token] = model.VerifiedToken{Subject: input.Subject, JTI: input.JTI, IDP: input.IDP, ExpiresAt: expires, Audience: append([]string(nil), input.Audience...)}
 	s.mu.Unlock()
-	return model.SignedToken{Token: token, JTI: uuid.NewString(), Kid: "memory", IssuedAt: time.Now().Unix(), ExpiresAt: expires, Audience: input.Audience}, nil
+	return model.SignedToken{Token: token, JTI: input.JTI, Kid: "memory", IssuedAt: time.Now().Unix(), ExpiresAt: expires, Audience: input.Audience}, nil
 }
 
 func (s *Store) SignAuthz(ctx context.Context, input model.AuthzTokenInput) (model.SignedToken, error) {
@@ -436,4 +441,23 @@ func (s *Store) JWKS(ctx context.Context) (json.RawMessage, error) {
 	return json.RawMessage(`{"keys":[]}`), nil
 }
 
-func (s *Store) Record(ctx context.Context, token model.IssuedToken) error { return nil }
+func (s *Store) Record(ctx context.Context, token model.IssuedToken) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issued[token.JTI] = token
+	return nil
+}
+
+func (s *Store) FindActiveAuthnTokenUser(ctx context.Context, jti string) (model.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, ok := s.issued[jti]
+	if !ok || token.Kind != "authn" || token.ExpiresAt <= time.Now().Unix() || token.UserID == "" {
+		return model.User{}, model.ErrNotFound
+	}
+	user, ok := s.users[token.UserID]
+	if !ok || user.Status != "active" {
+		return model.User{}, model.ErrNotFound
+	}
+	return user, nil
+}

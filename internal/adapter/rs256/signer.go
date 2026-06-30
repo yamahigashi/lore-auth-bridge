@@ -127,7 +127,7 @@ func (s *Signer) Verify(ctx context.Context, compact string, opts model.VerifyOp
 		return model.VerifiedToken{}, err
 	}
 	raw, _ := json.Marshal(claims)
-	return model.VerifiedToken{Subject: claims.Subject, ExpiresAt: claims.ExpiresAt, Audience: append([]string(nil), claims.Audience...), RawClaims: raw}, nil
+	return model.VerifiedToken{Subject: claims.Subject, JTI: claims.JTI, IDP: claims.IDP, ExpiresAt: claims.ExpiresAt, Audience: append([]string(nil), claims.Audience...), RawClaims: raw}, nil
 }
 
 func (s *Signer) JWKS(ctx context.Context) (json.RawMessage, error) {

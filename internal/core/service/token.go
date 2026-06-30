@@ -20,16 +20,17 @@ type TokenConfig struct {
 }
 
 type TokenService struct {
-	cfg       TokenConfig
-	users     ports.UserDirectory
-	resources ports.ResourceStore
-	authz     ports.AuthorizationPolicy
-	signer    ports.TokenSigner
-	log       ports.IssuedTokenLog
+	cfg         TokenConfig
+	users       ports.UserDirectory
+	resources   ports.ResourceStore
+	authz       ports.AuthorizationPolicy
+	signer      ports.TokenSigner
+	log         ports.IssuedTokenLog
+	authnLookup ports.AuthnTokenLookup
 }
 
-func NewTokenService(cfg TokenConfig, users ports.UserDirectory, resources ports.ResourceStore, authz ports.AuthorizationPolicy, signer ports.TokenSigner, log ports.IssuedTokenLog) *TokenService {
-	return &TokenService{cfg: cfg, users: users, resources: resources, authz: authz, signer: signer, log: log}
+func NewTokenService(cfg TokenConfig, users ports.UserDirectory, resources ports.ResourceStore, authz ports.AuthorizationPolicy, signer ports.TokenSigner, log ports.IssuedTokenLog, authnLookup ports.AuthnTokenLookup) *TokenService {
+	return &TokenService{cfg: cfg, users: users, resources: resources, authz: authz, signer: signer, log: log, authnLookup: authnLookup}
 }
 
 func (s *TokenService) MintAuthn(ctx context.Context, userEmailOrID string, ttl time.Duration) (model.SignedToken, model.User, error) {
@@ -75,11 +76,13 @@ func (s *TokenService) VerifyAuthn(ctx context.Context, bearer string) (model.Ve
 	if err != nil {
 		return model.VerifiedAuthn{}, fmt.Errorf("%w: invalid authn token", model.ErrUnauthenticated)
 	}
-	provider, subject, ok := strings.Cut(verified.Subject, ":")
-	if !ok {
-		return model.VerifiedAuthn{}, fmt.Errorf("%w: authn sub must be provider:subject", model.ErrUnauthenticated)
+	if verified.JTI == "" {
+		return model.VerifiedAuthn{}, fmt.Errorf("%w: authn token missing jti", model.ErrUnauthenticated)
 	}
-	user, err := s.users.FindByIdentity(ctx, provider, issuerForProvider(provider), subject)
+	if s.authnLookup == nil {
+		return model.VerifiedAuthn{}, fmt.Errorf("%w: authn token lookup unavailable", model.ErrUnauthenticated)
+	}
+	user, err := s.authnLookup.FindActiveAuthnTokenUser(ctx, verified.JTI)
 	if err != nil {
 		return model.VerifiedAuthn{}, err
 	}
@@ -179,13 +182,6 @@ func (s *TokenService) authnAudience() []string {
 		out = append(out, s.cfg.AuthServiceAudience)
 	}
 	return out
-}
-
-func issuerForProvider(provider string) string {
-	if provider == "google" {
-		return "https://accounts.google.com"
-	}
-	return provider
 }
 
 func contains(values []string, want string) bool {

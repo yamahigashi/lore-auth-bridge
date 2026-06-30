@@ -56,6 +56,18 @@ func (s *Store) AddIssuedTokenV2(ctx context.Context, p AddIssuedTokenParams, ki
 	return nil
 }
 
+func (s *Store) ActiveAuthnTokenUser(ctx context.Context, jti string) (*User, error) {
+	return s.scanUser(s.db.QueryRowContext(ctx, `
+SELECT u.id, u.provider, u.issuer, u.subject, u.email, u.email_verified, u.display_name, u.picture_url, u.hosted_domain, u.status, u.created_at, u.updated_at, u.last_login_at
+FROM issued_tokens it
+JOIN users u ON u.id = it.user_id
+WHERE it.jti = ?
+  AND it.token_kind = 'authn'
+  AND it.revoked_at IS NULL
+  AND it.expires_at > ?
+  AND u.status = 'active'`, jti, UnixNow()))
+}
+
 // UserResourceGrants returns the Lore resource ids a user can access (writer),
 // resolved from grants (direct and via groups).
 func (s *Store) UserAccessibleRepositories(ctx context.Context, userID string) ([]Repository, error) {

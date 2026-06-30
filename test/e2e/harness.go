@@ -187,7 +187,7 @@ func (h *harness) startBroker() {
 		AuthServiceAudience: "localhost",
 		AuthnTTL:            time.Duration(cfg.JWT.TTLSeconds) * time.Second,
 		AuthzTTL:            15 * time.Minute,
-	}, coreStore, coreStore, authz, signer, coreStore)
+	}, coreStore, coreStore, authz, signer, coreStore, coreStore)
 	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: cfg.Server.PublicBaseURL, SessionTTL: time.Duration(cfg.Security.SessionTTLSeconds) * time.Second}, nil, coreStore, coreStore, tokenSvc)
 	permissionSvc := service.NewPermissionService(coreStore, authz)
 	resourceSvc := service.NewResourceService(coreStore)
@@ -321,7 +321,7 @@ func (h *harness) mintAuthnTokenAudience(userEmailOrID string, audience []string
 		Audience: audience,
 		AuthnTTL: time.Duration(h.cfg.JWT.TTLSeconds) * time.Second,
 		AuthzTTL: 15 * time.Minute,
-	}, coreStore, coreStore, authz, rs256.NewSigner(h.cfg.JWT.ActiveKID, coreStore), coreStore)
+	}, coreStore, coreStore, authz, rs256.NewSigner(h.cfg.JWT.ActiveKID, coreStore), coreStore, coreStore)
 	res, _, err := tokenSvc.MintAuthn(context.Background(), userEmailOrID, 0)
 	if err != nil {
 		h.t.Fatalf("mint authn token: %v", err)

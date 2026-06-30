@@ -16,7 +16,7 @@ func newTestServer() (*Server, *memory.Store, *service.TokenService) {
 		AuthServiceAudience: "auth.example.com",
 		AuthnTTL:            time.Hour,
 		AuthzTTL:            15 * time.Minute,
-	}, mem, mem, mem, mem, mem)
+	}, mem, mem, mem, mem, mem, mem)
 	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: "https://auth.example.com", SessionTTL: 10 * time.Minute}, nil, mem, mem, tokenSvc)
 	permissionSvc := service.NewPermissionService(mem, mem)
 	return New(Services{Login: loginSvc, Tokens: tokenSvc, Permissions: permissionSvc}), mem, tokenSvc

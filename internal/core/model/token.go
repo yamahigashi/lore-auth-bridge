@@ -43,6 +43,8 @@ type SignedToken struct {
 
 type VerifiedToken struct {
 	Subject   string
+	JTI       string
+	IDP       string
 	ExpiresAt int64
 	Audience  []string
 	RawClaims json.RawMessage

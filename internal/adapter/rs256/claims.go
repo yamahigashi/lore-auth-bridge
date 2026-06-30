@@ -83,7 +83,7 @@ func NewLoreClaims(opts ClaimsOptions) (LoreClaims, error) {
 		opts.Env = DefaultEnv
 	}
 	if opts.IDP == "" {
-		opts.IDP = "google"
+		return LoreClaims{}, errors.New("token: idp must not be empty")
 	}
 	if opts.Name == "" {
 		opts.Name = opts.Subject
@@ -167,7 +167,7 @@ func NewAuthnClaims(opts AuthnOptions) (LoreClaims, error) {
 		opts.Env = DefaultEnv
 	}
 	if opts.IDP == "" {
-		opts.IDP = "google"
+		return LoreClaims{}, errors.New("token: idp must not be empty")
 	}
 	if opts.Name == "" {
 		opts.Name = opts.Subject
