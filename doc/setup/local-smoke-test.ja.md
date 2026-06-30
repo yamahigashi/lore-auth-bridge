@@ -70,13 +70,6 @@ server:
   grpc_tls_key_file: ".manual/grpc/tls.key"
   public_base_url: "http://localhost:8080"
 
-google:
-  client_id: ""
-  client_secret_file: ""
-  redirect_url: ""
-  allowed_hosted_domains: []
-  allow_personal_accounts: true
-
 database:
   path: ".manual/lore-auth.sqlite3"
 

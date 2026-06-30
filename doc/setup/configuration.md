@@ -135,26 +135,58 @@ In that topology, also restrict `/ucs.auth.RebacApi/*` at the reverse proxy to t
 
 Configure rate limiting for public endpoints at the reverse proxy or load balancer.
 
-The relevant endpoints are `/api/device/start`, `/api/device/token`, `/oauth/google/start`, and the gRPC `/epic_urc.UrcAuthApi/StartAuthSession`.
+The relevant endpoints are `/api/device/start`, `/api/device/token`, `/auth/{provider}/start`, `/oauth/google/start`, and the gRPC `/epic_urc.UrcAuthApi/StartAuthSession`.
 
 Device flow and OAuth start endpoints are reachable by anonymous callers, so limit them by IP, forwarded client IP, or edge identity.
 
-## google
+## identity_providers
 
 ```yaml
-google:
-  client_id: ""
-  client_secret_file: ""
-  redirect_url: ""
-  allowed_hosted_domains: []
-  allow_personal_accounts: true
+identity_providers:
+  default: google
+  providers:
+    google:
+      type: google_oidc
+      display_name: "Google"
+      issuer: "https://accounts.google.com"
+      client_id: "xxx.apps.googleusercontent.com"
+      client_secret_file: "/etc/lore-auth/google_client_secret"
+      redirect_url: "https://auth.example.com/auth/google/callback"
+      scopes:
+        - openid
+        - email
+        - profile
+      allowed_hosted_domains: []
+      allow_personal_accounts: true
+
+    keycloak-prod:
+      type: oidc
+      display_name: "Company SSO"
+      issuer: "https://sso.example.com/realms/prod"
+      client_id: "lore-auth-bridge"
+      client_secret_file: "/etc/lore-auth/keycloak_client_secret"
+      redirect_url: "https://auth.example.com/auth/keycloak-prod/callback"
+      scopes:
+        - openid
+        - email
+        - profile
+      allowed_email_domains:
+        - "example.com"
 ```
 
-`google` configures Google OIDC.
+`identity_providers` configures one or more login identity provider instances.
 
-It does not make the whole OIDC design Google-specific.
+`default` must reference a key under `providers`.
 
-If you do not use Google OIDC and only issue authn tokens with `lore-authctl token mint-authn`, `client_id`, `client_secret_file`, and `redirect_url` may be empty.
+The provider key, such as `google` or `keycloak-prod`, is stored as the bridge identity provider instance ID.
+
+Do not use a generic value like `oidc` as the provider key if multiple issuers or tenants may exist.
+
+For OIDC providers, `redirect_url` must use `/auth/{provider}/callback`.
+
+The old top-level `google:` section is still read for compatibility and is normalized internally to `identity_providers.providers.google`.
+
+New configuration should use `identity_providers`.
 
 See [Google OIDC](google-oidc.md) for concrete Google settings.
 
@@ -165,3 +197,11 @@ When set, logins whose `hd` claim is not in the list are rejected.
 `allow_personal_accounts` controls whether personal Google accounts without an `hd` claim are allowed.
 
 If `allowed_hosted_domains` is empty and `allow_personal_accounts: true`, the bridge allows both registered Workspace accounts and registered personal Google accounts.
+
+`allowed_email_domains` restricts generic OIDC logins by the verified email domain after ID token validation.
+
+When `allowed_email_domains` is set, the ID token must include `email_verified: true`.
+
+The generic OIDC adapter always uses the ID token `sub` claim as the persistent subject.
+
+Do not use email, preferred username, or UPN claims as the persistent identity subject.

@@ -62,20 +62,20 @@ Register the exact bridge callback URL in Authorized redirect URIs.
 For local use, register:
 
 ```text
-http://localhost:8080/oauth/google/callback
+http://localhost:8080/auth/google/callback
 ```
 
 For production, use the public URL.
 
 ```text
-https://auth.example.com/oauth/google/callback
+https://auth.example.com/auth/google/callback
 ```
 
-Set the displayed Client ID as `google.client_id`.
+Set the displayed Client ID as `identity_providers.providers.google.client_id`.
 
-Save the Client secret to a file and set that path as `google.client_secret_file`.
+Save the Client secret to a file and set that path as `identity_providers.providers.google.client_secret_file`.
 
-The Authorized redirect URI in Google Cloud and `google.redirect_url` in the bridge config must be the same string.
+The Authorized redirect URI in Google Cloud and `identity_providers.providers.google.redirect_url` in the bridge config must be the same string.
 
 Callback handling fails if the scheme, host, port, path, or trailing slash differs.
 
@@ -87,12 +87,19 @@ For local Google OIDC verification, use settings like these:
 server:
   public_base_url: "http://localhost:8080"
 
-google:
-  client_id: "<Google OAuth Client ID>"
-  client_secret_file: ".manual/google_client_secret"
-  redirect_url: "http://localhost:8080/oauth/google/callback"
-  allowed_hosted_domains: []
-  allow_personal_accounts: true
+identity_providers:
+  default: google
+  providers:
+    google:
+      type: google_oidc
+      display_name: "Google"
+      issuer: "https://accounts.google.com"
+      client_id: "<Google OAuth Client ID>"
+      client_secret_file: ".manual/google_client_secret"
+      redirect_url: "http://localhost:8080/auth/google/callback"
+      scopes: [openid, email, profile]
+      allowed_hosted_domains: []
+      allow_personal_accounts: true
 ```
 
 Do not write the Client secret directly into YAML.
@@ -110,13 +117,20 @@ In production, use an HTTPS public URL.
 server:
   public_base_url: "https://auth.example.com"
 
-google:
-  client_id: "<Google OAuth Client ID>"
-  client_secret_file: "/etc/lore-auth/google_client_secret"
-  redirect_url: "https://auth.example.com/oauth/google/callback"
-  allowed_hosted_domains:
-    - "example.com"
-  allow_personal_accounts: false
+identity_providers:
+  default: google
+  providers:
+    google:
+      type: google_oidc
+      display_name: "Google"
+      issuer: "https://accounts.google.com"
+      client_id: "<Google OAuth Client ID>"
+      client_secret_file: "/etc/lore-auth/google_client_secret"
+      redirect_url: "https://auth.example.com/auth/google/callback"
+      scopes: [openid, email, profile]
+      allowed_hosted_domains:
+        - "example.com"
+      allow_personal_accounts: false
 ```
 
 `allowed_hosted_domains` is the set of Workspace domains allowed through the Google ID token `hd` claim.
@@ -136,6 +150,7 @@ Usually, an administrator registers the target user's email.
 ```bash
 go run ./cmd/lore-authctl user invite \
   --config .manual/lore-auth.yaml \
+  --idp google \
   --email '<Google email>' \
   --name '<display name>'
 ```
@@ -153,15 +168,16 @@ An administrator can register the user with that `issuer` and `subject`.
 ```bash
 go run ./cmd/lore-authctl user add \
   --config .manual/lore-auth.yaml \
-  --provider google \
-  --issuer '<issuer from whoami>' \
+  --idp google \
   --subject '<subject from whoami>' \
   --email '<Google email>' \
   --email-verified \
   --name '<display name>'
 ```
 
-Google's issuer is normally `https://accounts.google.com`, but use the exact value shown on the whoami page.
+Google's issuer is normally `https://accounts.google.com`.
+
+If the whoami page shows a different issuer, fix `identity_providers.providers.google.issuer` before registering the user.
 
 After registration, open `/login` again to create the bridge browser session.
 
@@ -183,10 +199,10 @@ If no registered user matches, the bridge does not issue a token and displays th
 
 ## Common Failures
 
-If `redirect_uri_mismatch` appears, check that the Authorized redirect URI in Google Cloud exactly matches `google.redirect_url`.
+If `redirect_uri_mismatch` appears, check that the Authorized redirect URI in Google Cloud exactly matches `identity_providers.providers.google.redirect_url`.
 
 If login is rejected while an External app is in testing mode, check that the Google account used for login is listed in test users.
 
-If any of `google.client_id`, `google.client_secret_file`, or `google.redirect_url` is empty, Google login is not enabled.
+If any of `identity_providers.providers.google.client_id`, `identity_providers.providers.google.client_secret_file`, or `identity_providers.providers.google.redirect_url` is empty, Google login is not enabled.
 
-If only CLI-issued authn tokens are used, Google OIDC settings may stay empty.
+If only CLI-issued authn tokens are used, omit the Google provider from `identity_providers`.

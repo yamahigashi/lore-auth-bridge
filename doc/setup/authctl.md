@@ -45,6 +45,7 @@ When Google OIDC is enabled, an administrator can preregister a user by Google a
 ```bash
 go run ./cmd/lore-authctl user invite \
   --config "$CONFIG" \
+  --idp google \
   --email alice@example.com \
   --name "Alice Example"
 ```
@@ -52,6 +53,10 @@ go run ./cmd/lore-authctl user invite \
 This registration alone does not issue a token.
 
 When the user opens `/login` and Google returns an `email_verified=true` email that matches the invitation, that login becomes usable.
+
+`--idp` reads the provider instance from `identity_providers.providers` and fills the stored provider ID and issuer.
+
+When `identity_providers` is configured, `user invite` requires `--idp`.
 
 ## user add
 
@@ -68,7 +73,11 @@ go run ./cmd/lore-authctl user add \
 
 The `provider`, `issuer`, and `subject` values in this example are for local verification.
 
-When explicitly registering a Google OIDC subject for real login, use the `issuer` and `subject` shown on the whoami page.
+Use direct `--provider` and `--issuer` only for token-only configs that do not define `identity_providers`.
+
+When explicitly registering a Google OIDC subject for real login, prefer `--idp google --subject <subject>`.
+
+When `identity_providers` is configured, `user add` requires `--idp`.
 
 ## user list
 
