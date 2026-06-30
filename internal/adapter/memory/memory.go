@@ -22,6 +22,7 @@ type Store struct {
 	resources map[string]model.Resource
 	grants    map[string]map[string]string
 	auth      map[string]model.AuthSession
+	login     map[string]model.LoginState
 	nonces    map[string]string
 	sessions  map[string]string
 	csrf      map[string]csrfToken
@@ -42,6 +43,7 @@ func New() *Store {
 		resources: map[string]model.Resource{},
 		grants:    map[string]map[string]string{},
 		auth:      map[string]model.AuthSession{},
+		login:     map[string]model.LoginState{},
 		nonces:    map[string]string{},
 		sessions:  map[string]string{},
 		csrf:      map[string]csrfToken{},
@@ -336,6 +338,27 @@ func (s *Store) ConsumeAuthSession(ctx context.Context, id string) error {
 		}
 	}
 	return model.ErrNotFound
+}
+
+func (s *Store) CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (string, model.LoginState, error) {
+	state := uuid.NewString()
+	loginState := model.LoginState{ID: uuid.NewString(), ProviderID: input.ProviderID, Nonce: input.Nonce, LoginURLNonce: input.LoginURLNonce, ReturnPath: input.ReturnPath, ExpiresAt: time.Now().Add(ttl).Unix()}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.login[hashAuthCode(state)] = loginState
+	return state, loginState, nil
+}
+
+func (s *Store) ConsumeLoginState(ctx context.Context, state string) (model.LoginState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := hashAuthCode(state)
+	loginState, ok := s.login[key]
+	if !ok || loginState.ExpiresAt <= time.Now().Unix() {
+		return model.LoginState{}, model.ErrNotFound
+	}
+	delete(s.login, key)
+	return loginState, nil
 }
 
 func (s *Store) CreateBrowserSession(ctx context.Context, userID string, ttl time.Duration) (model.BrowserSession, error) {

@@ -9,6 +9,22 @@ type AuthSession struct {
 	ExpiresAt       int64
 }
 
+type LoginStateInput struct {
+	ProviderID    string
+	Nonce         string
+	LoginURLNonce string
+	ReturnPath    string
+}
+
+type LoginState struct {
+	ID            string
+	ProviderID    string
+	Nonce         string
+	LoginURLNonce string
+	ReturnPath    string
+	ExpiresAt     int64
+}
+
 type BrowserSession struct {
 	ID        string
 	UserID    string

@@ -141,6 +141,16 @@ func (s *CoreStore) GetAuthSessionByNonce(ctx context.Context, nonce string) (mo
 	return modelSession, nil
 }
 
+func (s *CoreStore) CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (string, model.LoginState, error) {
+	state, loginState, err := s.Store.CreateLoginState(ctx, CreateLoginStateParams{ProviderID: input.ProviderID, Nonce: input.Nonce, LoginURLNonce: input.LoginURLNonce, ReturnPath: input.ReturnPath, TTLSeconds: int(ttl.Seconds())})
+	return state, toModelLoginState(loginState), err
+}
+
+func (s *CoreStore) ConsumeLoginState(ctx context.Context, state string) (model.LoginState, error) {
+	loginState, err := s.Store.ConsumeLoginState(ctx, state)
+	return toModelLoginState(loginState), err
+}
+
 func (s *CoreStore) CreateBrowserSession(ctx context.Context, userID string, ttl time.Duration) (model.BrowserSession, error) {
 	sess, err := s.Store.CreateSession(ctx, userID, int(ttl.Seconds()))
 	return toModelBrowserSession(sess), err
@@ -280,6 +290,13 @@ func toModelAuthSession(s *AuthSession) model.AuthSession {
 		return model.AuthSession{}
 	}
 	return model.AuthSession{ID: s.ID, ClientStateHash: s.ClientStateHash, Status: s.Status, UserID: s.UserID.String, LoginURLNonce: s.LoginURLNonce, ExpiresAt: s.ExpiresAt}
+}
+
+func toModelLoginState(s *LoginState) model.LoginState {
+	if s == nil {
+		return model.LoginState{}
+	}
+	return model.LoginState{ID: s.ID, ProviderID: s.ProviderID, Nonce: s.Nonce.String, LoginURLNonce: s.LoginURLNonce.String, ReturnPath: s.ReturnPath.String, ExpiresAt: s.ExpiresAt}
 }
 
 func toModelBrowserSession(s *Session) model.BrowserSession {

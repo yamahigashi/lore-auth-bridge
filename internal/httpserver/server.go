@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/config"
@@ -26,6 +27,7 @@ const (
 	stateCookieName    = "lore_oauth_state"
 	loginSessionCookie = "lore_login_session"
 	maxJSONBodyBytes   = 64 * 1024
+	loginStateTTL      = 10 * time.Minute
 )
 
 type Server struct {
@@ -75,7 +77,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	s.mux.HandleFunc("GET /", s.handleIndex)
 	s.mux.HandleFunc("GET /login", s.handleLogin)
-	s.mux.HandleFunc("GET /oauth/google/start", s.handleLogin)
+	s.mux.HandleFunc("GET /auth/{provider}/start", s.handleAuthStart)
+	s.mux.HandleFunc("GET /auth/{provider}/callback", s.handleAuthCallback)
+	s.mux.HandleFunc("GET /oauth/google/start", s.handleGoogleStart)
 	s.mux.HandleFunc("GET /oauth/google/callback", s.handleGoogleCallback)
 	s.mux.HandleFunc("GET /login/session/{nonce}", s.handleLoginSession)
 	s.mux.HandleFunc("GET /whoami", s.handleWhoami)
@@ -121,30 +125,31 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if s.login == nil {
-		http.Error(w, "google login not configured", http.StatusServiceUnavailable)
+		http.Error(w, "identity provider login not configured", http.StatusServiceUnavailable)
 		return
 	}
-	state, err := randomURLString(32)
-	if err != nil {
-		slog.Error("oauth state generation failed", "error", err)
-		http.Error(w, "state failed", http.StatusInternalServerError)
+	if providerID := r.URL.Query().Get("provider"); providerID != "" {
+		http.Redirect(w, r, authStartPath(providerID, ""), http.StatusFound)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: stateCookieName, Value: state, Path: "/", HttpOnly: true, Secure: isSecure(r), SameSite: http.SameSiteLaxMode, MaxAge: 600})
-	url, err := s.login.AuthCodeURL(state)
-	if err != nil {
-		http.Error(w, "google login not configured", http.StatusServiceUnavailable)
+	providers := s.login.Providers()
+	if len(providers) == 0 {
+		http.Error(w, "identity provider login not configured", http.StatusServiceUnavailable)
 		return
 	}
-	http.Redirect(w, r, url, http.StatusFound)
+	if len(providers) == 1 {
+		http.Redirect(w, r, authStartPath(providers[0].ID, ""), http.StatusFound)
+		return
+	}
+	renderProviderPicker(w, providers, "")
 }
 
 // handleLoginSession ties a CLI-initiated interactive login (StartAuthSession)
-// to the browser Google login. It records the session nonce in a cookie and
-// starts the OAuth flow; on successful callback the session is completed.
+// to the selected identity provider. The OAuth state binds the provider and
+// login nonce, so the callback does not trust browser cookies for that link.
 func (s *Server) handleLoginSession(w http.ResponseWriter, r *http.Request) {
 	if s.login == nil {
-		http.Error(w, "google login not configured", http.StatusServiceUnavailable)
+		http.Error(w, "identity provider login not configured", http.StatusServiceUnavailable)
 		return
 	}
 	nonce := r.PathValue("nonce")
@@ -157,48 +162,108 @@ func (s *Server) handleLoginSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown or expired login session", http.StatusNotFound)
 		return
 	}
-	state, err := randomURLString(32)
+	if providerID := r.URL.Query().Get("provider"); providerID != "" {
+		http.Redirect(w, r, authStartPath(providerID, nonce), http.StatusFound)
+		return
+	}
+	providers := s.login.Providers()
+	if len(providers) == 0 {
+		http.Error(w, "identity provider login not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if len(providers) == 1 {
+		http.Redirect(w, r, authStartPath(providers[0].ID, nonce), http.StatusFound)
+		return
+	}
+	renderProviderPicker(w, providers, nonce)
+}
+
+func (s *Server) handleAuthStart(w http.ResponseWriter, r *http.Request) {
+	s.startAuthProvider(w, r, r.PathValue("provider"))
+}
+
+func (s *Server) handleGoogleStart(w http.ResponseWriter, r *http.Request) {
+	s.startAuthProvider(w, r, "google")
+}
+
+func (s *Server) startAuthProvider(w http.ResponseWriter, r *http.Request, providerID string) {
+	if s.login == nil {
+		http.Error(w, "identity provider login not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.login.HasProvider(providerID) {
+		http.Error(w, "unknown identity provider", http.StatusNotFound)
+		return
+	}
+	loginNonce := r.URL.Query().Get("login_nonce")
+	if loginNonce != "" {
+		if _, err := s.state.GetAuthSessionByNonce(r.Context(), loginNonce); err != nil {
+			if !errors.Is(err, model.ErrNotFound) {
+				slog.Error("login session lookup failed", "error", err)
+				http.Error(w, "login session unavailable", http.StatusInternalServerError)
+				return
+			}
+			http.Error(w, "unknown or expired login session", http.StatusNotFound)
+			return
+		}
+	}
+	nonce, err := randomURLToken(32)
 	if err != nil {
-		slog.Error("oauth state generation failed", "route", "/login/session/{nonce}", "error", err)
+		slog.Error("oidc nonce generation failed", "provider", providerID, "error", err)
 		http.Error(w, "state failed", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: stateCookieName, Value: state, Path: "/", HttpOnly: true, Secure: isSecure(r), SameSite: http.SameSiteLaxMode, MaxAge: 600})
-	http.SetCookie(w, &http.Cookie{Name: loginSessionCookie, Value: nonce, Path: "/", HttpOnly: true, Secure: isSecure(r), SameSite: http.SameSiteLaxMode, MaxAge: 600})
-	url, err := s.login.AuthCodeURL(state)
+	state, _, err := s.state.CreateLoginState(r.Context(), model.LoginStateInput{ProviderID: providerID, Nonce: nonce, LoginURLNonce: loginNonce}, loginStateTTL)
 	if err != nil {
-		http.Error(w, "google login not configured", http.StatusServiceUnavailable)
+		slog.Error("oauth state generation failed", "provider", providerID, "error", err)
+		http.Error(w, "state failed", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, url, http.StatusFound)
+	res, err := s.login.BeginAuth(r.Context(), providerID, ports.BeginAuthRequest{State: state, Nonce: nonce, RedirectURL: s.authCallbackURL(providerID)})
+	if err != nil {
+		writeLoginProviderError(w, err)
+		return
+	}
+	http.Redirect(w, r, res.RedirectURL, http.StatusFound)
+}
+
+func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	s.completeAuthProvider(w, r, r.PathValue("provider"))
 }
 
 func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
+	s.completeAuthProvider(w, r, "google")
+}
+
+func (s *Server) completeAuthProvider(w http.ResponseWriter, r *http.Request, providerID string) {
 	if s.login == nil {
-		http.Error(w, "google login not configured", http.StatusServiceUnavailable)
+		http.Error(w, "identity provider login not configured", http.StatusServiceUnavailable)
 		return
 	}
-	stateCookie, err := r.Cookie(stateCookieName)
-	if err != nil || stateCookie.Value == "" || stateCookie.Value != r.URL.Query().Get("state") {
+	state := r.URL.Query().Get("state")
+	loginState, err := s.state.ConsumeLoginState(r.Context(), state)
+	if err != nil || state == "" {
+		http.Error(w, "invalid oauth state", http.StatusBadRequest)
+		return
+	}
+	if loginState.ProviderID != providerID {
 		http.Error(w, "invalid oauth state", http.StatusBadRequest)
 		return
 	}
 	clearCookie(w, stateCookieName)
-	loginNonce := ""
-	if c, err := r.Cookie(loginSessionCookie); err == nil && c.Value != "" {
-		loginNonce = c.Value
-	}
-	res, err := s.login.CompleteOAuthCallback(r.Context(), r.URL.Query().Get("code"), loginNonce)
+	res, err := s.login.CompleteAuth(r.Context(), providerID, ports.CompleteAuthRequest{Code: r.URL.Query().Get("code"), State: state, Nonce: loginState.Nonce, RedirectURL: s.authCallbackURL(providerID), Params: r.URL.Query()}, loginState.LoginURLNonce)
 	if err != nil {
 		switch {
 		case errors.Is(err, model.ErrUnsupported):
-			http.Error(w, "google login not configured", http.StatusServiceUnavailable)
+			http.Error(w, "identity provider login not configured", http.StatusServiceUnavailable)
+		case errors.Is(err, model.ErrNotFound):
+			http.Error(w, "unknown identity provider", http.StatusNotFound)
 		case errors.Is(err, model.ErrPermissionDenied):
 			http.Error(w, "login forbidden", http.StatusForbidden)
 		case errors.Is(err, model.ErrUnauthenticated):
-			http.Error(w, "google login failed", http.StatusUnauthorized)
+			http.Error(w, "identity provider login failed", http.StatusUnauthorized)
 		default:
-			slog.Error("google callback failed", "error", err)
+			slog.Error("identity provider callback failed", "provider", providerID, "error", err)
 			http.Error(w, "login unavailable", http.StatusInternalServerError)
 		}
 		return
@@ -215,6 +280,14 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: res.BrowserSession.ID, Path: "/", HttpOnly: true, Secure: isSecure(r), SameSite: http.SameSiteLaxMode, Expires: time.Unix(res.BrowserSession.ExpiresAt, 0)})
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func randomURLToken(byteLen int) (string, error) {
+	raw := make([]byte, byteLen)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func (s *Server) handleTokenPage(w http.ResponseWriter, r *http.Request) {
@@ -238,19 +311,24 @@ func (s *Server) handleTokenPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "repositories unavailable", http.StatusInternalServerError)
 		return
 	}
+	resources, err := s.resources.List(r.Context())
+	if err != nil {
+		slog.Error("repository list failed", "route", "/tokens", "error", err)
+		http.Error(w, "repositories unavailable", http.StatusInternalServerError)
+		return
+	}
+	resourcesByID := make(map[string]model.Resource, len(resources))
+	for _, resource := range resources {
+		resourcesByID[resource.ResourceID] = resource
+	}
 	repos := make([]model.Resource, 0, len(accessible))
 	for _, perm := range accessible {
 		if !hasPermission(perm.Permission, model.PermissionWrite) {
 			continue
 		}
-		resource, err := s.resources.Get(r.Context(), perm.ResourceID)
-		if err != nil {
-			if errors.Is(err, model.ErrNotFound) {
-				continue
-			}
-			slog.Error("repository lookup failed", "route", "/tokens", "resource_id", perm.ResourceID, "error", err)
-			http.Error(w, "repositories unavailable", http.StatusInternalServerError)
-			return
+		resource, ok := resourcesByID[perm.ResourceID]
+		if !ok {
+			continue
 		}
 		repos = append(repos, resource)
 	}
@@ -528,6 +606,18 @@ func writeTokenIssueError(w http.ResponseWriter, err error) {
 	}
 }
 
+func writeLoginProviderError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, model.ErrUnsupported):
+		http.Error(w, "identity provider login not configured", http.StatusServiceUnavailable)
+	case errors.Is(err, model.ErrNotFound):
+		http.Error(w, "unknown identity provider", http.StatusNotFound)
+	default:
+		slog.Error("identity provider start failed", "error", err)
+		http.Error(w, "login unavailable", http.StatusInternalServerError)
+	}
+}
+
 func writeDeviceError(w http.ResponseWriter, operation string, err error) {
 	switch {
 	case errors.Is(err, device.ErrInvalidCode):
@@ -576,6 +666,34 @@ func renderWhoami(w http.ResponseWriter, id model.Identity) {
 	_ = whoamiTemplate.Execute(w, id)
 }
 
+func renderProviderPicker(w http.ResponseWriter, providers []ports.IdentityProviderDescriptor, loginNonce string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = providerPickerTemplate.Execute(w, struct {
+		Providers  []ports.IdentityProviderDescriptor
+		LoginNonce string
+	}{Providers: providers, LoginNonce: loginNonce})
+}
+
+func authStartPath(providerID, loginNonce string) string {
+	path := "/auth/" + url.PathEscape(providerID) + "/start"
+	if loginNonce == "" {
+		return path
+	}
+	return path + "?login_nonce=" + url.QueryEscape(loginNonce)
+}
+
+func (s *Server) authCallbackURL(providerID string) string {
+	base := strings.TrimRight(s.cfg.Server.PublicBaseURL, "/")
+	return base + "/auth/" + url.PathEscape(providerID) + "/callback"
+}
+
+var providerPickerTemplate = template.Must(template.New("provider-picker").Parse(`<h1>Choose identity provider</h1>
+<ul>
+{{range .Providers}}
+  <li><a href="/auth/{{.ID}}/start{{if $.LoginNonce}}?login_nonce={{$.LoginNonce}}{{end}}">{{if .DisplayName}}{{.DisplayName}}{{else}}{{.ID}}{{end}}</a></li>
+{{end}}
+</ul>`))
+
 var tokenPageTemplate = template.Must(template.New("tokens").Parse(`<h1>Issue Lore token</h1>
 <p>User: {{.User.Email}}</p>
 <form method="post" action="/tokens/mint">
@@ -606,7 +724,7 @@ var deviceConfirmTemplate = template.Must(template.New("device-confirm").Parse(`
   <button type="submit">Approve</button>
 </form>`))
 
-var whoamiTemplate = template.Must(template.New("whoami").Parse(`<h1>Google identity</h1>
+var whoamiTemplate = template.Must(template.New("whoami").Parse(`<h1>Identity</h1>
 <dl>
   <dt>issuer</dt><dd>{{.Issuer}}</dd>
   <dt>subject</dt><dd>{{.Subject}}</dd>
@@ -617,13 +735,6 @@ var whoamiTemplate = template.Must(template.New("whoami").Parse(`<h1>Google iden
 </dl>
 <p>Ask the administrator to invite this email or register this issuer and subject. No Lore token was issued.</p>`))
 
-func randomURLString(n int) (string, error) {
-	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
 func clearCookie(w http.ResponseWriter, name string) {
 	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }

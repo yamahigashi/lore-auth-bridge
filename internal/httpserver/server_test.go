@@ -6,28 +6,49 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/idpregistry"
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/memory"
 	"github.com/yamahigashi/lore-auth-bridge/internal/config"
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/model"
+	"github.com/yamahigashi/lore-auth-bridge/internal/core/ports"
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/service"
 	"github.com/yamahigashi/lore-auth-bridge/internal/device"
 )
 
-type fakeIDP struct{ id model.Identity }
-
-func (f fakeIDP) AuthCodeURL(state string) string {
-	return "https://accounts.google.com/o/oauth2/v2/auth?state=" + state
+type fakeIDP struct {
+	descriptor ports.IdentityProviderDescriptor
+	authURL    string
+	id         model.Identity
 }
 
-func (f fakeIDP) ExchangeAndVerify(ctx context.Context, code string) (model.Identity, error) {
+func (f fakeIDP) Descriptor() ports.IdentityProviderDescriptor {
+	if f.descriptor.ID != "" {
+		return f.descriptor
+	}
+	return ports.IdentityProviderDescriptor{ID: "google", Type: "google_oidc", DisplayName: "Google", Issuer: "https://accounts.google.com"}
+}
+
+func (f fakeIDP) BeginAuth(ctx context.Context, req ports.BeginAuthRequest) (ports.BeginAuthResult, error) {
+	authURL := f.authURL
+	if authURL == "" {
+		authURL = "https://accounts.google.com/o/oauth2/v2/auth"
+	}
+	values := url.Values{}
+	values.Set("state", req.State)
+	if req.Nonce != "" {
+		values.Set("nonce", req.Nonce)
+	}
+	return ports.BeginAuthResult{RedirectURL: authURL + "?" + values.Encode()}, nil
+}
+
+func (f fakeIDP) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.Identity, error) {
 	return f.id, nil
 }
-
-func (f fakeIDP) Issuer() string { return "https://accounts.google.com" }
 
 type fakeDevice struct {
 	startErr     error
@@ -61,6 +82,10 @@ func (d fakeDevice) Token(ctx context.Context, deviceCode string) (*device.Token
 }
 
 func newHTTPTestServer(cfg *config.Config, idp fakeIDP) (*Server, *memory.Store) {
+	return newHTTPTestServerWithIDPs(cfg, idp)
+}
+
+func newHTTPTestServerWithIDPs(cfg *config.Config, providers ...fakeIDP) (*Server, *memory.Store) {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -72,14 +97,24 @@ func newHTTPTestServer(cfg *config.Config, idp fakeIDP) (*Server, *memory.Store)
 	cfg.Lore.DefaultRemoteURL = "lore://lore.example.com:41337"
 	cfg.Security.SessionTTLSeconds = 3600
 	mem := memory.New()
+	defaultID := ""
+	if len(providers) > 0 {
+		defaultID = providers[0].Descriptor().ID
+	}
+	idps := idpregistry.New(defaultID)
+	for _, provider := range providers {
+		if err := idps.Register(provider); err != nil {
+			panic(err)
+		}
+	}
 	tokenSvc := service.NewTokenService(service.TokenConfig{
 		Issuer:              cfg.JWT.Issuer,
 		Audience:            cfg.JWT.Audience,
 		AuthServiceAudience: "auth.example.com",
 		AuthnTTL:            time.Hour,
 		AuthzTTL:            15 * time.Minute,
-	}, mem, mem, mem, mem, mem)
-	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: cfg.Server.PublicBaseURL, SessionTTL: time.Duration(cfg.Security.SessionTTLSeconds) * time.Second}, idp, mem, mem, tokenSvc)
+	}, mem, mem, mem, mem, mem, mem)
+	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: cfg.Server.PublicBaseURL, SessionTTL: time.Duration(cfg.Security.SessionTTLSeconds) * time.Second}, idps, mem, mem, tokenSvc)
 	resourceSvc := service.NewResourceService(mem)
 	permissionSvc := service.NewPermissionService(mem, mem)
 	return NewWithOptions(Options{Config: cfg, Login: loginSvc, Tokens: tokenSvc, Resources: resourceSvc, Permissions: permissionSvc, State: mem, JWKS: mem, Device: fakeDevice{}}), mem
@@ -105,13 +140,182 @@ func TestJWKSHandlerPublishesKeys(t *testing.T) {
 	}
 }
 
+func TestLoginRedirectsToSingleDefaultProvider(t *testing.T) {
+	t.Parallel()
+	srv, _ := newHTTPTestServer(nil, fakeIDP{})
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	rr := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusFound, rr.Body.String())
+	}
+	if got := rr.Header().Get("Location"); got != "/auth/google/start" {
+		t.Fatalf("Location = %q, want /auth/google/start", got)
+	}
+}
+
+func TestGoogleStartAliasCreatesProviderBoundState(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	_, sess, err := mem.CreateAuthSession(ctx, "client-state", 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/google/start?login_nonce="+sess.LoginURLNonce, nil)
+	rr := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusFound, rr.Body.String())
+	}
+	redirect, err := url.Parse(rr.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := redirect.Query().Get("state")
+	if state == "" {
+		t.Fatalf("redirect missing state: %s", redirect.String())
+	}
+	loginState, err := mem.ConsumeLoginState(ctx, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loginState.ProviderID != "google" || loginState.LoginURLNonce != sess.LoginURLNonce {
+		t.Fatalf("unexpected login state: %#v", loginState)
+	}
+}
+
+func TestLoginShowsProviderPickerForMultipleProviders(t *testing.T) {
+	t.Parallel()
+	srv, _ := newHTTPTestServerWithIDPs(nil,
+		fakeIDP{},
+		fakeIDP{descriptor: ports.IdentityProviderDescriptor{ID: "keycloak-prod", Type: "oidc", DisplayName: "Company SSO", Issuer: "https://sso.example.com/realms/prod"}, authURL: "https://sso.example.com/auth"},
+	)
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	rr := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Company SSO") || !strings.Contains(rr.Body.String(), "/auth/keycloak-prod/start") {
+		t.Fatalf("provider picker missing keycloak provider: %s", rr.Body.String())
+	}
+}
+
+func TestUnknownProviderStartIsNotFound(t *testing.T) {
+	t.Parallel()
+	srv, _ := newHTTPTestServer(nil, fakeIDP{})
+	req := httptest.NewRequest(http.MethodGet, "/auth/missing/start", nil)
+	rr := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+}
+
+func TestUnknownProviderStartDoesNotCreateLoginState(t *testing.T) {
+	t.Parallel()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	counting := &countingLoginStateStore{Store: mem}
+	srv.state = counting
+	req := httptest.NewRequest(http.MethodGet, "/auth/missing/start", nil)
+	rr := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+	if counting.createLoginStateCalls != 0 {
+		t.Fatalf("CreateLoginState called %d time(s), want 0", counting.createLoginStateCalls)
+	}
+}
+
+func TestGoogleStartAliasDoesNotCreateLoginStateWithoutGoogleProvider(t *testing.T) {
+	t.Parallel()
+	srv, mem := newHTTPTestServerWithIDPs(nil,
+		fakeIDP{descriptor: ports.IdentityProviderDescriptor{ID: "keycloak-prod", Type: "oidc", DisplayName: "Company SSO", Issuer: "https://sso.example.com/realms/prod"}, authURL: "https://sso.example.com/auth"},
+	)
+	counting := &countingLoginStateStore{Store: mem}
+	srv.state = counting
+	req := httptest.NewRequest(http.MethodGet, "/oauth/google/start", nil)
+	rr := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+	}
+	if counting.createLoginStateCalls != 0 {
+		t.Fatalf("CreateLoginState called %d time(s), want 0", counting.createLoginStateCalls)
+	}
+}
+
+func TestAuthStartUsesDistinctStateAndNonce(t *testing.T) {
+	t.Parallel()
+	srv, _ := newHTTPTestServer(nil, fakeIDP{})
+	req := httptest.NewRequest(http.MethodGet, "/auth/google/start", nil)
+	rr := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusFound, rr.Body.String())
+	}
+	redirect, err := url.Parse(rr.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := redirect.Query().Get("state")
+	nonce := redirect.Query().Get("nonce")
+	if state == "" || nonce == "" {
+		t.Fatalf("redirect missing state or nonce: %s", redirect.String())
+	}
+	if state == nonce {
+		t.Fatalf("state and nonce must be distinct, both were %q", state)
+	}
+}
+
+func TestAuthCallbackRejectsStateProviderMismatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServerWithIDPs(nil,
+		fakeIDP{},
+		fakeIDP{descriptor: ports.IdentityProviderDescriptor{ID: "keycloak-prod", Type: "oidc", DisplayName: "Company SSO", Issuer: "https://sso.example.com/realms/prod"}, authURL: "https://sso.example.com/auth"},
+	)
+	state, _, err := mem.CreateLoginState(ctx, model.LoginStateInput{ProviderID: "google"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/auth/keycloak-prod/callback?state="+state+"&code=code", nil)
+	rr := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+}
+
 func TestGoogleCallbackCreatesSessionForRegisteredUser(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
 	mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	state, _, err := mem.CreateLoginState(ctx, model.LoginStateInput{ProviderID: "google"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state=state&code=code", nil)
-	req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "state"})
+	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusFound {
@@ -124,9 +328,13 @@ func TestGoogleCallbackCreatesSessionForRegisteredUser(t *testing.T) {
 
 func TestGoogleCallbackShowsWhoamiForUnregisteredUser(t *testing.T) {
 	t.Parallel()
-	srv, _ := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "new@example.com"}})
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state=state&code=code", nil)
-	req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "state"})
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "new@example.com"}})
+	state, _, err := mem.CreateLoginState(ctx, model.LoginStateInput{ProviderID: "google"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -139,10 +347,14 @@ func TestGoogleCallbackShowsWhoamiForUnregisteredUser(t *testing.T) {
 
 func TestGoogleCallbackDisabledUserIsForbidden(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
 	mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com", Status: "disabled"})
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state=state&code=code", nil)
-	req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "state"})
+	state, _, err := mem.CreateLoginState(ctx, model.LoginStateInput{ProviderID: "google"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {
@@ -152,13 +364,20 @@ func TestGoogleCallbackDisabledUserIsForbidden(t *testing.T) {
 
 func TestGoogleCallbackLoginSessionStoreFailureIsInternal(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
 	mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
-	srv.login = service.NewLoginService(service.LoginConfig{PublicBaseURL: srv.cfg.Server.PublicBaseURL, SessionTTL: time.Hour}, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}}, mem, failingNonceState{Store: mem}, srv.tokens)
+	idps := idpregistry.New("google")
+	if err := idps.Register(fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	srv.login = service.NewLoginService(service.LoginConfig{PublicBaseURL: srv.cfg.Server.PublicBaseURL, SessionTTL: time.Hour}, idps, mem, failingNonceState{Store: mem}, srv.tokens)
+	state, _, err := mem.CreateLoginState(ctx, model.LoginStateInput{ProviderID: "google", LoginURLNonce: "nonce"}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state=state&code=code", nil)
-	req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "state"})
-	req.AddCookie(&http.Cookie{Name: loginSessionCookie, Value: "nonce"})
+	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusInternalServerError {
@@ -252,6 +471,38 @@ func TestTokenPageShowsOnlyWriterAccessibleRepositories(t *testing.T) {
 	}
 	if strings.Contains(body, "reader-repo") || strings.Contains(body, "ungranted-repo") {
 		t.Fatalf("token page exposed inaccessible repository: %s", body)
+	}
+}
+
+func TestTokenPageListsRepositoriesWithoutPerPermissionLookups(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	first := mem.AddTestResource(model.Resource{Name: "first-repo", RemoteURL: "lore://first", LoreRepositoryID: "first-id"})
+	second := mem.AddTestResource(model.Resource{Name: "second-repo", RemoteURL: "lore://second", LoreRepositoryID: "second-id"})
+	mem.GrantRole(u.ID, first.ResourceID, model.RoleWriter)
+	mem.GrantRole(u.ID, second.ResourceID, model.RoleWriter)
+	counting := &countingResourceStore{Store: mem}
+	srv.resources = service.NewResourceService(counting)
+	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tokens", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if counting.listCalls != 1 {
+		t.Fatalf("List called %d time(s), want 1", counting.listCalls)
+	}
+	if counting.getByResourceIDCalls != 0 {
+		t.Fatalf("GetByResourceID called %d time(s), want 0", counting.getByResourceIDCalls)
 	}
 }
 
@@ -433,9 +684,11 @@ func TestLoginSessionCompletesViaGoogleCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = code
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state=state&code=code", nil)
-	req.AddCookie(&http.Cookie{Name: stateCookieName, Value: "state"})
-	req.AddCookie(&http.Cookie{Name: loginSessionCookie, Value: sess.LoginURLNonce})
+	state, _, err := mem.CreateLoginState(ctx, model.LoginStateInput{ProviderID: "google", LoginURLNonce: sess.LoginURLNonce}, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -486,6 +739,32 @@ type failingNonceState struct {
 
 func (s failingNonceState) GetAuthSessionByNonce(ctx context.Context, nonce string) (model.AuthSession, error) {
 	return model.AuthSession{}, errors.New("state store failed")
+}
+
+type countingLoginStateStore struct {
+	*memory.Store
+	createLoginStateCalls int
+}
+
+func (s *countingLoginStateStore) CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (string, model.LoginState, error) {
+	s.createLoginStateCalls++
+	return s.Store.CreateLoginState(ctx, input, ttl)
+}
+
+type countingResourceStore struct {
+	*memory.Store
+	getByResourceIDCalls int
+	listCalls            int
+}
+
+func (s *countingResourceStore) GetByResourceID(ctx context.Context, resourceID string) (model.Resource, error) {
+	s.getByResourceIDCalls++
+	return s.Store.GetByResourceID(ctx, resourceID)
+}
+
+func (s *countingResourceStore) List(ctx context.Context) ([]model.Resource, error) {
+	s.listCalls++
+	return s.Store.List(ctx)
 }
 
 type failingBrowserSessionState struct {

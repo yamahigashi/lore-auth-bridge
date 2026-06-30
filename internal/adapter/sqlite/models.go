@@ -85,6 +85,18 @@ type DeviceAuthorization struct {
 	ConsumedAt            sql.NullInt64
 }
 
+type LoginState struct {
+	ID            string
+	StateHash     string
+	ProviderID    string
+	Nonce         sql.NullString
+	LoginURLNonce sql.NullString
+	ReturnPath    sql.NullString
+	CreatedAt     int64
+	ExpiresAt     int64
+	ConsumedAt    sql.NullInt64
+}
+
 type Session struct {
 	ID        string
 	UserID    string
