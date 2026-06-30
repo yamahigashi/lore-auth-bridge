@@ -60,7 +60,7 @@ func (s *Store) AddIssuedTokenV2(ctx context.Context, p AddIssuedTokenParams, ki
 // resolved from grants (direct and via groups).
 func (s *Store) UserAccessibleRepositories(ctx context.Context, userID string) ([]Repository, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT DISTINCT r.id, r.name, r.remote_url, r.lore_repository_id, r.status, r.created_at, r.updated_at
+SELECT DISTINCT r.id, r.name, r.remote_url, r.lore_repository_id, r.status, r.created_by_source, r.created_at, r.updated_at
 FROM repositories r
 JOIN grants g ON g.repository_id = r.id
 WHERE r.status = 'active' AND (
@@ -75,7 +75,7 @@ ORDER BY r.name`, userID, userID)
 	var out []Repository
 	for rows.Next() {
 		var r Repository
-		if err := rows.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LoreRepositoryID, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LoreRepositoryID, &r.Status, &r.CreatedBySource, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

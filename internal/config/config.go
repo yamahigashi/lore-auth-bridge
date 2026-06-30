@@ -62,6 +62,7 @@ type SecurityConfig struct {
 	DeviceCodeTTLSeconds      int      `yaml:"device_code_ttl_seconds"`
 	DevicePollIntervalSeconds int      `yaml:"device_poll_interval_seconds"`
 	SessionTTLSeconds         int      `yaml:"session_ttl_seconds"`
+	AuthSessionTTLSeconds     int      `yaml:"auth_session_ttl_seconds"`
 	RebacAllowedPeerCIDRs     []string `yaml:"rebac_allowed_peer_cidrs"`
 }
 
@@ -102,6 +103,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Security.SessionTTLSeconds == 0 {
 		c.Security.SessionTTLSeconds = 3600
+	}
+	if c.Security.AuthSessionTTLSeconds == 0 {
+		c.Security.AuthSessionTTLSeconds = c.Security.SessionTTLSeconds
 	}
 	if c.Lore.AuthURL == "" && c.Server.PublicBaseURL != "" {
 		c.Lore.AuthURL = "ucs-auth://" + stripScheme(c.Server.PublicBaseURL)
@@ -171,6 +175,9 @@ func (c *Config) validate() error {
 	if c.Security.SessionTTLSeconds <= 0 {
 		return fmt.Errorf("config: security.session_ttl_seconds must be positive")
 	}
+	if c.Security.AuthSessionTTLSeconds <= 0 {
+		return fmt.Errorf("config: security.auth_session_ttl_seconds must be positive")
+	}
 	for i, cidr := range c.Security.RebacAllowedPeerCIDRs {
 		if err := validateCIDROrIP("security.rebac_allowed_peer_cidrs", cidr); err != nil {
 			return fmt.Errorf("config: security.rebac_allowed_peer_cidrs[%d]: %w", i, err)
@@ -210,6 +217,18 @@ func validateCIDROrIP(field, value string) error {
 func validateURL(field, value string, allowedSchemes ...string) error {
 	_, err := parseURL(field, value, allowedSchemes...)
 	return err
+}
+
+func PublicHost(value string) (string, error) {
+	parsed, err := parseURL("server.public_base_url", value, "http", "https")
+	if err != nil {
+		return "", err
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("config: server.public_base_url must include a host")
+	}
+	return host, nil
 }
 
 func parseURL(field, value string, allowedSchemes ...string) (*url.URL, error) {

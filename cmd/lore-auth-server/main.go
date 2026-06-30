@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -70,23 +69,28 @@ func run() error {
 	if err := signer.Validate(context.Background()); err != nil {
 		return fmt.Errorf("startup: signing key preflight failed: %w", err)
 	}
+	authServiceAudience, err := config.PublicHost(cfg.Server.PublicBaseURL)
+	if err != nil {
+		return fmt.Errorf("startup: public base url host: %w", err)
+	}
 	tokenSvc := service.NewTokenService(service.TokenConfig{
 		Issuer:              cfg.JWT.Issuer,
 		Audience:            cfg.JWT.Audience,
-		AuthServiceAudience: stripSchemeAndPort(cfg.Server.PublicBaseURL),
+		AuthServiceAudience: authServiceAudience,
 		AuthnTTL:            time.Duration(cfg.JWT.TTLSeconds) * time.Second,
 		AuthzTTL:            15 * time.Minute,
 	}, coreStore, coreStore, authz, signer, coreStore)
 	loginSvc := service.NewLoginService(service.LoginConfig{
-		PublicBaseURL: cfg.Server.PublicBaseURL,
-		SessionTTL:    time.Duration(cfg.Security.SessionTTLSeconds) * time.Second,
+		PublicBaseURL:  cfg.Server.PublicBaseURL,
+		SessionTTL:     time.Duration(cfg.Security.SessionTTLSeconds) * time.Second,
+		AuthSessionTTL: time.Duration(cfg.Security.AuthSessionTTLSeconds) * time.Second,
 	}, googleAuthenticator, coreStore, coreStore, tokenSvc)
 	permissionSvc := service.NewPermissionService(coreStore, authz)
 	resourceSvc := service.NewResourceService(coreStore)
 
 	deviceSvc := device.NewService(cfg, st, tokenSvc)
-	h := httpserver.NewWithOptions(httpserver.Options{Config: cfg, Login: loginSvc, Tokens: tokenSvc, Resources: resourceSvc, State: coreStore, JWKS: signer, Device: deviceSvc})
-	httpSrv := &http.Server{Addr: cfg.Server.Listen, Handler: h.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	h := httpserver.NewWithOptions(httpserver.Options{Config: cfg, Login: loginSvc, Tokens: tokenSvc, Resources: resourceSvc, Permissions: permissionSvc, State: coreStore, JWKS: signer, Device: deviceSvc})
+	httpSrv := newHTTPServer(cfg.Server.Listen, h.Handler())
 	grpcOpts := []grpc.ServerOption{}
 	rebacPeerPrefixes, err := grpcrebac.ParseAllowedPeerCIDRs(rebacAllowedPeerCIDRs(cfg))
 	if err != nil {
@@ -172,15 +176,13 @@ func openConfiguredStore(ctx context.Context, cfg *config.Config, migrate bool) 
 	return st, nil
 }
 
-func stripSchemeAndPort(url string) string {
-	if i := strings.Index(url, "://"); i >= 0 {
-		url = url[i+3:]
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
-	if i := strings.Index(url, "/"); i >= 0 {
-		url = url[:i]
-	}
-	if h, _, ok := strings.Cut(url, ":"); ok {
-		return h
-	}
-	return url
 }

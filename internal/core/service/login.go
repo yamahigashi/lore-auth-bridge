@@ -12,8 +12,9 @@ import (
 )
 
 type LoginConfig struct {
-	PublicBaseURL string
-	SessionTTL    time.Duration
+	PublicBaseURL  string
+	SessionTTL     time.Duration
+	AuthSessionTTL time.Duration
 }
 
 type LoginService struct {
@@ -55,7 +56,10 @@ func (s *LoginService) AuthCodeURL(state string) (string, error) {
 }
 
 func (s *LoginService) StartAuthSession(ctx context.Context, clientState string) (StartAuthSessionResult, error) {
-	ttl := s.cfg.SessionTTL
+	ttl := s.cfg.AuthSessionTTL
+	if ttl == 0 {
+		ttl = s.cfg.SessionTTL
+	}
 	if ttl == 0 {
 		ttl = 10 * time.Minute
 	}
@@ -74,6 +78,9 @@ func (s *LoginService) GetAuthSession(ctx context.Context, sessionCode, clientSt
 			return AuthSessionTokenResult{}, fmt.Errorf("%w: %w", model.ErrAuthSessionNotFound, err)
 		}
 		return AuthSessionTokenResult{}, err
+	}
+	if sess.ExpiresAt <= time.Now().Unix() {
+		return AuthSessionTokenResult{}, fmt.Errorf("%w: expired", model.ErrAuthSessionNotFound)
 	}
 	if !s.state.MatchClientState(sess, clientState) {
 		return AuthSessionTokenResult{}, fmt.Errorf("%w: client_state mismatch", model.ErrInvalidArgument)

@@ -23,6 +23,14 @@ func (s *ResourceService) DeleteResource(ctx context.Context, resourceID string)
 	return s.store.Delete(ctx, resourceID)
 }
 
+func (s *ResourceService) Get(ctx context.Context, resourceID string) (model.Resource, error) {
+	return s.store.GetByResourceID(ctx, resourceID)
+}
+
+func (s *ResourceService) GetByName(ctx context.Context, name string) (model.Resource, error) {
+	return s.store.GetByName(ctx, name)
+}
+
 func (s *ResourceService) List(ctx context.Context) ([]model.Resource, error) {
 	return s.store.List(ctx)
 }

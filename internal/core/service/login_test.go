@@ -12,7 +12,7 @@ import (
 func TestGetAuthSessionClientStateMismatchReturnsInvalidArgument(t *testing.T) {
 	t.Parallel()
 	state := &loginStateStub{
-		session: model.AuthSession{ID: "session-1", ClientStateHash: "expected", Status: "completed", UserID: "user-1"},
+		session: model.AuthSession{ID: "session-1", ClientStateHash: "expected", Status: "completed", UserID: "user-1", ExpiresAt: time.Now().Add(time.Minute).Unix()},
 	}
 	svc := NewLoginService(LoginConfig{}, nil, nil, state, nil)
 
@@ -103,6 +103,7 @@ func TestCompleteOAuthCallbackDoesNotBindUnverifiedEmail(t *testing.T) {
 
 type loginStateStub struct {
 	session model.AuthSession
+	match   bool
 }
 
 func (s *loginStateStub) CreateAuthSession(ctx context.Context, clientState string, ttl time.Duration) (string, model.AuthSession, error) {
@@ -137,8 +138,30 @@ func (s *loginStateStub) RevokeBrowserSession(ctx context.Context, sessionID str
 	panic("not used")
 }
 
+func (s *loginStateStub) CreateCSRFToken(ctx context.Context, sessionID string, ttl time.Duration) (string, error) {
+	panic("not used")
+}
+
+func (s *loginStateStub) ConsumeCSRFToken(ctx context.Context, sessionID, token string) error {
+	panic("not used")
+}
+
 func (s *loginStateStub) MatchClientState(session model.AuthSession, clientState string) bool {
-	return false
+	return s.match
+}
+
+func TestGetAuthSessionExpiredCompletedSessionReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	state := &loginStateStub{
+		session: model.AuthSession{ID: "session-1", ClientStateHash: "expected", Status: "completed", UserID: "user-1", ExpiresAt: time.Now().Add(-time.Minute).Unix()},
+		match:   true,
+	}
+	svc := NewLoginService(LoginConfig{}, nil, nil, state, nil)
+
+	_, err := svc.GetAuthSession(context.Background(), "session-code", "client-state")
+	if !errors.Is(err, model.ErrAuthSessionNotFound) {
+		t.Fatalf("expected ErrAuthSessionNotFound, got %v", err)
+	}
 }
 
 type loginIDPStub struct {
@@ -245,6 +268,14 @@ func (s *callbackStateStub) UserByBrowserSession(ctx context.Context, sessionID 
 }
 
 func (s *callbackStateStub) RevokeBrowserSession(ctx context.Context, sessionID string) error {
+	panic("not used")
+}
+
+func (s *callbackStateStub) CreateCSRFToken(ctx context.Context, sessionID string, ttl time.Duration) (string, error) {
+	panic("not used")
+}
+
+func (s *callbackStateStub) ConsumeCSRFToken(ctx context.Context, sessionID, token string) error {
 	panic("not used")
 }
 

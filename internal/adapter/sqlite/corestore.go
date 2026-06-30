@@ -3,8 +3,6 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/model"
@@ -82,12 +80,7 @@ func (s *CoreStore) Upsert(ctx context.Context, r model.Resource) error {
 		resourceID = model.ResourceIDForRepositoryID(r.LoreRepositoryID)
 	}
 	if r.RemoteURL != "" {
-		if _, err := s.Store.FindRepositoryByResourceID(ctx, resourceID); err == nil {
-			return s.Store.UpsertResource(ctx, resourceID, r.Name)
-		} else if !errors.Is(err, ErrNotFound) {
-			return fmt.Errorf("store: check repository before resource upsert: %w", err)
-		}
-		_, err := s.Store.AddRepository(ctx, r.Name, r.RemoteURL, model.RepositoryIDFromResourceID(resourceID))
+		_, err := s.Store.UpsertManualRepository(ctx, r.Name, r.RemoteURL, model.RepositoryIDFromResourceID(resourceID))
 		return err
 	}
 	return s.Store.UpsertResource(ctx, resourceID, r.Name)
@@ -126,12 +119,26 @@ func (s *CoreStore) CreateAuthSession(ctx context.Context, clientState string, t
 
 func (s *CoreStore) GetAuthSessionByCode(ctx context.Context, code string) (model.AuthSession, error) {
 	sess, err := s.Store.AuthSessionByCode(ctx, code)
-	return toModelAuthSession(sess), err
+	modelSession := toModelAuthSession(sess)
+	if err != nil {
+		return modelSession, err
+	}
+	if modelSession.ExpiresAt <= time.Now().Unix() {
+		return model.AuthSession{}, model.ErrNotFound
+	}
+	return modelSession, nil
 }
 
 func (s *CoreStore) GetAuthSessionByNonce(ctx context.Context, nonce string) (model.AuthSession, error) {
 	sess, err := s.Store.AuthSessionByNonce(ctx, nonce)
-	return toModelAuthSession(sess), err
+	modelSession := toModelAuthSession(sess)
+	if err != nil {
+		return modelSession, err
+	}
+	if modelSession.ExpiresAt <= time.Now().Unix() {
+		return model.AuthSession{}, model.ErrNotFound
+	}
+	return modelSession, nil
 }
 
 func (s *CoreStore) CreateBrowserSession(ctx context.Context, userID string, ttl time.Duration) (model.BrowserSession, error) {
@@ -146,6 +153,14 @@ func (s *CoreStore) UserByBrowserSession(ctx context.Context, sessionID string) 
 
 func (s *CoreStore) RevokeBrowserSession(ctx context.Context, sessionID string) error {
 	return s.Store.RevokeSession(ctx, sessionID)
+}
+
+func (s *CoreStore) CreateCSRFToken(ctx context.Context, sessionID string, ttl time.Duration) (string, error) {
+	return s.Store.CreateCSRFToken(ctx, sessionID, int(ttl.Seconds()))
+}
+
+func (s *CoreStore) ConsumeCSRFToken(ctx context.Context, sessionID, token string) error {
+	return s.Store.ConsumeCSRFToken(ctx, sessionID, token)
 }
 
 func (s *CoreStore) MatchClientState(session model.AuthSession, clientState string) bool {

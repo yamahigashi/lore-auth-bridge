@@ -51,7 +51,13 @@ type TokenResult struct {
 }
 
 type Repository struct {
-	Name string
+	Name      string
+	RemoteURL string
+}
+
+type PreviewResult struct {
+	Repository         Repository
+	RequestedRemoteURL string
 }
 
 func NewService(cfg *config.Config, st *sqlite.Store, tokenSvc ...*service.TokenService) *Service {
@@ -62,10 +68,11 @@ func NewService(cfg *config.Config, st *sqlite.Store, tokenSvc ...*service.Token
 	if tokens == nil {
 		coreStore := sqlite.NewCoreStore(st)
 		authz := casbin.NewService(st)
+		authServiceAudience, _ := config.PublicHost(cfg.Server.PublicBaseURL)
 		tokens = service.NewTokenService(service.TokenConfig{
 			Issuer:              cfg.JWT.Issuer,
 			Audience:            cfg.JWT.Audience,
-			AuthServiceAudience: stripSchemeAndPort(cfg.Server.PublicBaseURL),
+			AuthServiceAudience: authServiceAudience,
 			AuthnTTL:            seconds(cfg.JWT.TTLSeconds),
 			AuthzTTL:            15 * time.Minute,
 		}, coreStore, coreStore, authz, rs256.NewSigner(cfg.JWT.ActiveKID, coreStore), coreStore)
@@ -93,6 +100,34 @@ func (s *Service) Start(ctx context.Context, remoteURL, repoName string) (*Start
 		return nil, fmt.Errorf("device: create authorization: %w", err)
 	}
 	return &StartResult{DeviceCode: deviceCode, UserCode: userCode, VerificationURI: strings.TrimRight(s.cfg.Server.PublicBaseURL, "/") + "/device", ExpiresIn: s.cfg.Security.DeviceCodeTTLSeconds, Interval: s.cfg.Security.DevicePollIntervalSeconds}, nil
+}
+
+func (s *Service) Preview(ctx context.Context, userCode string) (*PreviewResult, error) {
+	d, err := s.store.DeviceByUserCodeHash(ctx, HashCode(userCode))
+	if err != nil {
+		if errors.Is(err, sqlite.ErrNotFound) || errors.Is(err, model.ErrNotFound) {
+			return nil, ErrInvalidCode
+		}
+		return nil, fmt.Errorf("device: lookup user code: %w", err)
+	}
+	if d.Status != "pending" {
+		return nil, fmt.Errorf("%w: status %s", ErrAuthorizationNotPending, d.Status)
+	}
+	if d.ExpiresAt <= sqlite.UnixNow() {
+		_ = s.store.ExpireDeviceAuthorization(ctx, d.ID)
+		return nil, ErrExpiredCode
+	}
+	if !d.RequestedRepositoryID.Valid {
+		return nil, fmt.Errorf("%w: missing repository", ErrIncompleteAuthorization)
+	}
+	repo, err := repositoryByID(ctx, s.store, d.RequestedRepositoryID.String)
+	if err != nil {
+		if errors.Is(err, sqlite.ErrNotFound) || errors.Is(err, model.ErrNotFound) {
+			return nil, fmt.Errorf("%w: repository", model.ErrNotFound)
+		}
+		return nil, fmt.Errorf("device: lookup requested repository: %w", err)
+	}
+	return &PreviewResult{Repository: Repository{Name: repo.Name, RemoteURL: repo.RemoteURL}, RequestedRemoteURL: d.RequestedRemoteURL}, nil
 }
 
 func (s *Service) Approve(ctx context.Context, userEmailOrID, userCode string) (*Repository, error) {
@@ -134,7 +169,7 @@ func (s *Service) Approve(ctx context.Context, userEmailOrID, userCode string) (
 	if err := s.store.ApproveDeviceAuthorization(ctx, d.ID, u.ID); err != nil {
 		return nil, fmt.Errorf("device: approve authorization: %w", err)
 	}
-	return &Repository{Name: repo.Name}, nil
+	return &Repository{Name: repo.Name, RemoteURL: repo.RemoteURL}, nil
 }
 
 func (s *Service) Token(ctx context.Context, deviceCode string) (*TokenResult, error) {
@@ -208,7 +243,7 @@ func randomUserCode() (string, error) {
 }
 
 func repositoryByID(ctx context.Context, st *sqlite.Store, id string) (*sqlite.Repository, error) {
-	rows, err := st.DB().QueryContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_at, updated_at FROM repositories WHERE id = ?`, id)
+	rows, err := st.DB().QueryContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_by_source, created_at, updated_at FROM repositories WHERE id = ? AND status = 'active'`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +252,7 @@ func repositoryByID(ctx context.Context, st *sqlite.Store, id string) (*sqlite.R
 		return nil, model.ErrNotFound
 	}
 	var r sqlite.Repository
-	if err := rows.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LoreRepositoryID, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	if err := rows.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LoreRepositoryID, &r.Status, &r.CreatedBySource, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return nil, fmt.Errorf("device: scan repository: %w", err)
 	}
 	if err := rows.Err(); err != nil {
@@ -231,17 +266,4 @@ func seconds(value int) time.Duration {
 		return 0
 	}
 	return time.Duration(value) * time.Second
-}
-
-func stripSchemeAndPort(url string) string {
-	if i := strings.Index(url, "://"); i >= 0 {
-		url = url[i+3:]
-	}
-	if i := strings.Index(url, "/"); i >= 0 {
-		url = url[:i]
-	}
-	if h, _, ok := strings.Cut(url, ":"); ok {
-		return h
-	}
-	return url
 }

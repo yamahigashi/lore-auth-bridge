@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/config"
 )
@@ -77,5 +79,16 @@ func TestGoogleConfigFromConfigIncludesAccountPolicy(t *testing.T) {
 	}
 	if !got.AllowPersonalAccounts {
 		t.Fatal("allow personal accounts was not propagated")
+	}
+}
+
+func TestNewHTTPServerSetsTimeouts(t *testing.T) {
+	t.Parallel()
+	srv := newHTTPServer("127.0.0.1:0", http.NewServeMux())
+	if srv.ReadHeaderTimeout == 0 || srv.ReadTimeout == 0 || srv.WriteTimeout == 0 || srv.IdleTimeout == 0 {
+		t.Fatalf("timeouts not fully set: read_header=%s read=%s write=%s idle=%s", srv.ReadHeaderTimeout, srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout)
+	}
+	if srv.ReadTimeout < 5*time.Second || srv.WriteTimeout < 5*time.Second {
+		t.Fatalf("timeouts too small: read=%s write=%s", srv.ReadTimeout, srv.WriteTimeout)
 	}
 }

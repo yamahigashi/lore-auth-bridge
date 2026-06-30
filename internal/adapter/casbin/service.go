@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/casbin/casbin/v2"
@@ -49,17 +50,58 @@ func (s *Service) CanAccess(ctx context.Context, userID, resourceID, action stri
 }
 
 func (s *Service) ListAccessible(ctx context.Context, userID string, filter coremodel.ResourceFilter) ([]coremodel.ResourcePermission, error) {
-	repos, err := s.store.UserAccessibleRepositories(ctx, userID)
+	rows, err := s.store.DB().QueryContext(ctx, `
+SELECT r.lore_repository_id, g.role
+FROM repositories r
+JOIN grants g ON g.repository_id = r.id
+WHERE r.status = 'active' AND (
+  (g.subject_type = 'user' AND g.subject_id = ?)
+  OR (g.subject_type = 'group' AND g.subject_id IN (SELECT group_id FROM group_members WHERE user_id = ?))
+)
+ORDER BY r.name, g.role`, userID, userID)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]coremodel.ResourcePermission, 0, len(repos))
-	for _, repo := range repos {
-		resourceID := coremodel.ResourceIDForRepositoryID(repo.LoreRepositoryID)
+	defer rows.Close()
+	byResource := map[string]map[string]bool{}
+	for rows.Next() {
+		var loreRepositoryID, role string
+		if err := rows.Scan(&loreRepositoryID, &role); err != nil {
+			return nil, err
+		}
+		resourceID := coremodel.ResourceIDForRepositoryID(loreRepositoryID)
 		if filter.Prefix != "" && !strings.HasPrefix(resourceID, filter.Prefix) {
 			continue
 		}
-		out = append(out, coremodel.ResourcePermission{ResourceID: resourceID, Permission: []string{"read", "write"}})
+		perms, ok := coremodel.RolePermissions(role)
+		if !ok {
+			return nil, fmt.Errorf("%w: unknown grant role %q", coremodel.ErrInvalidArgument, role)
+		}
+		if byResource[resourceID] == nil {
+			byResource[resourceID] = map[string]bool{}
+		}
+		for _, perm := range perms {
+			byResource[resourceID][perm] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	resourceIDs := make([]string, 0, len(byResource))
+	for resourceID := range byResource {
+		resourceIDs = append(resourceIDs, resourceID)
+	}
+	sort.Strings(resourceIDs)
+	out := make([]coremodel.ResourcePermission, 0, len(resourceIDs))
+	for _, resourceID := range resourceIDs {
+		set := byResource[resourceID]
+		permissions := make([]string, 0, len(set))
+		for _, perm := range []string{coremodel.PermissionRead, coremodel.PermissionWrite, coremodel.PermissionAdmin} {
+			if set[perm] {
+				permissions = append(permissions, perm)
+			}
+		}
+		out = append(out, coremodel.ResourcePermission{ResourceID: resourceID, Permission: permissions})
 	}
 	return out, nil
 }
@@ -105,7 +147,11 @@ func (s *Service) loadGroupMemberships(ctx context.Context, enforcer *casbin.Enf
 }
 
 func (s *Service) loadGrants(ctx context.Context, enforcer *casbin.Enforcer) error {
-	rows, err := s.store.DB().QueryContext(ctx, `SELECT subject_type, subject_id, repository_id, role FROM grants`)
+	rows, err := s.store.DB().QueryContext(ctx, `
+SELECT g.subject_type, g.subject_id, g.repository_id, g.role
+FROM grants g
+JOIN repositories r ON r.id = g.repository_id
+WHERE r.status = 'active'`)
 	if err != nil {
 		return err
 	}
@@ -119,7 +165,11 @@ func (s *Service) loadGrants(ctx context.Context, enforcer *casbin.Enforcer) err
 		if err != nil {
 			return err
 		}
-		for _, act := range roleActions(role) {
+		acts, ok := coremodel.RolePermissions(role)
+		if !ok {
+			return fmt.Errorf("%w: unknown grant role %q", coremodel.ErrInvalidArgument, role)
+		}
+		for _, act := range acts {
 			if _, err := enforcer.AddPolicy(subject, "repo:"+repositoryID, act); err != nil {
 				return err
 			}
@@ -134,18 +184,5 @@ func policySubject(subjectType, subjectID string) (string, error) {
 		return subjectType + ":" + subjectID, nil
 	default:
 		return "", fmt.Errorf("acl: unknown subject type %q", subjectType)
-	}
-}
-
-func roleActions(role string) []string {
-	switch role {
-	case "reader":
-		return []string{"read"}
-	case "writer":
-		return []string{"read", "write"}
-	case "admin":
-		return []string{"read", "write", "admin"}
-	default:
-		return []string{role}
 	}
 }

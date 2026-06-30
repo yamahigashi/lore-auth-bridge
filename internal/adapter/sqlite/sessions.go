@@ -50,3 +50,24 @@ func (s *Store) UserBySession(ctx context.Context, id string) (*User, error) {
 	}
 	return s.UserByID(ctx, userID)
 }
+
+func (s *Store) CreateCSRFToken(ctx context.Context, sessionID string, ttlSeconds int) (string, error) {
+	token, err := randomToken(32)
+	if err != nil {
+		return "", err
+	}
+	now := UnixNow()
+	_, err = s.db.ExecContext(ctx, `INSERT INTO csrf_tokens (token_hash, session_id, created_at, expires_at) VALUES (?, ?, ?, ?)`, HashAuthCode(token), sessionID, now, now+int64(ttlSeconds))
+	if err != nil {
+		return "", fmt.Errorf("store: create csrf token: %w", err)
+	}
+	return token, nil
+}
+
+func (s *Store) ConsumeCSRFToken(ctx context.Context, sessionID, token string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE csrf_tokens SET consumed_at = ? WHERE token_hash = ? AND session_id = ? AND consumed_at IS NULL AND expires_at > ?`, UnixNow(), HashAuthCode(token), sessionID, UnixNow())
+	if err != nil {
+		return err
+	}
+	return requireAffected(res)
+}

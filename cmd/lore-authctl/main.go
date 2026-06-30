@@ -106,7 +106,12 @@ func openEnv(configPath, dbPath string) (*cliEnv, error) {
 	}
 	coreStore := sqlite.NewCoreStore(st)
 	authz := casbin.NewService(st)
-	tokens := service.NewTokenService(tokenConfigFromConfig(cfg), coreStore, coreStore, authz, rs256.NewSigner(cfg.JWT.ActiveKID, coreStore), coreStore)
+	tokenCfg, err := tokenConfigFromConfig(cfg)
+	if err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("build token config: %w", err)
+	}
+	tokens := service.NewTokenService(tokenCfg, coreStore, coreStore, authz, rs256.NewSigner(cfg.JWT.ActiveKID, coreStore), coreStore)
 	keyAdmin := rs256.NewSigningKeyAdmin(cfg.JWT.SigningKeyDir, coreStore)
 	return &cliEnv{cfg: cfg, store: st, core: coreStore, authz: authz, groups: coreStore, grants: coreStore, keys: keyAdmin, tokens: tokens, permissions: service.NewPermissionService(coreStore, authz)}, nil
 }
@@ -721,14 +726,18 @@ func openStore(path string) (*sqlite.Store, error) {
 	return st, nil
 }
 
-func tokenConfigFromConfig(cfg *config.Config) service.TokenConfig {
+func tokenConfigFromConfig(cfg *config.Config) (service.TokenConfig, error) {
+	authServiceAudience, err := config.PublicHost(cfg.Server.PublicBaseURL)
+	if err != nil {
+		return service.TokenConfig{}, err
+	}
 	return service.TokenConfig{
 		Issuer:              cfg.JWT.Issuer,
 		Audience:            cfg.JWT.Audience,
-		AuthServiceAudience: stripSchemeAndPort(cfg.Server.PublicBaseURL),
+		AuthServiceAudience: authServiceAudience,
 		AuthnTTL:            durationSeconds(cfg.JWT.TTLSeconds),
 		AuthzTTL:            15 * time.Minute,
-	}
+	}, nil
 }
 
 func durationSeconds(value int) time.Duration {
@@ -736,19 +745,6 @@ func durationSeconds(value int) time.Duration {
 		return 0
 	}
 	return time.Duration(value) * time.Second
-}
-
-func stripSchemeAndPort(url string) string {
-	if i := strings.Index(url, "://"); i >= 0 {
-		url = url[i+3:]
-	}
-	if i := strings.Index(url, "/"); i >= 0 {
-		url = url[:i]
-	}
-	if h, _, ok := strings.Cut(url, ":"); ok {
-		return h
-	}
-	return url
 }
 
 func subjectParts(value string) (string, string, error) {

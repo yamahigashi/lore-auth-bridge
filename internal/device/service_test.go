@@ -50,6 +50,78 @@ func TestDeviceFlowStartApproveToken(t *testing.T) {
 	}
 }
 
+func TestDevicePreviewShowsRequestedRepositoryAndRemote(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, cfg := setupDeviceTest(t, dir)
+	defer st.Close()
+	svc := NewService(cfg, st)
+	start, err := svc.Start(ctx, "lore://requested.example/repo", "game-assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := svc.Preview(ctx, start.UserCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Repository.Name != "game-assets" || preview.Repository.RemoteURL != "lore://example" {
+		t.Fatalf("unexpected preview repository: %#v", preview.Repository)
+	}
+	if preview.RequestedRemoteURL != "lore://requested.example/repo" {
+		t.Fatalf("requested remote = %q", preview.RequestedRemoteURL)
+	}
+}
+
+func TestDeviceApprovalAndTokenRejectDeletedRepository(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, cfg := setupDeviceTest(t, dir)
+	defer st.Close()
+	svc := NewService(cfg, st)
+	start, err := svc.Start(ctx, "lore://example", "game-assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SoftDeleteResource(ctx, model.ResourceIDForRepositoryID("0194b726b34e72b0b45550b88a967076")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Approve(ctx, "alice@example.com", start.UserCode); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("Approve error = %v, want ErrNotFound", err)
+	}
+
+	if _, err = svc.Start(ctx, "lore://example", "game-assets"); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("Start after delete error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeviceTokenRejectsRepositoryDeletedAfterApproval(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, cfg := setupDeviceTest(t, dir)
+	defer st.Close()
+	svc := NewService(cfg, st)
+	start, err := svc.Start(ctx, "lore://example", "game-assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Approve(ctx, "alice@example.com", start.UserCode); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SoftDeleteResource(ctx, model.ResourceIDForRepositoryID("0194b726b34e72b0b45550b88a967076")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = svc.Token(ctx, start.DeviceCode)
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("Token error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestDeviceTokenExpiresInUsesIssuedAuthzExpiration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

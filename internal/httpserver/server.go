@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/config"
@@ -23,6 +25,7 @@ const (
 	sessionCookieName  = "lore_auth_session"
 	stateCookieName    = "lore_oauth_state"
 	loginSessionCookie = "lore_login_session"
+	maxJSONBodyBytes   = 64 * 1024
 )
 
 type Server struct {
@@ -30,6 +33,7 @@ type Server struct {
 	login     *service.LoginService
 	tokens    *service.TokenService
 	resources *service.ResourceService
+	perms     *service.PermissionService
 	state     ports.StateStore
 	jwks      ports.TokenSigner
 	device    DeviceService
@@ -37,23 +41,25 @@ type Server struct {
 }
 
 type Options struct {
-	Config    *config.Config
-	Login     *service.LoginService
-	Tokens    *service.TokenService
-	Resources *service.ResourceService
-	State     ports.StateStore
-	JWKS      ports.TokenSigner
-	Device    DeviceService
+	Config      *config.Config
+	Login       *service.LoginService
+	Tokens      *service.TokenService
+	Resources   *service.ResourceService
+	Permissions *service.PermissionService
+	State       ports.StateStore
+	JWKS        ports.TokenSigner
+	Device      DeviceService
 }
 
 type DeviceService interface {
 	Start(ctx context.Context, remoteURL, repoName string) (*device.StartResult, error)
+	Preview(ctx context.Context, userCode string) (*device.PreviewResult, error)
 	Approve(ctx context.Context, userEmailOrID, userCode string) (*device.Repository, error)
 	Token(ctx context.Context, deviceCode string) (*device.TokenResult, error)
 }
 
 func NewWithOptions(opts Options) *Server {
-	s := &Server{cfg: opts.Config, login: opts.Login, tokens: opts.Tokens, resources: opts.Resources, state: opts.State, jwks: opts.JWKS, device: opts.Device, mux: http.NewServeMux()}
+	s := &Server{cfg: opts.Config, login: opts.Login, tokens: opts.Tokens, resources: opts.Resources, perms: opts.Permissions, state: opts.State, jwks: opts.JWKS, device: opts.Device, mux: http.NewServeMux()}
 	if s.cfg == nil {
 		s.cfg = &config.Config{}
 		s.cfg.Security.SessionTTLSeconds = 3600
@@ -78,6 +84,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /tokens", s.handleTokenPage)
 	s.mux.HandleFunc("POST /tokens/mint", s.handleTokenMint)
 	s.mux.HandleFunc("GET /device", s.handleDevicePage)
+	s.mux.HandleFunc("POST /device/approve", s.handleDeviceApprove)
 	s.mux.HandleFunc("POST /api/device/start", s.handleDeviceStart)
 	s.mux.HandleFunc("POST /api/device/token", s.handleDeviceToken)
 }
@@ -221,11 +228,31 @@ func (s *Server) handleTokenPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
-	repos, err := s.resources.List(r.Context())
+	if s.perms == nil {
+		http.Error(w, "permissions unavailable", http.StatusInternalServerError)
+		return
+	}
+	accessible, err := s.perms.Lookup(r.Context(), u.ID, model.ResourceFilter{})
 	if err != nil {
-		slog.Error("repository list failed", "route", "/tokens", "error", err)
+		slog.Error("permission list failed", "route", "/tokens", "error", err)
 		http.Error(w, "repositories unavailable", http.StatusInternalServerError)
 		return
+	}
+	repos := make([]model.Resource, 0, len(accessible))
+	for _, perm := range accessible {
+		if !hasPermission(perm.Permission, model.PermissionWrite) {
+			continue
+		}
+		resource, err := s.resources.Get(r.Context(), perm.ResourceID)
+		if err != nil {
+			if errors.Is(err, model.ErrNotFound) {
+				continue
+			}
+			slog.Error("repository lookup failed", "route", "/tokens", "resource_id", perm.ResourceID, "error", err)
+			http.Error(w, "repositories unavailable", http.StatusInternalServerError)
+			return
+		}
+		repos = append(repos, resource)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = tokenPageTemplate.Execute(w, struct {
@@ -286,7 +313,7 @@ func (s *Server) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`<h1>Authorize device</h1><form method="get" action="/device"><input name="user_code" placeholder="AB12-CD34"><button type="submit">Continue</button></form>`))
 		return
 	}
-	u, ok, err := s.currentUser(r)
+	u, sessionID, ok, err := s.currentBrowserSession(r)
 	if err != nil {
 		slog.Error("browser session lookup failed", "route", "/device", "error", err)
 		http.Error(w, "session unavailable", http.StatusInternalServerError)
@@ -294,6 +321,67 @@ func (s *Server) handleDevicePage(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	_ = u
+	preview, err := s.device.Preview(r.Context(), userCode)
+	if err != nil {
+		writeDeviceError(w, "device preview", err)
+		return
+	}
+	csrfToken, err := s.state.CreateCSRFToken(r.Context(), sessionID, 10*time.Minute)
+	if err != nil {
+		slog.Error("csrf token generation failed", "route", "/device", "error", err)
+		http.Error(w, "device approval unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = deviceConfirmTemplate.Execute(w, struct {
+		UserCode           string
+		CSRFToken          string
+		RepositoryName     string
+		RepositoryRemote   string
+		RequestedRemoteURL string
+	}{
+		UserCode:           userCode,
+		CSRFToken:          csrfToken,
+		RepositoryName:     preview.Repository.Name,
+		RepositoryRemote:   preview.Repository.RemoteURL,
+		RequestedRemoteURL: preview.RequestedRemoteURL,
+	})
+}
+
+func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
+	if s.device == nil {
+		http.Error(w, "device flow not configured", http.StatusServiceUnavailable)
+		return
+	}
+	u, sessionID, ok, err := s.currentBrowserSession(r)
+	if err != nil {
+		slog.Error("browser session lookup failed", "route", "/device/approve", "error", err)
+		http.Error(w, "session unavailable", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	if !s.sameOrigin(r) {
+		http.Error(w, "invalid origin", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	userCode := r.FormValue("user_code")
+	csrfToken := r.FormValue("csrf_token")
+	if userCode == "" || csrfToken == "" {
+		http.Error(w, "invalid device approval", http.StatusForbidden)
+		return
+	}
+	if err := s.state.ConsumeCSRFToken(r.Context(), sessionID, csrfToken); err != nil {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
 	repo, err := s.device.Approve(r.Context(), u.ID, userCode)
@@ -314,8 +402,7 @@ func (s *Server) handleDeviceStart(w http.ResponseWriter, r *http.Request) {
 		RemoteURL  string `json:"remote_url"`
 		Repository string `json:"repository"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.RemoteURL == "" {
@@ -338,8 +425,7 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		DeviceCode string `json:"device_code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	res, err := s.device.Token(r.Context(), req.DeviceCode)
@@ -392,18 +478,42 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) currentUser(r *http.Request) (model.User, bool, error) {
+	u, _, ok, err := s.currentBrowserSession(r)
+	return u, ok, err
+}
+
+func (s *Server) currentBrowserSession(r *http.Request) (model.User, string, bool, error) {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil || c.Value == "" {
-		return model.User{}, false, nil
+		return model.User{}, "", false, nil
 	}
 	u, err := s.state.UserByBrowserSession(r.Context(), c.Value)
 	if err != nil {
 		if errors.Is(err, model.ErrNotFound) {
-			return model.User{}, false, nil
+			return model.User{}, "", false, nil
 		}
-		return model.User{}, false, err
+		return model.User{}, "", false, err
 	}
-	return u, true, nil
+	return u, c.Value, true, nil
+}
+
+func (s *Server) sameOrigin(r *http.Request) bool {
+	publicURL, err := url.Parse(s.cfg.Server.PublicBaseURL)
+	if err != nil || publicURL.Scheme == "" || publicURL.Host == "" {
+		return false
+	}
+	raw := r.Header.Get("Origin")
+	if raw == "" {
+		raw = r.Header.Get("Referer")
+	}
+	if raw == "" {
+		return false
+	}
+	got, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return got.Scheme == publicURL.Scheme && got.Hostname() == publicURL.Hostname() && got.Port() == publicURL.Port()
 }
 
 func writeTokenIssueError(w http.ResponseWriter, err error) {
@@ -436,6 +546,31 @@ func writeDeviceError(w http.ResponseWriter, operation string, err error) {
 	}
 }
 
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "json body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return false
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "json body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
 func renderWhoami(w http.ResponseWriter, id model.Identity) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = whoamiTemplate.Execute(w, id)
@@ -458,6 +593,18 @@ var tokenResultTemplate = template.Must(template.New("token-result").Parse(`<h1>
 <pre>lore auth login --token-type lore --token {{.Token}} --auth-url {{.AuthURL}} {{.RemoteURL}}</pre>
 <p>Token:</p>
 <textarea rows="8" cols="100">{{.Token}}</textarea>`))
+
+var deviceConfirmTemplate = template.Must(template.New("device-confirm").Parse(`<h1>Authorize device</h1>
+<dl>
+  <dt>Repository</dt><dd>{{.RepositoryName}}</dd>
+  <dt>Repository remote</dt><dd>{{.RepositoryRemote}}</dd>
+  <dt>Requested remote</dt><dd>{{.RequestedRemoteURL}}</dd>
+</dl>
+<form method="post" action="/device/approve">
+  <input type="hidden" name="user_code" value="{{.UserCode}}">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <button type="submit">Approve</button>
+</form>`))
 
 var whoamiTemplate = template.Must(template.New("whoami").Parse(`<h1>Google identity</h1>
 <dl>
@@ -488,4 +635,13 @@ func stringOr(a, b string) string {
 		return a
 	}
 	return b
+}
+
+func hasPermission(perms []string, want string) bool {
+	for _, perm := range perms {
+		if perm == want {
+			return true
+		}
+	}
+	return false
 }

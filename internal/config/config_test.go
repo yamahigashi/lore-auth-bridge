@@ -44,6 +44,62 @@ security: {}
 	if len(cfg.Security.RebacAllowedPeerCIDRs) != 0 {
 		t.Fatalf("unexpected rebac peer allowlist: %#v", cfg.Security.RebacAllowedPeerCIDRs)
 	}
+	if cfg.Security.AuthSessionTTLSeconds != cfg.Security.SessionTTLSeconds {
+		t.Fatalf("auth session ttl = %d, want session ttl fallback %d", cfg.Security.AuthSessionTTLSeconds, cfg.Security.SessionTTLSeconds)
+	}
+}
+
+func TestLoadConfigAuthSessionTTLCanDifferFromBrowserSessionTTL(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security:
+  session_ttl_seconds: 3600
+  auth_session_ttl_seconds: 600
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.SessionTTLSeconds != 3600 || cfg.Security.AuthSessionTTLSeconds != 600 {
+		t.Fatalf("session ttls = browser %d auth %d", cfg.Security.SessionTTLSeconds, cfg.Security.AuthSessionTTLSeconds)
+	}
+}
+
+func TestPublicHostExtractsIPv4DNSAndIPv6Hosts(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"https://auth.example.com/path":      "auth.example.com",
+		"https://auth.example.com:8443/path": "auth.example.com",
+		"https://[::1]:8080/path":            "::1",
+		"http://127.0.0.1:8080":              "127.0.0.1",
+	}
+	for input, want := range cases {
+		got, err := PublicHost(input)
+		if err != nil {
+			t.Fatalf("PublicHost(%q) error = %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("PublicHost(%q) = %q, want %q", input, got, want)
+		}
+	}
+	if _, err := PublicHost("not-a-url"); err == nil {
+		t.Fatal("expected invalid URL to fail")
+	}
 }
 
 func TestLoadRejectsPartialGoogleConfig(t *testing.T) {

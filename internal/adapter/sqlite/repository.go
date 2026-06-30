@@ -250,8 +250,8 @@ func (s *Store) ResolveUser(ctx context.Context, emailOrID string) (*User, error
 
 func (s *Store) AddRepository(ctx context.Context, name, remoteURL, loreRepositoryID string) (*Repository, error) {
 	now := UnixNow()
-	r := &Repository{ID: NewID(), Name: name, RemoteURL: remoteURL, LoreRepositoryID: loreRepositoryID, Status: "active", CreatedAt: now, UpdatedAt: now}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO repositories (id, name, remote_url, lore_repository_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, r.ID, r.Name, r.RemoteURL, r.LoreRepositoryID, r.Status, r.CreatedAt, r.UpdatedAt)
+	r := &Repository{ID: NewID(), Name: name, RemoteURL: remoteURL, LoreRepositoryID: loreRepositoryID, Status: "active", CreatedBySource: "manual", CreatedAt: now, UpdatedAt: now}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO repositories (id, name, remote_url, lore_repository_id, status, created_by_source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, r.ID, r.Name, r.RemoteURL, r.LoreRepositoryID, r.Status, r.CreatedBySource, r.CreatedAt, r.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("store: add repository: %w", err)
 	}
@@ -259,8 +259,55 @@ func (s *Store) AddRepository(ctx context.Context, name, remoteURL, loreReposito
 }
 
 func (s *Store) FindRepositoryByName(ctx context.Context, name string) (*Repository, error) {
+	return s.scanRepository(s.db.QueryRowContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_by_source, created_at, updated_at FROM repositories WHERE name = ? AND status = 'active'`, name))
+}
+
+func (s *Store) FindRepositoryAnyStatusByName(ctx context.Context, name string) (*Repository, error) {
+	return s.scanRepository(s.db.QueryRowContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_by_source, created_at, updated_at FROM repositories WHERE name = ?`, name))
+}
+
+func (s *Store) ListRepositories(ctx context.Context) ([]Repository, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_by_source, created_at, updated_at FROM repositories ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	return scanRepositories(rows)
+}
+
+func (s *Store) ListActiveRepositories(ctx context.Context) ([]Repository, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_by_source, created_at, updated_at FROM repositories WHERE status = 'active' ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	return scanRepositories(rows)
+}
+
+func (s *Store) UpsertManualRepository(ctx context.Context, name, remoteURL, loreRepositoryID string) (*Repository, error) {
+	resourceID := model.ResourceIDForRepositoryID(loreRepositoryID)
+	existing, err := s.FindRepositoryAnyStatusByResourceID(ctx, resourceID)
+	if errors.Is(err, ErrNotFound) {
+		return s.AddRepository(ctx, name, remoteURL, loreRepositoryID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if existing.CreatedBySource != "manual" {
+		return nil, fmt.Errorf("%w: repository %s is managed by %s", model.ErrInvalidArgument, existing.LoreRepositoryID, existing.CreatedBySource)
+	}
+	now := UnixNow()
+	res, err := s.db.ExecContext(ctx, `UPDATE repositories SET name = ?, remote_url = ?, status = 'active', updated_at = ? WHERE id = ? AND created_by_source = 'manual'`, name, remoteURL, now, existing.ID)
+	if err != nil {
+		return nil, fmt.Errorf("store: update manual repository: %w", err)
+	}
+	if err := requireAffected(res); err != nil {
+		return nil, err
+	}
+	return s.FindRepositoryByName(ctx, name)
+}
+
+func (s *Store) scanRepository(row rowScanner) (*Repository, error) {
 	var r Repository
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_at, updated_at FROM repositories WHERE name = ?`, name).Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LoreRepositoryID, &r.Status, &r.CreatedAt, &r.UpdatedAt)
+	err := row.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LoreRepositoryID, &r.Status, &r.CreatedBySource, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -270,16 +317,12 @@ func (s *Store) FindRepositoryByName(ctx context.Context, name string) (*Reposit
 	return &r, nil
 }
 
-func (s *Store) ListRepositories(ctx context.Context) ([]Repository, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_at, updated_at FROM repositories ORDER BY name`)
-	if err != nil {
-		return nil, err
-	}
+func scanRepositories(rows *sql.Rows) ([]Repository, error) {
 	defer rows.Close()
 	var out []Repository
 	for rows.Next() {
 		var r Repository
-		if err := rows.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LoreRepositoryID, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LoreRepositoryID, &r.Status, &r.CreatedBySource, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -288,6 +331,9 @@ func (s *Store) ListRepositories(ctx context.Context) ([]Repository, error) {
 }
 
 func (s *Store) AddGrant(ctx context.Context, subjectType, subjectID, repoName, role string) (*Grant, error) {
+	if !model.IsKnownRole(role) {
+		return nil, fmt.Errorf("%w: unknown grant role %q", model.ErrInvalidArgument, role)
+	}
 	repo, err := s.FindRepositoryByName(ctx, repoName)
 	if err != nil {
 		return nil, err
@@ -398,13 +444,13 @@ func (s *Store) FindRepositoryByResourceID(ctx context.Context, resourceID strin
 	if len(resourceID) >= 4 && resourceID[:4] == "urc-" {
 		loreRepoID = resourceID[4:]
 	}
-	var r Repository
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_at, updated_at FROM repositories WHERE lore_repository_id = ?`, loreRepoID).Scan(&r.ID, &r.Name, &r.RemoteURL, &r.LoreRepositoryID, &r.Status, &r.CreatedAt, &r.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, ErrNotFound
+	return s.scanRepository(s.db.QueryRowContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_by_source, created_at, updated_at FROM repositories WHERE lore_repository_id = ? AND status = 'active'`, loreRepoID))
+}
+
+func (s *Store) FindRepositoryAnyStatusByResourceID(ctx context.Context, resourceID string) (*Repository, error) {
+	loreRepoID := resourceID
+	if len(resourceID) >= 4 && resourceID[:4] == "urc-" {
+		loreRepoID = resourceID[4:]
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &r, nil
+	return s.scanRepository(s.db.QueryRowContext(ctx, `SELECT id, name, remote_url, lore_repository_id, status, created_by_source, created_at, updated_at FROM repositories WHERE lore_repository_id = ?`, loreRepoID))
 }

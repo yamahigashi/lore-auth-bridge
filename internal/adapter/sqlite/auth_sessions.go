@@ -75,7 +75,7 @@ func (s *Store) CompleteAuthSession(ctx context.Context, id, userID string) erro
 }
 
 func (s *Store) ConsumeAuthSession(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET status = 'consumed', consumed_at = ? WHERE id = ? AND status = 'completed'`, UnixNow(), id)
+	res, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET status = 'consumed', consumed_at = ? WHERE id = ? AND status = 'completed' AND expires_at > ?`, UnixNow(), id, UnixNow())
 	if err != nil {
 		return err
 	}

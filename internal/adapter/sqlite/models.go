@@ -32,6 +32,7 @@ type Repository struct {
 	RemoteURL        string
 	LoreRepositoryID string
 	Status           string
+	CreatedBySource  string
 	CreatedAt        int64
 	UpdatedAt        int64
 }

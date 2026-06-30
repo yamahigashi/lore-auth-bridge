@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,5 +122,103 @@ func TestValidateSchemaAcceptsMigratedDatabase(t *testing.T) {
 
 	if err := s.ValidateSchema(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDeletedRepositoryIsHiddenFromActiveResolversButVisibleInList(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := s.AddRepository(ctx, "game-assets", "lore://example", "0194b726b34e72b0b45550b88a967076")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SoftDeleteResource(ctx, model.ResourceIDForRepositoryID(repo.LoreRepositoryID)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.FindRepositoryByName(ctx, "game-assets"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FindRepositoryByName error = %v, want ErrNotFound", err)
+	}
+	if _, err := s.FindRepositoryByResourceID(ctx, model.ResourceIDForRepositoryID(repo.LoreRepositoryID)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FindRepositoryByResourceID error = %v, want ErrNotFound", err)
+	}
+	all, err := s.ListRepositories(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Status != "deleted" {
+		t.Fatalf("ListRepositories = %#v, want deleted row visible", all)
+	}
+}
+
+func TestManualRepoAddDoesNotUpdateReBACCreatedRepository(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	core := NewCoreStore(s)
+	resourceID := model.ResourceIDForRepositoryID("0194b726b34e72b0b45550b88a967076")
+	if err := core.Upsert(ctx, model.Resource{ResourceID: resourceID, Name: "rebac-name"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = core.Upsert(ctx, model.Resource{Name: "manual-name", RemoteURL: "lore://manual.example", LoreRepositoryID: "0194b726b34e72b0b45550b88a967076"})
+	if err == nil {
+		t.Fatal("expected manual upsert to reject existing ReBAC-created repository")
+	}
+	repo, err := s.FindRepositoryAnyStatusByResourceID(ctx, resourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.Name != "rebac-name" || repo.RemoteURL != "" || repo.Status != "active" {
+		t.Fatalf("ReBAC-created row changed unexpectedly: %#v", repo)
+	}
+}
+
+func TestConsumeAuthSessionRejectsExpiredCompletedSession(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddUser(ctx, AddUserParams{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	_, sess, err := s.CreateAuthSession(ctx, "client-state", 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE auth_sessions SET status = 'completed', user_id = (SELECT id FROM users WHERE email = 'alice@example.com'), expires_at = ? WHERE id = ?`, UnixNow()-1, sess.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.ConsumeAuthSession(ctx, sess.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ConsumeAuthSession error = %v, want ErrNotFound", err)
+	}
+	var status string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM auth_sessions WHERE id = ?`, sess.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status == "consumed" {
+		t.Fatalf("expired session was consumed")
 	}
 }

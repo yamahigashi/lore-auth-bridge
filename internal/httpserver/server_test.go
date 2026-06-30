@@ -30,8 +30,9 @@ func (f fakeIDP) ExchangeAndVerify(ctx context.Context, code string) (model.Iden
 func (f fakeIDP) Issuer() string { return "https://accounts.google.com" }
 
 type fakeDevice struct {
-	startErr error
-	tokenErr error
+	startErr     error
+	tokenErr     error
+	approveCalls *int
 }
 
 func (d fakeDevice) Start(ctx context.Context, remoteURL, repoName string) (*device.StartResult, error) {
@@ -41,8 +42,15 @@ func (d fakeDevice) Start(ctx context.Context, remoteURL, repoName string) (*dev
 	return &device.StartResult{DeviceCode: "device-code", UserCode: "ABCD-EFGH", VerificationURI: "https://auth.example.com/device", ExpiresIn: 600, Interval: 3}, nil
 }
 
-func (fakeDevice) Approve(ctx context.Context, userEmailOrID, userCode string) (*device.Repository, error) {
-	return &device.Repository{Name: "game-assets"}, nil
+func (fakeDevice) Preview(ctx context.Context, userCode string) (*device.PreviewResult, error) {
+	return &device.PreviewResult{Repository: device.Repository{Name: "game-assets", RemoteURL: "lore://stored.example/repo"}, RequestedRemoteURL: "lore://requested.example/repo"}, nil
+}
+
+func (d fakeDevice) Approve(ctx context.Context, userEmailOrID, userCode string) (*device.Repository, error) {
+	if d.approveCalls != nil {
+		(*d.approveCalls)++
+	}
+	return &device.Repository{Name: "game-assets", RemoteURL: "lore://stored.example/repo"}, nil
 }
 
 func (d fakeDevice) Token(ctx context.Context, deviceCode string) (*device.TokenResult, error) {
@@ -73,7 +81,8 @@ func newHTTPTestServer(cfg *config.Config, idp fakeIDP) (*Server, *memory.Store)
 	}, mem, mem, mem, mem, mem)
 	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: cfg.Server.PublicBaseURL, SessionTTL: time.Duration(cfg.Security.SessionTTLSeconds) * time.Second}, idp, mem, mem, tokenSvc)
 	resourceSvc := service.NewResourceService(mem)
-	return NewWithOptions(Options{Config: cfg, Login: loginSvc, Tokens: tokenSvc, Resources: resourceSvc, State: mem, JWKS: mem, Device: fakeDevice{}}), mem
+	permissionSvc := service.NewPermissionService(mem, mem)
+	return NewWithOptions(Options{Config: cfg, Login: loginSvc, Tokens: tokenSvc, Resources: resourceSvc, Permissions: permissionSvc, State: mem, JWKS: mem, Device: fakeDevice{}}), mem
 }
 
 func TestJWKSHandlerPublishesKeys(t *testing.T) {
@@ -215,6 +224,37 @@ func TestTokenMintPermissionDeniedUsesSafeBody(t *testing.T) {
 	}
 }
 
+func TestTokenPageShowsOnlyWriterAccessibleRepositories(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	writer := mem.AddTestResource(model.Resource{Name: "writer-repo", RemoteURL: "lore://writer", LoreRepositoryID: "writer-id"})
+	reader := mem.AddTestResource(model.Resource{Name: "reader-repo", RemoteURL: "lore://reader", LoreRepositoryID: "reader-id"})
+	mem.AddTestResource(model.Resource{Name: "ungranted-repo", RemoteURL: "lore://ungranted", LoreRepositoryID: "ungranted-id"})
+	mem.GrantRole(u.ID, writer.ResourceID, model.RoleWriter)
+	mem.GrantRole(u.ID, reader.ResourceID, model.RoleReader)
+	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tokens", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "writer-repo") {
+		t.Fatalf("writer repository missing from token page: %s", body)
+	}
+	if strings.Contains(body, "reader-repo") || strings.Contains(body, "ungranted-repo") {
+		t.Fatalf("token page exposed inaccessible repository: %s", body)
+	}
+}
+
 func TestDeviceStartAndPendingTokenHTTP(t *testing.T) {
 	t.Parallel()
 	srv, _ := newHTTPTestServer(nil, fakeIDP{})
@@ -243,6 +283,109 @@ func TestDeviceStartAndPendingTokenHTTP(t *testing.T) {
 	}
 	if !strings.Contains(tokenRR.Body.String(), "authorization_pending") {
 		t.Fatalf("unexpected body: %s", tokenRR.Body.String())
+	}
+}
+
+func TestDeviceJSONEndpointsRejectUnknownFieldsAndLargeBodies(t *testing.T) {
+	t.Parallel()
+	srv, _ := newHTTPTestServer(nil, fakeIDP{})
+
+	unknownReq := httptest.NewRequest(http.MethodPost, "/api/device/start", strings.NewReader(`{"remote_url":"lore://example","repository":"game-assets","extra":true}`))
+	unknownReq.Header.Set("Content-Type", "application/json")
+	unknownRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(unknownRR, unknownReq)
+	if unknownRR.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field status = %d, want %d body=%s", unknownRR.Code, http.StatusBadRequest, unknownRR.Body.String())
+	}
+
+	largeReq := httptest.NewRequest(http.MethodPost, "/api/device/token", strings.NewReader(`{"device_code":"`+strings.Repeat("A", maxJSONBodyBytes)+`"}`))
+	largeReq.Header.Set("Content-Type", "application/json")
+	largeRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(largeRR, largeReq)
+	if largeRR.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("large body status = %d, want %d body=%s", largeRR.Code, http.StatusRequestEntityTooLarge, largeRR.Body.String())
+	}
+}
+
+func TestDeviceGetShowsConfirmationWithoutApproving(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	srv.device = fakeDevice{approveCalls: &calls}
+
+	req := httptest.NewRequest(http.MethodGet, "/device?user_code=ABCD-EFGH", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("GET /device approved %d time(s), want 0", calls)
+	}
+	if !strings.Contains(rr.Body.String(), "lore://requested.example/repo") || !strings.Contains(rr.Body.String(), "game-assets") {
+		t.Fatalf("confirmation missing repository or requested remote: %s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `name="csrf_token"`) {
+		t.Fatalf("confirmation missing csrf token: %s", rr.Body.String())
+	}
+}
+
+func TestDeviceApprovePostRequiresCSRFAndSameOrigin(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	srv.device = fakeDevice{approveCalls: &calls}
+
+	req := httptest.NewRequest(http.MethodPost, "/device/approve", strings.NewReader("user_code=ABCD-EFGH"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://auth.example.com")
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf status = %d, want %d body=%s", rr.Code, http.StatusForbidden, rr.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/device?user_code=ABCD-EFGH", nil)
+	getReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	getRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRR, getReq)
+	token := hiddenInputValue(t, getRR.Body.String(), "csrf_token")
+
+	badOrigin := httptest.NewRequest(http.MethodPost, "/device/approve", strings.NewReader("user_code=ABCD-EFGH&csrf_token="+token))
+	badOrigin.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	badOrigin.Header.Set("Origin", "https://evil.example.com")
+	badOrigin.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	badOriginRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(badOriginRR, badOrigin)
+	if badOriginRR.Code != http.StatusForbidden {
+		t.Fatalf("bad origin status = %d, want %d body=%s", badOriginRR.Code, http.StatusForbidden, badOriginRR.Body.String())
+	}
+
+	good := httptest.NewRequest(http.MethodPost, "/device/approve", strings.NewReader("user_code=ABCD-EFGH&csrf_token="+token))
+	good.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	good.Header.Set("Origin", "https://auth.example.com")
+	good.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	goodRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(goodRR, good)
+	if goodRR.Code != http.StatusOK {
+		t.Fatalf("good approval status = %d, want %d body=%s", goodRR.Code, http.StatusOK, goodRR.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("Approve called %d time(s), want 1", calls)
 	}
 }
 
@@ -351,4 +494,23 @@ type failingBrowserSessionState struct {
 
 func (s failingBrowserSessionState) UserByBrowserSession(ctx context.Context, sessionID string) (model.User, error) {
 	return model.User{}, errors.New("session store failed")
+}
+
+func hiddenInputValue(t *testing.T, html, name string) string {
+	t.Helper()
+	marker := `name="` + name + `"`
+	i := strings.Index(html, marker)
+	if i < 0 {
+		t.Fatalf("missing hidden input %q in %s", name, html)
+	}
+	v := strings.Index(html[i:], `value="`)
+	if v < 0 {
+		t.Fatalf("missing value for input %q in %s", name, html)
+	}
+	start := i + v + len(`value="`)
+	end := strings.Index(html[start:], `"`)
+	if end < 0 {
+		t.Fatalf("unterminated value for input %q in %s", name, html)
+	}
+	return html[start : start+end]
 }

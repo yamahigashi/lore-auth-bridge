@@ -16,5 +16,7 @@ type StateStore interface {
 	CreateBrowserSession(ctx context.Context, userID string, ttl time.Duration) (model.BrowserSession, error)
 	UserByBrowserSession(ctx context.Context, sessionID string) (model.User, error)
 	RevokeBrowserSession(ctx context.Context, sessionID string) error
+	CreateCSRFToken(ctx context.Context, sessionID string, ttl time.Duration) (string, error)
+	ConsumeCSRFToken(ctx context.Context, sessionID, token string) error
 	MatchClientState(session model.AuthSession, clientState string) bool
 }

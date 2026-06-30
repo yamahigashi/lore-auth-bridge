@@ -20,11 +20,18 @@ type Store struct {
 	users     map[string]model.User
 	groups    map[string][]string
 	resources map[string]model.Resource
-	grants    map[string]map[string]bool
+	grants    map[string]map[string]string
 	auth      map[string]model.AuthSession
 	nonces    map[string]string
 	sessions  map[string]string
+	csrf      map[string]csrfToken
 	tokens    map[string]model.VerifiedToken
+}
+
+type csrfToken struct {
+	SessionID string
+	ExpiresAt int64
+	Consumed  bool
 }
 
 func New() *Store {
@@ -32,10 +39,11 @@ func New() *Store {
 		users:     map[string]model.User{},
 		groups:    map[string][]string{},
 		resources: map[string]model.Resource{},
-		grants:    map[string]map[string]bool{},
+		grants:    map[string]map[string]string{},
 		auth:      map[string]model.AuthSession{},
 		nonces:    map[string]string{},
 		sessions:  map[string]string{},
+		csrf:      map[string]csrfToken{},
 		tokens:    map[string]model.VerifiedToken{},
 	}
 }
@@ -79,12 +87,16 @@ func (s *Store) AddTestResource(r model.Resource) model.Resource {
 }
 
 func (s *Store) Grant(userID, resourceID string) {
+	s.GrantRole(userID, resourceID, model.RoleWriter)
+}
+
+func (s *Store) GrantRole(userID, resourceID, role string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.grants[userID] == nil {
-		s.grants[userID] = map[string]bool{}
+		s.grants[userID] = map[string]string{}
 	}
-	s.grants[userID][resourceID] = true
+	s.grants[userID][resourceID] = role
 }
 
 func (s *Store) FindByIdentity(ctx context.Context, provider, issuer, subject string) (model.User, error) {
@@ -241,18 +253,23 @@ func (s *Store) List(ctx context.Context) ([]model.Resource, error) {
 func (s *Store) CanAccess(ctx context.Context, userID, resourceID, action string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.grants[userID][resourceID], nil
+	role := s.grants[userID][resourceID]
+	return model.RoleAllows(role, action), nil
 }
 
 func (s *Store) ListAccessible(ctx context.Context, userID string, filter model.ResourceFilter) ([]model.ResourcePermission, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []model.ResourcePermission
-	for resourceID := range s.grants[userID] {
+	for resourceID, role := range s.grants[userID] {
 		if filter.Prefix != "" && !strings.HasPrefix(resourceID, filter.Prefix) {
 			continue
 		}
-		out = append(out, model.ResourcePermission{ResourceID: resourceID, Permission: []string{"read", "write"}})
+		perms, ok := model.RolePermissions(role)
+		if !ok {
+			return nil, model.ErrInvalidArgument
+		}
+		out = append(out, model.ResourcePermission{ResourceID: resourceID, Permission: perms})
 	}
 	return out, nil
 }
@@ -271,7 +288,7 @@ func (s *Store) GetAuthSessionByCode(ctx context.Context, code string) (model.Au
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.auth[hashAuthCode(code)]
-	if !ok {
+	if !ok || sess.ExpiresAt <= time.Now().Unix() {
 		return model.AuthSession{}, model.ErrNotFound
 	}
 	return sess, nil
@@ -285,7 +302,7 @@ func (s *Store) GetAuthSessionByNonce(ctx context.Context, nonce string) (model.
 		return model.AuthSession{}, model.ErrNotFound
 	}
 	for _, sess := range s.auth {
-		if sess.ID == id {
+		if sess.ID == id && sess.ExpiresAt > time.Now().Unix() {
 			return sess, nil
 		}
 	}
@@ -296,7 +313,7 @@ func (s *Store) CompleteAuthSession(ctx context.Context, id, userID string) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for code, sess := range s.auth {
-		if sess.ID == id {
+		if sess.ID == id && sess.Status == "pending" && sess.ExpiresAt > time.Now().Unix() {
 			sess.Status = "completed"
 			sess.UserID = userID
 			s.auth[code] = sess
@@ -310,7 +327,7 @@ func (s *Store) ConsumeAuthSession(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for code, sess := range s.auth {
-		if sess.ID == id {
+		if sess.ID == id && sess.Status == "completed" && sess.ExpiresAt > time.Now().Unix() {
 			sess.Status = "consumed"
 			s.auth[code] = sess
 			return nil
@@ -345,6 +362,27 @@ func (s *Store) RevokeBrowserSession(ctx context.Context, sessionID string) erro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
+	return nil
+}
+
+func (s *Store) CreateCSRFToken(ctx context.Context, sessionID string, ttl time.Duration) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := uuid.NewString()
+	s.csrf[hashAuthCode(token)] = csrfToken{SessionID: sessionID, ExpiresAt: time.Now().Add(ttl).Unix()}
+	return token, nil
+}
+
+func (s *Store) ConsumeCSRFToken(ctx context.Context, sessionID, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	hashed := hashAuthCode(token)
+	issue, ok := s.csrf[hashed]
+	if !ok || issue.SessionID != sessionID || issue.Consumed || issue.ExpiresAt <= time.Now().Unix() {
+		return model.ErrNotFound
+	}
+	issue.Consumed = true
+	s.csrf[hashed] = issue
 	return nil
 }
 
