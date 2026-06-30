@@ -122,8 +122,6 @@ See [Google OIDC](doc/setup/google-oidc.md) and [Authctl](doc/setup/authctl.md) 
 
 When pairing the bridge with a new Lore binary, use `lore-claimprobe` to validate the JWT claim contract.
 
-The procedure is in the [Claim Probe Runbook](doc/claimprobe.md).
-
 ## Security Notes
 
 - Store private keys on the filesystem with mode `0600`. Do not store private keys in the DB or JWKS.
