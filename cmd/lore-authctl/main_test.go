@@ -37,6 +37,82 @@ func TestUserInviteCreatesPendingPreRegisteredUser(t *testing.T) {
 	}
 }
 
+func TestUserInviteIDPUsesConfiguredIssuer(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := writeTestConfigWithIDP(t, dir)
+
+	if err := cmdUser([]string{"invite", "--config", cfgPath, "--idp", "keycloak-prod", "--email", "Alice@Example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := sqlite.Open(filepath.Join(dir, "db.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	user, err := st.FindUserByEmail(context.Background(), "alice@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Provider != "keycloak-prod" || user.Issuer != "https://sso.example.com/realms/prod" {
+		t.Fatalf("identity provider = %s issuer = %s", user.Provider, user.Issuer)
+	}
+}
+
+func TestUserInviteRequiresIDP(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := writeTestConfigWithIDP(t, dir)
+
+	err := cmdUser([]string{"invite", "--config", cfgPath, "--email", "Alice@Example.com"})
+	if err == nil {
+		t.Fatal("expected user invite without --idp to fail")
+	}
+	if !strings.Contains(err.Error(), "--idp is required") {
+		t.Fatalf("error = %q, want --idp requirement", err)
+	}
+}
+
+func TestUserAddIDPUsesConfiguredIssuer(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := writeTestConfigWithIDP(t, dir)
+
+	if err := cmdUser([]string{"add", "--config", cfgPath, "--idp", "keycloak-prod", "--subject", "subject:with:colon", "--email", "Alice@Example.com", "--email-verified"}); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := sqlite.Open(filepath.Join(dir, "db.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	user, err := st.FindUserByIdentity(context.Background(), "keycloak-prod", "https://sso.example.com/realms/prod", "subject:with:colon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Status != "active" || !user.EmailVerified {
+		t.Fatalf("unexpected user: %#v", user)
+	}
+}
+
+func TestUserAddRequiresIDP(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := writeTestConfigWithIDP(t, dir)
+
+	err := cmdUser([]string{"add", "--config", cfgPath, "--subject", "subject:with:colon", "--email", "Alice@Example.com", "--email-verified"})
+	if err == nil {
+		t.Fatal("expected user add without --idp to fail")
+	}
+	if !strings.Contains(err.Error(), "--idp is required") {
+		t.Fatalf("error = %q, want --idp requirement", err)
+	}
+}
+
 func TestOpenEnvWrapsConfigPath(t *testing.T) {
 	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "missing.yaml")
@@ -110,6 +186,38 @@ func writeTestConfig(t *testing.T, dir string) string {
 	raw := []byte(`
 server:
   public_base_url: "https://auth.example.com"
+database:
+  path: "` + filepath.Join(dir, "db.sqlite3") + `"
+jwt:
+  issuer: "https://auth.example.com"
+  audience: ["lore-service", "lore.example.com"]
+  signing_key_dir: "` + filepath.Join(dir, "keys") + `"
+lore:
+  default_remote_url: "lore://lore.example.com:41337"
+security: {}
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeTestConfigWithIDP(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "config.yaml")
+	raw := []byte(`
+server:
+  public_base_url: "https://auth.example.com"
+identity_providers:
+  default: keycloak-prod
+  providers:
+    keycloak-prod:
+      type: oidc
+      display_name: "Company SSO"
+      issuer: "https://sso.example.com/realms/prod"
+      client_id: "lore-auth-bridge"
+      client_secret_file: "` + filepath.Join(dir, "idp_secret") + `"
+      redirect_url: "https://auth.example.com/auth/keycloak-prod/callback"
 database:
   path: "` + filepath.Join(dir, "db.sqlite3") + `"
 jwt:

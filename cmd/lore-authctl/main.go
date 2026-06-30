@@ -111,7 +111,7 @@ func openEnv(configPath, dbPath string) (*cliEnv, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("build token config: %w", err)
 	}
-	tokens := service.NewTokenService(tokenCfg, coreStore, coreStore, authz, rs256.NewSigner(cfg.JWT.ActiveKID, coreStore), coreStore)
+	tokens := service.NewTokenService(tokenCfg, coreStore, coreStore, authz, rs256.NewSigner(cfg.JWT.ActiveKID, coreStore), coreStore, coreStore)
 	keyAdmin := rs256.NewSigningKeyAdmin(cfg.JWT.SigningKeyDir, coreStore)
 	return &cliEnv{cfg: cfg, store: st, core: coreStore, authz: authz, groups: coreStore, grants: coreStore, keys: keyAdmin, tokens: tokens, permissions: service.NewPermissionService(coreStore, authz)}, nil
 }
@@ -226,6 +226,7 @@ func cmdUser(args []string) error {
 
 func cmdUserAdd(args []string) error {
 	fs, configPath, dbPath, _ := commonFlags("user add", nil)
+	idp := fs.String("idp", "", "identity provider instance id from config")
 	provider := fs.String("provider", "google", "identity provider")
 	issuer := fs.String("issuer", "https://accounts.google.com", "issuer")
 	subject := fs.String("subject", "", "provider subject")
@@ -243,7 +244,11 @@ func cmdUserAdd(args []string) error {
 		return err
 	}
 	defer env.close()
-	u, err := env.core.AddUser(context.Background(), model.AddUserInput{Provider: *provider, Issuer: *issuer, Subject: *subject, Email: *email, EmailVerified: *emailVerified, DisplayName: *name})
+	resolvedProvider, resolvedIssuer, err := resolveUserIDP(env.cfg, *idp, *provider, *issuer)
+	if err != nil {
+		return err
+	}
+	u, err := env.core.AddUser(context.Background(), model.AddUserInput{Provider: resolvedProvider, Issuer: resolvedIssuer, Subject: *subject, Email: *email, EmailVerified: *emailVerified, DisplayName: *name})
 	if err != nil {
 		return fmt.Errorf("user add %q: %w", *subject, err)
 	}
@@ -253,6 +258,7 @@ func cmdUserAdd(args []string) error {
 
 func cmdUserInvite(args []string) error {
 	fs, configPath, dbPath, _ := commonFlags("user invite", nil)
+	idp := fs.String("idp", "", "identity provider instance id from config")
 	provider := fs.String("provider", "google", "identity provider")
 	issuer := fs.String("issuer", "https://accounts.google.com", "issuer")
 	email := fs.String("email", "", "email address to pre-register")
@@ -268,7 +274,11 @@ func cmdUserInvite(args []string) error {
 		return err
 	}
 	defer env.close()
-	u, err := env.core.AddPreRegisteredUser(context.Background(), model.AddPreRegisteredUserInput{Provider: *provider, Issuer: *issuer, Email: *email, DisplayName: *name})
+	resolvedProvider, resolvedIssuer, err := resolveUserIDP(env.cfg, *idp, *provider, *issuer)
+	if err != nil {
+		return err
+	}
+	u, err := env.core.AddPreRegisteredUser(context.Background(), model.AddPreRegisteredUserInput{Provider: resolvedProvider, Issuer: resolvedIssuer, Email: *email, DisplayName: *name})
 	if err != nil {
 		return fmt.Errorf("user invite %q: %w", *email, err)
 	}
@@ -362,6 +372,27 @@ func cmdGroupAdd(args []string) error {
 	}
 	fmt.Printf("%s\t%s\n", g.ID, g.Name)
 	return nil
+}
+
+func resolveUserIDP(cfg *config.Config, idp, provider, issuer string) (string, string, error) {
+	idp = strings.TrimSpace(idp)
+	if idp == "" {
+		if cfg != nil && len(cfg.IdentityProviders.Providers) > 0 {
+			return "", "", fmt.Errorf("--idp is required when identity_providers are configured")
+		}
+		return provider, issuer, nil
+	}
+	if cfg == nil {
+		return "", "", fmt.Errorf("--idp %q requires loaded config", idp)
+	}
+	providerCfg, ok := cfg.IdentityProviders.Providers[idp]
+	if !ok {
+		return "", "", fmt.Errorf("--idp %q is not configured", idp)
+	}
+	if strings.TrimSpace(providerCfg.Issuer) == "" {
+		return "", "", fmt.Errorf("--idp %q has no issuer configured", idp)
+	}
+	return idp, providerCfg.Issuer, nil
 }
 
 func cmdGroupList(args []string) error {
