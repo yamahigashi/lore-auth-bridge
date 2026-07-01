@@ -169,7 +169,7 @@ func TestDeviceApproveDeniedUserIsPermissionDenied(t *testing.T) {
 	dir := t.TempDir()
 	st, cfg := setupDeviceTest(t, dir)
 	defer st.Close()
-	if _, err := st.AddUser(ctx, sqlite.AddUserParams{Provider: "google", Issuer: "https://accounts.google.com", Subject: "other", Email: "bob@example.com"}); err != nil {
+	if _, err := st.AddUser(ctx, sqlite.AddUserParams{Email: "bob@example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	svc := NewService(cfg, st)
@@ -223,7 +223,7 @@ func setupDeviceTest(t *testing.T, dir string) (*sqlite.Store, *config.Config) {
 	if _, err := st.AddSigningKey(ctx, sqlite.AddSigningKeyParams{Kid: key.Kid, Alg: key.Alg, PublicJWKJSON: string(jwk), PrivateKeyPath: keyPath, Status: "active"}); err != nil {
 		t.Fatal(err)
 	}
-	u, err := st.AddUser(ctx, sqlite.AddUserParams{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u, err := st.AddUser(ctx, sqlite.AddUserParams{Email: "alice@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}

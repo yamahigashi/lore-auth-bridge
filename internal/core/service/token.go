@@ -20,42 +20,35 @@ type TokenConfig struct {
 }
 
 type TokenService struct {
-	cfg         TokenConfig
-	users       ports.UserDirectory
-	resources   ports.ResourceStore
-	authz       ports.AuthorizationPolicy
-	signer      ports.TokenSigner
-	log         ports.IssuedTokenLog
-	authnLookup ports.AuthnTokenLookup
+	cfg       TokenConfig
+	accounts  ports.AccountDirectory
+	resources ports.ResourceStore
+	authz     ports.AuthorizationPolicy
+	signer    ports.TokenSigner
+	log       ports.IssuedTokenLog
 }
 
-func NewTokenService(cfg TokenConfig, users ports.UserDirectory, resources ports.ResourceStore, authz ports.AuthorizationPolicy, signer ports.TokenSigner, log ports.IssuedTokenLog, authnLookup ports.AuthnTokenLookup) *TokenService {
-	return &TokenService{cfg: cfg, users: users, resources: resources, authz: authz, signer: signer, log: log, authnLookup: authnLookup}
+func NewTokenService(cfg TokenConfig, accounts ports.AccountDirectory, resources ports.ResourceStore, authz ports.AuthorizationPolicy, signer ports.TokenSigner, log ports.IssuedTokenLog) *TokenService {
+	return &TokenService{cfg: cfg, accounts: accounts, resources: resources, authz: authz, signer: signer, log: log}
 }
 
-func (s *TokenService) MintAuthn(ctx context.Context, userEmailOrID string, ttl time.Duration) (model.SignedToken, model.User, error) {
-	user, err := s.users.Resolve(ctx, userEmailOrID)
+func (s *TokenService) MintAuthn(ctx context.Context, userID string, ttl time.Duration) (model.SignedToken, model.User, error) {
+	principal, err := s.principalByUserID(ctx, userID)
 	if err != nil {
 		return model.SignedToken{}, model.User{}, err
 	}
-	if user.Status != "active" {
-		return model.SignedToken{}, model.User{}, fmt.Errorf("%w: user is not active", model.ErrPermissionDenied)
-	}
+	user := userFromTokenPrincipal(principal)
 	if ttl == 0 {
 		ttl = s.cfg.AuthnTTL
-	}
-	groups, err := s.users.GroupNames(ctx, user.ID)
-	if err != nil {
-		return model.SignedToken{}, model.User{}, err
 	}
 	signed, err := s.signer.SignAuthn(ctx, model.AuthnTokenInput{
 		Issuer:            s.cfg.Issuer,
 		Audience:          s.authnAudience(),
-		Subject:           user.SubjectClaim(),
-		Name:              user.Display(),
-		PreferredUsername: user.PreferredUsername(),
-		Groups:            groups,
-		IDP:               user.Provider,
+		Subject:           principal.TokenSubject,
+		Name:              principal.DisplayName,
+		PreferredUsername: principal.PreferredUsername,
+		Groups:            principal.Groups,
+		IDP:               principal.TokenIDP,
 		TTL:               ttl,
 	})
 	if err != nil {
@@ -79,21 +72,21 @@ func (s *TokenService) VerifyAuthn(ctx context.Context, bearer string) (model.Ve
 	if verified.JTI == "" {
 		return model.VerifiedAuthn{}, fmt.Errorf("%w: authn token missing jti", model.ErrUnauthenticated)
 	}
-	if s.authnLookup == nil {
+	if s.accounts == nil {
 		return model.VerifiedAuthn{}, fmt.Errorf("%w: authn token lookup unavailable", model.ErrUnauthenticated)
 	}
-	user, err := s.authnLookup.FindActiveAuthnTokenUser(ctx, verified.JTI)
+	principal, err := s.accounts.PrincipalByAuthnTokenJTI(ctx, verified.JTI)
 	if err != nil {
 		return model.VerifiedAuthn{}, err
 	}
-	if user.Status != "active" {
-		return model.VerifiedAuthn{}, fmt.Errorf("%w: user is not active", model.ErrPermissionDenied)
+	if verified.IDP != "" {
+		principal.TokenIDP = verified.IDP
 	}
-	return model.VerifiedAuthn{Subject: verified.Subject, User: user}, nil
+	return model.VerifiedAuthn{Subject: verified.Subject, Principal: principal, User: userFromTokenPrincipal(principal)}, nil
 }
 
 func (s *TokenService) ExchangeAuthz(ctx context.Context, authn model.VerifiedAuthn, resourceIDs []string, ttl time.Duration) (model.SignedToken, error) {
-	if authn.User.ID == "" {
+	if authn.Principal.UserID == "" {
 		return model.SignedToken{}, fmt.Errorf("%w: missing authn", model.ErrUnauthenticated)
 	}
 	if len(resourceIDs) == 0 {
@@ -108,7 +101,7 @@ func (s *TokenService) ExchangeAuthz(ctx context.Context, authn model.VerifiedAu
 		if err != nil {
 			return model.SignedToken{}, err
 		}
-		allowed, err := s.authz.CanAccess(ctx, authn.User.ID, resource.ResourceID, "write")
+		allowed, err := s.authz.CanAccess(ctx, authn.Principal.UserID, resource.ResourceID, "write")
 		if err != nil {
 			return model.SignedToken{}, err
 		}
@@ -117,56 +110,49 @@ func (s *TokenService) ExchangeAuthz(ctx context.Context, authn model.VerifiedAu
 		}
 		resources = append(resources, model.ResourcePermission{ResourceID: resource.ResourceID, Permission: []string{"read", "write"}})
 	}
-	groups, err := s.users.GroupNames(ctx, authn.User.ID)
-	if err != nil {
-		return model.SignedToken{}, err
-	}
 	signed, err := s.signer.SignAuthz(ctx, model.AuthzTokenInput{
 		Issuer:            s.cfg.Issuer,
 		Audience:          s.cfg.Audience,
-		Subject:           authn.Subject,
-		Name:              authn.User.Display(),
-		PreferredUsername: authn.User.PreferredUsername(),
-		Groups:            groups,
-		IDP:               authn.User.Provider,
+		Subject:           authn.Principal.TokenSubject,
+		Name:              authn.Principal.DisplayName,
+		PreferredUsername: authn.Principal.PreferredUsername,
+		Groups:            authn.Principal.Groups,
+		IDP:               authn.Principal.TokenIDP,
 		Resources:         resources,
 		TTL:               ttl,
 	})
 	if err != nil {
 		return model.SignedToken{}, fmt.Errorf("%w: sign authz token: %w", model.ErrTokenIssueFailed, err)
 	}
-	if err := s.record(ctx, signed, authn.User.ID, "authz", "authz"); err != nil {
+	if err := s.record(ctx, signed, authn.Principal.UserID, "authz", "authz"); err != nil {
 		return model.SignedToken{}, fmt.Errorf("%w: record authz token: %w", model.ErrTokenIssueFailed, err)
 	}
 	return signed, nil
 }
 
-func (s *TokenService) ManualMintAuthz(ctx context.Context, userEmailOrID, repoName, role string, ttl time.Duration) (model.SignedToken, error) {
+func (s *TokenService) ManualMintAuthz(ctx context.Context, userID, repoName, role string, ttl time.Duration) (model.SignedToken, error) {
 	if role == "" {
 		role = "writer"
 	}
 	if role != "writer" {
 		return model.SignedToken{}, fmt.Errorf("%w: MVP only issues writer tokens; got %q", model.ErrInvalidArgument, role)
 	}
-	user, err := s.users.Resolve(ctx, userEmailOrID)
+	principal, err := s.principalByUserID(ctx, userID)
 	if err != nil {
 		return model.SignedToken{}, err
-	}
-	if user.Status != "active" {
-		return model.SignedToken{}, fmt.Errorf("%w: user is not active", model.ErrPermissionDenied)
 	}
 	resource, err := s.resources.GetByName(ctx, repoName)
 	if err != nil {
 		return model.SignedToken{}, err
 	}
-	allowed, err := s.authz.CanAccess(ctx, user.ID, resource.ResourceID, "write")
+	allowed, err := s.authz.CanAccess(ctx, principal.UserID, resource.ResourceID, "write")
 	if err != nil {
 		return model.SignedToken{}, err
 	}
 	if !allowed {
 		return model.SignedToken{}, fmt.Errorf("%w: user is not allowed to write repository", model.ErrPermissionDenied)
 	}
-	return s.ExchangeAuthz(ctx, model.VerifiedAuthn{Subject: user.SubjectClaim(), User: user}, []string{resource.ResourceID}, ttl)
+	return s.ExchangeAuthz(ctx, model.VerifiedAuthn{Subject: principal.TokenSubject, Principal: principal, User: userFromTokenPrincipal(principal)}, []string{resource.ResourceID}, ttl)
 }
 
 func (s *TokenService) record(ctx context.Context, signed model.SignedToken, userID, kind, role string) error {
@@ -182,6 +168,21 @@ func (s *TokenService) authnAudience() []string {
 		out = append(out, s.cfg.AuthServiceAudience)
 	}
 	return out
+}
+
+func (s *TokenService) principalByUserID(ctx context.Context, userID string) (model.TokenPrincipal, error) {
+	if s.accounts == nil {
+		return model.TokenPrincipal{}, fmt.Errorf("%w: account directory unavailable", model.ErrUnauthenticated)
+	}
+	principal, err := s.accounts.PrincipalByUserID(ctx, userID)
+	if err != nil {
+		return model.TokenPrincipal{}, err
+	}
+	return principal, nil
+}
+
+func userFromTokenPrincipal(principal model.TokenPrincipal) model.User {
+	return model.User{ID: principal.UserID, Email: principal.PreferredUsername, DisplayName: principal.DisplayName, Status: "active"}
 }
 
 func contains(values []string, want string) bool {

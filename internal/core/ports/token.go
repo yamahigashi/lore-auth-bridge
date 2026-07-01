@@ -17,7 +17,3 @@ type TokenSigner interface {
 type IssuedTokenLog interface {
 	Record(ctx context.Context, token model.IssuedToken) error
 }
-
-type AuthnTokenLookup interface {
-	FindActiveAuthnTokenUser(ctx context.Context, jti string) (model.User, error)
-}

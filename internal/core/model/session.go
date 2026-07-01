@@ -14,6 +14,7 @@ type LoginStateInput struct {
 	Nonce         string
 	LoginURLNonce string
 	ReturnPath    string
+	PrivateState  []byte
 }
 
 type LoginState struct {
@@ -22,6 +23,7 @@ type LoginState struct {
 	Nonce         string
 	LoginURLNonce string
 	ReturnPath    string
+	PrivateState  []byte
 	ExpiresAt     int64
 }
 

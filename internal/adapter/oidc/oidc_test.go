@@ -66,6 +66,32 @@ func TestBeginAuthUsesDiscoveredAuthorizationEndpoint(t *testing.T) {
 	assertQueryValue(t, values, "login_hint", "alice@example.com")
 }
 
+func TestDescriptorIncludesLoginTrustPolicy(t *testing.T) {
+	t.Parallel()
+	issuer := newOIDCTestIssuer(t, nil)
+
+	provider, err := New(context.Background(), Config{
+		ProviderID:          "keycloak-prod",
+		Issuer:              issuer.URL,
+		ClientID:            "client-id",
+		ClientSecret:        "client-secret",
+		RedirectURL:         "https://auth.example.com/auth/keycloak-prod/callback",
+		EmailBinding:        "verified_email_invitation",
+		AllowedEmailDomains: []string{"Example.com", "example.com", "contractor.example"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	descriptor := provider.Descriptor()
+	if descriptor.TrustPolicy.EmailBinding != "verified_email_invitation" {
+		t.Fatalf("email binding = %q, want verified_email_invitation", descriptor.TrustPolicy.EmailBinding)
+	}
+	if got := strings.Join(descriptor.TrustPolicy.AllowedEmailDomains, ","); got != "example.com,contractor.example" {
+		t.Fatalf("allowed email domains = %q", got)
+	}
+}
+
 func TestCompleteAuthVerifiesIDTokenAndMapsClaims(t *testing.T) {
 	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -93,6 +119,7 @@ func TestCompleteAuthVerifiesIDTokenAndMapsClaims(t *testing.T) {
 
 	provider, err := New(context.Background(), Config{
 		ProviderID:   "keycloak-prod",
+		Profile:      "keycloak",
 		DisplayName:  "Company SSO",
 		Issuer:       issuer.URL,
 		ClientID:     "client-id",
@@ -120,10 +147,10 @@ func TestCompleteAuthVerifiesIDTokenAndMapsClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if identity.Provider != "keycloak-prod" || identity.Issuer != issuer.URL || identity.Subject != "subject:with:colon" {
+	if identity.ProviderID != "keycloak-prod" || identity.Issuer != issuer.URL || identity.Subject != "subject:with:colon" {
 		t.Fatalf("unexpected canonical identity key: %#v", identity)
 	}
-	if identity.Email != "alice@example.com" || !identity.EmailVerified || identity.Name != "Alice Example" {
+	if identity.Email != "alice@example.com" || !identity.EmailVerified || identity.DisplayName != "Alice Example" {
 		t.Fatalf("unexpected mapped identity: %#v", identity)
 	}
 	if identity.PictureURL != "https://example.com/alice.png" || identity.HostedDomain != "example.com" {
@@ -131,7 +158,7 @@ func TestCompleteAuthVerifiesIDTokenAndMapsClaims(t *testing.T) {
 	}
 }
 
-func TestCompleteAuthRejectsAllowedDomainWhenEmailIsUnverified(t *testing.T) {
+func TestCompleteAuthDoesNotApplyAllowedEmailDomainsBeforeLoginResolution(t *testing.T) {
 	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -146,7 +173,7 @@ func TestCompleteAuthRejectsAllowedDomainWhenEmailIsUnverified(t *testing.T) {
 			"exp":            time.Now().Add(time.Hour).Unix(),
 			"iat":            time.Now().Add(-time.Minute).Unix(),
 			"nonce":          "nonce-123",
-			"email":          "alice@example.com",
+			"email":          "alice@other.example",
 			"email_verified": false,
 		})
 		return oidcTestHandlerConfig{Key: key, IDToken: rawIDToken}
@@ -164,12 +191,265 @@ func TestCompleteAuthRejectsAllowedDomainWhenEmailIsUnverified(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = provider.CompleteAuth(context.Background(), ports.CompleteAuthRequest{
+	identity, err := provider.CompleteAuth(context.Background(), ports.CompleteAuthRequest{
 		Code:  "auth-code",
 		Nonce: "nonce-123",
 	})
+	if err != nil {
+		t.Fatalf("CompleteAuth error = %v, want identity for login resolution", err)
+	}
+	if identity.Email != "alice@other.example" || identity.EmailVerified {
+		t.Fatalf("unexpected identity email claims: %#v", identity)
+	}
+}
+
+func TestGoogleProfileAcceptsAllowedHostedDomainClaim(t *testing.T) {
+	t.Parallel()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawIDToken string
+	issuer := newOIDCTestIssuer(t, func(issuerURL string) oidcTestHandlerConfig {
+		rawIDToken = signOIDCTestToken(t, key, map[string]any{
+			"iss":            issuerURL,
+			"aud":            "client-id",
+			"sub":            "google-subject",
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"iat":            time.Now().Add(-time.Minute).Unix(),
+			"email":          "alice@personal.example",
+			"email_verified": true,
+			"hd":             "example.com",
+		})
+		return oidcTestHandlerConfig{Key: key, IDToken: rawIDToken}
+	})
+	provider, err := New(context.Background(), Config{
+		ProviderID:           "google",
+		Profile:              "google",
+		Issuer:               issuer.URL,
+		ClientID:             "client-id",
+		ClientSecret:         "client-secret",
+		RedirectURL:          "https://auth.example.com/auth/google/callback",
+		Scopes:               []string{"openid", "email", "profile"},
+		AllowedHostedDomains: []string{"example.com"},
+		PersonalAccounts:     "deny",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	identity, err := provider.CompleteAuth(context.Background(), ports.CompleteAuthRequest{Code: "auth-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.ProviderID != "google" || identity.Subject != "google-subject" || identity.HostedDomain != "example.com" {
+		t.Fatalf("unexpected google identity: %#v", identity)
+	}
+}
+
+func TestGoogleProfileDoesNotUseEmailDomainForWorkspaceRestriction(t *testing.T) {
+	t.Parallel()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawIDToken string
+	issuer := newOIDCTestIssuer(t, func(issuerURL string) oidcTestHandlerConfig {
+		rawIDToken = signOIDCTestToken(t, key, map[string]any{
+			"iss":            issuerURL,
+			"aud":            "client-id",
+			"sub":            "google-subject",
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"iat":            time.Now().Add(-time.Minute).Unix(),
+			"email":          "alice@example.com",
+			"email_verified": true,
+		})
+		return oidcTestHandlerConfig{Key: key, IDToken: rawIDToken}
+	})
+	provider, err := New(context.Background(), Config{
+		ProviderID:           "google",
+		Profile:              "google",
+		Issuer:               issuer.URL,
+		ClientID:             "client-id",
+		ClientSecret:         "client-secret",
+		RedirectURL:          "https://auth.example.com/auth/google/callback",
+		Scopes:               []string{"openid", "email", "profile"},
+		AllowedHostedDomains: []string{"example.com"},
+		PersonalAccounts:     "deny",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = provider.CompleteAuth(context.Background(), ports.CompleteAuthRequest{Code: "auth-code"})
 	if !errors.Is(err, model.ErrPermissionDenied) {
 		t.Fatalf("CompleteAuth error = %v, want ErrPermissionDenied", err)
+	}
+}
+
+func TestNewRejectsUnknownGooglePersonalAccountsPolicy(t *testing.T) {
+	t.Parallel()
+	issuer := newOIDCTestIssuer(t, nil)
+
+	_, err := New(context.Background(), Config{
+		ProviderID:       "google",
+		Profile:          "google",
+		Issuer:           issuer.URL,
+		ClientID:         "client-id",
+		ClientSecret:     "client-secret",
+		RedirectURL:      "https://auth.example.com/auth/google/callback",
+		Scopes:           []string{"openid", "email", "profile"},
+		PersonalAccounts: "denny",
+	})
+	if err == nil {
+		t.Fatal("expected unknown personal_accounts policy to fail")
+	}
+	if !strings.Contains(err.Error(), "personal_accounts") {
+		t.Fatalf("error = %q, want personal_accounts context", err)
+	}
+}
+
+func TestEntraSubjectStrategyUsesTenantAndObjectID(t *testing.T) {
+	t.Parallel()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawIDToken string
+	issuer := newOIDCTestIssuer(t, func(issuerURL string) oidcTestHandlerConfig {
+		rawIDToken = signOIDCTestToken(t, key, map[string]any{
+			"iss":   issuerURL,
+			"aud":   "client-id",
+			"sub":   "pairwise-subject",
+			"tid":   "tenant-1",
+			"oid":   "object-1",
+			"exp":   time.Now().Add(time.Hour).Unix(),
+			"iat":   time.Now().Add(-time.Minute).Unix(),
+			"email": "alice@example.com",
+		})
+		return oidcTestHandlerConfig{Key: key, IDToken: rawIDToken}
+	})
+	provider, err := New(context.Background(), Config{
+		ProviderID:       "entra",
+		Profile:          "entra",
+		Issuer:           issuer.URL,
+		ClientID:         "client-id",
+		ClientSecret:     "client-secret",
+		RedirectURL:      "https://auth.example.com/auth/entra/callback",
+		Scopes:           []string{"openid", "email", "profile"},
+		SubjectStrategy:  "entra_oid_tid",
+		RequiredTenantID: "tenant-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	identity, err := provider.CompleteAuth(context.Background(), ports.CompleteAuthRequest{Code: "auth-code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Subject != "tenant-1:object-1" || identity.SubjectStrategy != "entra_oid_tid" {
+		t.Fatalf("unexpected entra subject: %#v", identity)
+	}
+}
+
+func TestBeginAuthWithRequiredPKCEStoresVerifierAndSendsChallenge(t *testing.T) {
+	t.Parallel()
+	issuer := newOIDCTestIssuer(t, nil)
+	provider, err := New(context.Background(), Config{
+		ProviderID:   "keycloak-prod",
+		Issuer:       issuer.URL,
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://auth.example.com/auth/keycloak-prod/callback",
+		Scopes:       []string{"openid", "email", "profile"},
+		PKCE:         "required",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := provider.BeginAuth(context.Background(), ports.BeginAuthRequest{State: "state-123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var privateState oidcPrivateState
+	if err := json.Unmarshal(result.PrivateState, &privateState); err != nil {
+		t.Fatalf("private state should contain pkce verifier json: %v", err)
+	}
+	if privateState.CodeVerifier == "" {
+		t.Fatal("private state code_verifier is empty")
+	}
+	redirect, err := url.Parse(result.RedirectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := redirect.Query()
+	assertQueryValue(t, values, "code_challenge_method", "S256")
+	assertQueryValue(t, values, "code_challenge", codeChallengeS256(privateState.CodeVerifier))
+}
+
+func TestCompleteAuthWithRequiredPKCERequiresPrivateVerifier(t *testing.T) {
+	t.Parallel()
+	issuer := newOIDCTestIssuer(t, nil)
+	provider, err := New(context.Background(), Config{
+		ProviderID:   "keycloak-prod",
+		Issuer:       issuer.URL,
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://auth.example.com/auth/keycloak-prod/callback",
+		Scopes:       []string{"openid", "email", "profile"},
+		PKCE:         "required",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = provider.CompleteAuth(context.Background(), ports.CompleteAuthRequest{Code: "auth-code"})
+	if err == nil || !strings.Contains(err.Error(), "code_verifier missing") {
+		t.Fatalf("CompleteAuth error = %v, want missing pkce verifier", err)
+	}
+}
+
+func TestCompleteAuthWithRequiredPKCESendsCodeVerifier(t *testing.T) {
+	t.Parallel()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const verifier = "test-pkce-verifier"
+	var rawIDToken string
+	issuer := newOIDCTestIssuer(t, func(issuerURL string) oidcTestHandlerConfig {
+		rawIDToken = signOIDCTestToken(t, key, map[string]any{
+			"iss":            issuerURL,
+			"aud":            "client-id",
+			"sub":            "subject-1",
+			"exp":            time.Now().Add(time.Hour).Unix(),
+			"iat":            time.Now().Add(-time.Minute).Unix(),
+			"email":          "alice@example.com",
+			"email_verified": true,
+		})
+		return oidcTestHandlerConfig{Key: key, IDToken: rawIDToken, ExpectedCodeVerifier: verifier}
+	})
+	provider, err := New(context.Background(), Config{
+		ProviderID:   "keycloak-prod",
+		Issuer:       issuer.URL,
+		ClientID:     "client-id",
+		ClientSecret: "client-secret",
+		RedirectURL:  "https://auth.example.com/auth/keycloak-prod/callback",
+		Scopes:       []string{"openid", "email", "profile"},
+		PKCE:         "required",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateState, err := json.Marshal(oidcPrivateState{CodeVerifier: verifier})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := provider.CompleteAuth(context.Background(), ports.CompleteAuthRequest{Code: "auth-code", PrivateState: privateState}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -191,8 +471,9 @@ func assertQueryValue(t *testing.T, values url.Values, key, want string) {
 }
 
 type oidcTestHandlerConfig struct {
-	Key     *rsa.PrivateKey
-	IDToken string
+	Key                  *rsa.PrivateKey
+	IDToken              string
+	ExpectedCodeVerifier string
 }
 
 func newOIDCTestIssuer(t *testing.T, configFn func(issuerURL string) oidcTestHandlerConfig) *httptest.Server {
@@ -215,6 +496,16 @@ func newOIDCTestIssuer(t *testing.T, configFn func(issuerURL string) oidcTestHan
 		case "/jwks":
 			writeJSON(t, w, map[string]any{"keys": []map[string]any{rsaPublicJWK(&cfg.Key.PublicKey)}})
 		case "/token":
+			if cfg.ExpectedCodeVerifier != "" {
+				if err := r.ParseForm(); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if got := r.Form.Get("code_verifier"); got != cfg.ExpectedCodeVerifier {
+					http.Error(w, "unexpected code_verifier", http.StatusBadRequest)
+					return
+				}
+			}
 			if cfg.IDToken == "" {
 				http.Error(w, "test id token not configured", http.StatusInternalServerError)
 				return

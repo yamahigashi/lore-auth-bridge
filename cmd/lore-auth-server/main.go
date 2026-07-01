@@ -16,7 +16,6 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/casbin"
-	googleid "github.com/yamahigashi/lore-auth-bridge/internal/adapter/google"
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/idpregistry"
 	oidcadapter "github.com/yamahigashi/lore-auth-bridge/internal/adapter/oidc"
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/rs256"
@@ -79,7 +78,7 @@ func run() error {
 		AuthServiceAudience: authServiceAudience,
 		AuthnTTL:            time.Duration(cfg.JWT.TTLSeconds) * time.Second,
 		AuthzTTL:            15 * time.Minute,
-	}, coreStore, coreStore, authz, signer, coreStore, coreStore)
+	}, coreStore, coreStore, authz, signer, coreStore)
 	loginSvc := service.NewLoginService(service.LoginConfig{
 		PublicBaseURL:  cfg.Server.PublicBaseURL,
 		SessionTTL:     time.Duration(cfg.Security.SessionTTLSeconds) * time.Second,
@@ -157,15 +156,6 @@ func buildIdentityProviders(ctx context.Context, cfg *config.Config) (ports.Iden
 	reg := idpregistry.New(cfg.IdentityProviders.Default)
 	for id, providerCfg := range cfg.IdentityProviders.Providers {
 		switch providerCfg.Type {
-		case "google_oidc":
-			secret, err := readIdentityProviderClientSecret(id, providerCfg)
-			if err != nil {
-				return nil, err
-			}
-			provider := googleid.New(googleConfigFromProvider(id, providerCfg, secret))
-			if err := reg.Register(provider); err != nil {
-				return nil, fmt.Errorf("startup: register identity provider %q: %w", id, err)
-			}
 		case "oidc":
 			secret, err := readIdentityProviderClientSecret(id, providerCfg)
 			if err != nil {
@@ -196,31 +186,24 @@ func readIdentityProviderClientSecret(id string, providerCfg config.IdentityProv
 	return secret, nil
 }
 
-func googleConfigFromProvider(id string, providerCfg config.IdentityProviderConfig, clientSecret string) googleid.Config {
-	return googleid.Config{
-		ProviderID:            id,
-		DisplayName:           providerCfg.DisplayName,
-		Issuer:                providerCfg.Issuer,
-		ClientID:              providerCfg.ClientID,
-		ClientSecret:          clientSecret,
-		RedirectURL:           providerCfg.RedirectURL,
-		Scopes:                providerCfg.Scopes,
-		AllowedHostedDomains:  providerCfg.AllowedHostedDomains,
-		AllowPersonalAccounts: providerCfg.AllowPersonalAccounts,
-	}
-}
-
 func oidcConfigFromProvider(id string, providerCfg config.IdentityProviderConfig, clientSecret string) oidcadapter.Config {
 	return oidcadapter.Config{
-		ProviderID:          id,
-		DisplayName:         providerCfg.DisplayName,
-		Issuer:              providerCfg.Issuer,
-		ClientID:            providerCfg.ClientID,
-		ClientSecret:        clientSecret,
-		RedirectURL:         providerCfg.RedirectURL,
-		Scopes:              providerCfg.Scopes,
-		ClaimMapping:        providerCfg.ClaimMapping,
-		AllowedEmailDomains: providerCfg.AllowedEmailDomains,
+		ProviderID:           id,
+		Profile:              providerCfg.Profile,
+		DisplayName:          providerCfg.DisplayName,
+		Issuer:               providerCfg.Issuer,
+		ClientID:             providerCfg.ClientID,
+		ClientSecret:         clientSecret,
+		RedirectURL:          providerCfg.RedirectURL,
+		Scopes:               providerCfg.Scopes,
+		PKCE:                 providerCfg.PKCE,
+		ClaimMapping:         providerCfg.Claims,
+		SubjectStrategy:      providerCfg.Subject.Strategy,
+		RequiredTenantID:     providerCfg.Subject.RequiredTID,
+		EmailBinding:         providerCfg.Trust.EmailBinding,
+		AllowedEmailDomains:  providerCfg.Trust.AllowedEmailDomains,
+		AllowedHostedDomains: providerCfg.Trust.HostedDomain.Allowed,
+		PersonalAccounts:     providerCfg.Trust.PersonalAccounts,
 	}
 }
 

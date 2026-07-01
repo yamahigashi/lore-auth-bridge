@@ -12,6 +12,7 @@ type CreateLoginStateParams struct {
 	Nonce         string
 	LoginURLNonce string
 	ReturnPath    string
+	PrivateState  []byte
 	TTLSeconds    int
 }
 
@@ -28,15 +29,24 @@ func (s *Store) CreateLoginState(ctx context.Context, p CreateLoginStateParams) 
 		Nonce:         nullString(p.Nonce),
 		LoginURLNonce: nullString(p.LoginURLNonce),
 		ReturnPath:    nullString(p.ReturnPath),
+		PrivateState:  append([]byte(nil), p.PrivateState...),
 		CreatedAt:     now,
 		ExpiresAt:     now + int64(p.TTLSeconds),
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO login_states (id, state_hash, provider_id, nonce, login_url_nonce, return_path, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		loginState.ID, loginState.StateHash, loginState.ProviderID, loginState.Nonce, loginState.LoginURLNonce, loginState.ReturnPath, loginState.CreatedAt, loginState.ExpiresAt)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO login_transactions (id, state_hash, provider_id, nonce, login_url_nonce, return_path, private_state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		loginState.ID, loginState.StateHash, loginState.ProviderID, loginState.Nonce, loginState.LoginURLNonce, loginState.ReturnPath, loginState.PrivateState, loginState.CreatedAt, loginState.ExpiresAt)
 	if err != nil {
 		return "", nil, fmt.Errorf("store: create login state: %w", err)
 	}
 	return state, loginState, nil
+}
+
+func (s *Store) SetLoginStatePrivateState(ctx context.Context, state string, privateState []byte) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE login_transactions SET private_state = ? WHERE state_hash = ? AND consumed_at IS NULL AND expires_at > ?`, append([]byte(nil), privateState...), HashAuthCode(state), UnixNow())
+	if err != nil {
+		return err
+	}
+	return requireAffected(res)
 }
 
 func (s *Store) ConsumeLoginState(ctx context.Context, state string) (*LoginState, error) {
@@ -45,14 +55,14 @@ func (s *Store) ConsumeLoginState(ctx context.Context, state string) (*LoginStat
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	loginState, err := scanLoginState(tx.QueryRowContext(ctx, `SELECT id, state_hash, provider_id, nonce, login_url_nonce, return_path, created_at, expires_at, consumed_at FROM login_states WHERE state_hash = ?`, HashAuthCode(state)))
+	loginState, err := scanLoginState(tx.QueryRowContext(ctx, `SELECT id, state_hash, provider_id, nonce, login_url_nonce, return_path, private_state, created_at, expires_at, consumed_at FROM login_transactions WHERE state_hash = ?`, HashAuthCode(state)))
 	if err != nil {
 		return nil, err
 	}
 	if loginState.ConsumedAt.Valid || loginState.ExpiresAt <= UnixNow() {
 		return nil, ErrNotFound
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE login_states SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`, UnixNow(), loginState.ID, UnixNow())
+	res, err := tx.ExecContext(ctx, `UPDATE login_transactions SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL AND expires_at > ?`, UnixNow(), loginState.ID, UnixNow())
 	if err != nil {
 		return nil, err
 	}
@@ -64,7 +74,7 @@ func (s *Store) ConsumeLoginState(ctx context.Context, state string) (*LoginStat
 
 func scanLoginState(row rowScanner) (*LoginState, error) {
 	var s LoginState
-	err := row.Scan(&s.ID, &s.StateHash, &s.ProviderID, &s.Nonce, &s.LoginURLNonce, &s.ReturnPath, &s.CreatedAt, &s.ExpiresAt, &s.ConsumedAt)
+	err := row.Scan(&s.ID, &s.StateHash, &s.ProviderID, &s.Nonce, &s.LoginURLNonce, &s.ReturnPath, &s.PrivateState, &s.CreatedAt, &s.ExpiresAt, &s.ConsumedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

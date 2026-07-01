@@ -16,18 +16,20 @@ import (
 )
 
 type Store struct {
-	mu        sync.Mutex
-	users     map[string]model.User
-	groups    map[string][]string
-	resources map[string]model.Resource
-	grants    map[string]map[string]string
-	auth      map[string]model.AuthSession
-	login     map[string]model.LoginState
-	nonces    map[string]string
-	sessions  map[string]string
-	csrf      map[string]csrfToken
-	tokens    map[string]model.VerifiedToken
-	issued    map[string]model.IssuedToken
+	mu          sync.Mutex
+	users       map[string]model.User
+	identities  map[string]model.ExternalIdentity
+	invitations map[string]model.IdentityInvitation
+	groups      map[string][]string
+	resources   map[string]model.Resource
+	grants      map[string]map[string]string
+	auth        map[string]model.AuthSession
+	login       map[string]model.LoginState
+	nonces      map[string]string
+	sessions    map[string]string
+	csrf        map[string]csrfToken
+	tokens      map[string]model.VerifiedToken
+	issued      map[string]model.IssuedToken
 }
 
 type csrfToken struct {
@@ -38,17 +40,19 @@ type csrfToken struct {
 
 func New() *Store {
 	return &Store{
-		users:     map[string]model.User{},
-		groups:    map[string][]string{},
-		resources: map[string]model.Resource{},
-		grants:    map[string]map[string]string{},
-		auth:      map[string]model.AuthSession{},
-		login:     map[string]model.LoginState{},
-		nonces:    map[string]string{},
-		sessions:  map[string]string{},
-		csrf:      map[string]csrfToken{},
-		tokens:    map[string]model.VerifiedToken{},
-		issued:    map[string]model.IssuedToken{},
+		users:       map[string]model.User{},
+		identities:  map[string]model.ExternalIdentity{},
+		invitations: map[string]model.IdentityInvitation{},
+		groups:      map[string][]string{},
+		resources:   map[string]model.Resource{},
+		grants:      map[string]map[string]string{},
+		auth:        map[string]model.AuthSession{},
+		login:       map[string]model.LoginState{},
+		nonces:      map[string]string{},
+		sessions:    map[string]string{},
+		csrf:        map[string]csrfToken{},
+		tokens:      map[string]model.VerifiedToken{},
+		issued:      map[string]model.IssuedToken{},
 	}
 }
 
@@ -58,17 +62,27 @@ func (s *Store) AddTestUser(u model.User) model.User {
 	if u.ID == "" {
 		u.ID = uuid.NewString()
 	}
-	if u.Provider == "" {
-		u.Provider = "google"
-	}
-	if u.Issuer == "" {
-		u.Issuer = "https://accounts.google.com"
-	}
 	if u.Status == "" {
 		u.Status = "active"
 	}
 	s.users[u.ID] = u
 	return u
+}
+
+func (s *Store) AddTestExternalIdentity(identity model.ExternalIdentity) model.ExternalIdentity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if identity.ID == "" {
+		identity.ID = uuid.NewString()
+	}
+	if identity.SubjectStrategy == "" {
+		identity.SubjectStrategy = "oidc_sub"
+	}
+	if identity.Status == "" {
+		identity.Status = "active"
+	}
+	s.identities[externalIdentityKey(identity.ProviderID, identity.Issuer, identity.Subject)] = identity
+	return identity
 }
 
 func (s *Store) AddTestResource(r model.Resource) model.Resource {
@@ -103,43 +117,127 @@ func (s *Store) GrantRole(userID, resourceID, role string) {
 	s.grants[userID][resourceID] = role
 }
 
-func (s *Store) FindByIdentity(ctx context.Context, provider, issuer, subject string) (model.User, error) {
+func (s *Store) ResolveLogin(ctx context.Context, req model.LoginResolutionRequest) (model.TokenPrincipal, model.LoginBindingResult, error) {
+	identity := req.Identity
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, user := range s.users {
-		if user.Provider == provider && user.Issuer == issuer && user.Subject == subject {
-			return user, nil
+	key := externalIdentityKey(identity.ProviderID, identity.Issuer, identity.Subject)
+	if existing, ok := s.identities[key]; ok && existing.Status == "active" {
+		user, ok := s.users[existing.UserID]
+		if !ok {
+			return model.TokenPrincipal{}, model.LoginBindingResult{}, model.ErrNotFound
+		}
+		if user.Status != "active" {
+			return model.TokenPrincipal{}, model.LoginBindingResult{}, fmt.Errorf("%w: user is not active", model.ErrPermissionDenied)
+		}
+		return tokenPrincipalFromMemoryUser(user, identity.ProviderID, s.groups[user.ID]), model.LoginBindingResult{Status: "existing", ExternalIdentityID: existing.ID}, nil
+	}
+	if identity.EmailVerified && strings.TrimSpace(identity.Email) != "" && memoryAllowsVerifiedEmailInvitationBinding(req.Policy) && memoryEmailDomainAllowed(identity.Email, req.Policy.AllowedEmailDomains) {
+		now := time.Now().Unix()
+		for id, invitation := range s.invitations {
+			if invitation.ProviderID != identity.ProviderID || invitation.Issuer != identity.Issuer || invitation.Status != "pending" {
+				continue
+			}
+			if invitation.ExpiresAt != 0 && invitation.ExpiresAt <= now {
+				continue
+			}
+			if strings.TrimSpace(invitation.BindingPolicy) != model.LoginEmailBindingVerifiedEmailInvitation {
+				continue
+			}
+			if !strings.EqualFold(strings.TrimSpace(invitation.Email), strings.TrimSpace(identity.Email)) {
+				continue
+			}
+			user, ok := s.users[invitation.UserID]
+			if !ok {
+				return model.TokenPrincipal{}, model.LoginBindingResult{}, model.ErrNotFound
+			}
+			external := identity
+			external.ID = uuid.NewString()
+			external.UserID = user.ID
+			if external.SubjectStrategy == "" {
+				external.SubjectStrategy = "oidc_sub"
+			}
+			external.Status = "active"
+			s.identities[key] = external
+			invitation.Status = "accepted"
+			invitation.AcceptedIdentityID = external.ID
+			s.invitations[id] = invitation
+			user.Email = identity.Email
+			user.DisplayName = identity.DisplayName
+			user.Status = "active"
+			s.users[user.ID] = user
+			return tokenPrincipalFromMemoryUser(user, identity.ProviderID, s.groups[user.ID]), model.LoginBindingResult{Status: "bound_invitation", ExternalIdentityID: external.ID, InvitationID: invitation.ID}, nil
 		}
 	}
-	return model.User{}, model.ErrNotFound
+	return model.TokenPrincipal{}, model.LoginBindingResult{}, model.ErrNotFound
 }
 
-func (s *Store) BindPreRegisteredIdentity(ctx context.Context, identity model.Identity) (model.User, error) {
+func memoryAllowsVerifiedEmailInvitationBinding(policy model.LoginTrustPolicy) bool {
+	return strings.TrimSpace(policy.EmailBinding) == model.LoginEmailBindingVerifiedEmailInvitation
+}
+
+func memoryEmailDomainAllowed(email string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	domain := memoryEmailDomain(email)
+	if domain == "" {
+		return false
+	}
+	for _, allowedDomain := range allowed {
+		if strings.EqualFold(strings.TrimSpace(allowedDomain), domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func memoryEmailDomain(email string) string {
+	email = strings.ToLower(strings.TrimSpace(email))
+	at := strings.LastIndex(email, "@")
+	if at < 0 || at == len(email)-1 {
+		return ""
+	}
+	return email[at+1:]
+}
+
+func (s *Store) PrincipalByUserID(ctx context.Context, userID string) (model.TokenPrincipal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !identity.EmailVerified || strings.TrimSpace(identity.Email) == "" {
-		return model.User{}, model.ErrNotFound
+	user, ok := s.users[userID]
+	if !ok {
+		return model.TokenPrincipal{}, model.ErrNotFound
 	}
-	for id, user := range s.users {
-		if user.Provider != identity.Provider || user.Issuer != identity.Issuer {
-			continue
-		}
-		if user.Subject == identity.Subject && user.Status == "active" {
-			return user, nil
-		}
-		if user.Subject == "" && user.Status == "pending" && strings.EqualFold(strings.TrimSpace(user.Email), strings.TrimSpace(identity.Email)) {
-			user.Subject = identity.Subject
-			user.Email = identity.Email
-			user.EmailVerified = identity.EmailVerified
-			user.DisplayName = identity.Name
-			user.PictureURL = identity.PictureURL
-			user.HostedDomain = identity.HostedDomain
-			user.Status = "active"
-			s.users[id] = user
-			return user, nil
-		}
+	if user.Status != "active" {
+		return model.TokenPrincipal{}, model.ErrPermissionDenied
 	}
-	return model.User{}, model.ErrNotFound
+	return tokenPrincipalFromMemoryUser(user, "bridge", s.groups[user.ID]), nil
+}
+
+func (s *Store) PrincipalByAuthnTokenJTI(ctx context.Context, jti string) (model.TokenPrincipal, error) {
+	user, err := s.FindActiveAuthnTokenUser(ctx, jti)
+	if err != nil {
+		return model.TokenPrincipal{}, err
+	}
+	s.mu.Lock()
+	groups := append([]string(nil), s.groups[user.ID]...)
+	s.mu.Unlock()
+	return tokenPrincipalFromMemoryUser(user, "bridge", groups), nil
+}
+
+func tokenPrincipalFromMemoryUser(user model.User, tokenIDP string, groups []string) model.TokenPrincipal {
+	return model.TokenPrincipal{
+		UserID:            user.ID,
+		TokenSubject:      user.BridgeSubject(),
+		TokenIDP:          tokenIDP,
+		DisplayName:       user.Display(),
+		PreferredUsername: user.PreferredUsername(),
+		Groups:            append([]string(nil), groups...),
+	}
+}
+
+func externalIdentityKey(providerID, issuer, subject string) string {
+	return strings.Join([]string{providerID, issuer, subject}, "\x00")
 }
 
 func (s *Store) Resolve(ctx context.Context, emailOrID string) (model.User, error) {
@@ -164,25 +262,30 @@ func (s *Store) GroupNames(ctx context.Context, userID string) ([]string, error)
 }
 
 func (s *Store) AddUser(ctx context.Context, input model.AddUserInput) (model.User, error) {
-	return s.AddTestUser(model.User{Provider: input.Provider, Issuer: input.Issuer, Subject: input.Subject, Email: input.Email, EmailVerified: input.EmailVerified, DisplayName: input.DisplayName, PictureURL: input.PictureURL, HostedDomain: input.HostedDomain}), nil
-}
-
-func (s *Store) AddPreRegisteredUser(ctx context.Context, input model.AddPreRegisteredUserInput) (model.User, error) {
-	if strings.TrimSpace(input.Email) == "" {
-		return model.User{}, model.ErrInvalidArgument
-	}
 	id := uuid.NewString()
-	if input.Provider == "" {
-		input.Provider = "google"
-	}
-	if input.Issuer == "" {
-		input.Issuer = "https://accounts.google.com"
-	}
-	user := model.User{ID: id, Provider: input.Provider, Issuer: input.Issuer, Subject: "pending:" + id, Email: strings.TrimSpace(input.Email), DisplayName: input.DisplayName, Status: "pending"}
+	user := model.User{ID: id, Email: strings.TrimSpace(input.Email), DisplayName: input.DisplayName, Status: "active"}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.users[user.ID] = user
 	return user, nil
+}
+
+func (s *Store) AddInvitation(ctx context.Context, input model.AddInvitationInput) (model.User, model.IdentityInvitation, error) {
+	if strings.TrimSpace(input.ProviderID) == "" || strings.TrimSpace(input.Issuer) == "" || strings.TrimSpace(input.Email) == "" {
+		return model.User{}, model.IdentityInvitation{}, model.ErrInvalidArgument
+	}
+	userID := uuid.NewString()
+	user := model.User{ID: userID, Email: strings.TrimSpace(input.Email), DisplayName: input.DisplayName, Status: "pending"}
+	bindingPolicy := strings.TrimSpace(input.BindingPolicy)
+	if bindingPolicy == "" {
+		bindingPolicy = "verified_email_invitation"
+	}
+	invitation := model.IdentityInvitation{ID: uuid.NewString(), UserID: user.ID, ProviderID: input.ProviderID, Issuer: input.Issuer, Email: input.Email, BindingPolicy: bindingPolicy, Status: "pending", ExpiresAt: input.ExpiresAt}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.users[user.ID] = user
+	s.invitations[invitation.ID] = invitation
+	return user, invitation, nil
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
@@ -342,11 +445,24 @@ func (s *Store) ConsumeAuthSession(ctx context.Context, id string) error {
 
 func (s *Store) CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (string, model.LoginState, error) {
 	state := uuid.NewString()
-	loginState := model.LoginState{ID: uuid.NewString(), ProviderID: input.ProviderID, Nonce: input.Nonce, LoginURLNonce: input.LoginURLNonce, ReturnPath: input.ReturnPath, ExpiresAt: time.Now().Add(ttl).Unix()}
+	loginState := model.LoginState{ID: uuid.NewString(), ProviderID: input.ProviderID, Nonce: input.Nonce, LoginURLNonce: input.LoginURLNonce, ReturnPath: input.ReturnPath, PrivateState: append([]byte(nil), input.PrivateState...), ExpiresAt: time.Now().Add(ttl).Unix()}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.login[hashAuthCode(state)] = loginState
 	return state, loginState, nil
+}
+
+func (s *Store) SetLoginStatePrivateState(ctx context.Context, state string, privateState []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := hashAuthCode(state)
+	loginState, ok := s.login[key]
+	if !ok || loginState.ExpiresAt <= time.Now().Unix() {
+		return model.ErrNotFound
+	}
+	loginState.PrivateState = append([]byte(nil), privateState...)
+	s.login[key] = loginState
+	return nil
 }
 
 func (s *Store) ConsumeLoginState(ctx context.Context, state string) (model.LoginState, error) {

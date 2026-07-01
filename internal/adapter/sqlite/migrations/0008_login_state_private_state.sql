@@ -1,0 +1,1 @@
+-- ADR 0006 fresh schema includes login_transactions.private_state.

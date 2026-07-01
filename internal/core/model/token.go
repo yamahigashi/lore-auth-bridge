@@ -69,6 +69,7 @@ type IssuedToken struct {
 }
 
 type VerifiedAuthn struct {
-	Subject string
-	User    User
+	Subject   string
+	Principal TokenPrincipal
+	User      User
 }

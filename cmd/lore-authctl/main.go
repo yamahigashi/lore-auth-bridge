@@ -111,7 +111,7 @@ func openEnv(configPath, dbPath string) (*cliEnv, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("build token config: %w", err)
 	}
-	tokens := service.NewTokenService(tokenCfg, coreStore, coreStore, authz, rs256.NewSigner(cfg.JWT.ActiveKID, coreStore), coreStore, coreStore)
+	tokens := service.NewTokenService(tokenCfg, coreStore, coreStore, authz, rs256.NewSigner(cfg.JWT.ActiveKID, coreStore), coreStore)
 	keyAdmin := rs256.NewSigningKeyAdmin(cfg.JWT.SigningKeyDir, coreStore)
 	return &cliEnv{cfg: cfg, store: st, core: coreStore, authz: authz, groups: coreStore, grants: coreStore, keys: keyAdmin, tokens: tokens, permissions: service.NewPermissionService(coreStore, authz)}, nil
 }
@@ -226,31 +226,22 @@ func cmdUser(args []string) error {
 
 func cmdUserAdd(args []string) error {
 	fs, configPath, dbPath, _ := commonFlags("user add", nil)
-	idp := fs.String("idp", "", "identity provider instance id from config")
-	provider := fs.String("provider", "google", "identity provider")
-	issuer := fs.String("issuer", "https://accounts.google.com", "issuer")
-	subject := fs.String("subject", "", "provider subject")
 	email := fs.String("email", "", "display email")
 	name := fs.String("name", "", "display name")
-	emailVerified := fs.Bool("email-verified", false, "email verified")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *subject == "" {
-		return fmt.Errorf("--subject is required; use user invite for email pre-registration")
+	if *email == "" {
+		return fmt.Errorf("--email is required")
 	}
 	env, err := openEnv(*configPath, *dbPath)
 	if err != nil {
 		return err
 	}
 	defer env.close()
-	resolvedProvider, resolvedIssuer, err := resolveUserIDP(env.cfg, *idp, *provider, *issuer)
+	u, err := env.core.AddUser(context.Background(), model.AddUserInput{Email: *email, DisplayName: *name})
 	if err != nil {
-		return err
-	}
-	u, err := env.core.AddUser(context.Background(), model.AddUserInput{Provider: resolvedProvider, Issuer: resolvedIssuer, Subject: *subject, Email: *email, EmailVerified: *emailVerified, DisplayName: *name})
-	if err != nil {
-		return fmt.Errorf("user add %q: %w", *subject, err)
+		return fmt.Errorf("user add %q: %w", *email, err)
 	}
 	fmt.Printf("%s\t%s\t%s\n", u.ID, value(u.Email), u.Status)
 	return nil
@@ -278,7 +269,13 @@ func cmdUserInvite(args []string) error {
 	if err != nil {
 		return err
 	}
-	u, err := env.core.AddPreRegisteredUser(context.Background(), model.AddPreRegisteredUserInput{Provider: resolvedProvider, Issuer: resolvedIssuer, Email: *email, DisplayName: *name})
+	u, _, err := env.core.AddInvitation(context.Background(), model.AddInvitationInput{
+		ProviderID:    resolvedProvider,
+		Issuer:        resolvedIssuer,
+		Email:         *email,
+		DisplayName:   *name,
+		BindingPolicy: "verified_email_invitation",
+	})
 	if err != nil {
 		return fmt.Errorf("user invite %q: %w", *email, err)
 	}
@@ -311,7 +308,7 @@ func userSubjectForList(u model.User) string {
 	if u.Status == "pending" {
 		return ""
 	}
-	return u.Subject
+	return u.BridgeSubject()
 }
 
 func cmdUserDisable(args []string) error {
@@ -629,7 +626,11 @@ func cmdTokenMintAuthn(args []string) error {
 		return err
 	}
 	defer env.close()
-	res, _, err := env.tokens.MintAuthn(context.Background(), pos[0], *ttl)
+	user, err := env.core.Resolve(context.Background(), pos[0])
+	if err != nil {
+		return fmt.Errorf("token mint-authn: resolve user %q: %w", pos[0], err)
+	}
+	res, _, err := env.tokens.MintAuthn(context.Background(), user.ID, *ttl)
 	if err != nil {
 		return fmt.Errorf("token mint-authn: mint authn for user %q: %w", pos[0], err)
 	}
@@ -665,7 +666,11 @@ func cmdTokenMint(args []string) error {
 		return err
 	}
 	defer env.close()
-	res, err := env.tokens.ManualMintAuthz(context.Background(), pos[0], pos[1], *role, *ttl)
+	user, err := env.core.Resolve(context.Background(), pos[0])
+	if err != nil {
+		return fmt.Errorf("token mint: resolve user %q: %w", pos[0], err)
+	}
+	res, err := env.tokens.ManualMintAuthz(context.Background(), user.ID, pos[1], *role, *ttl)
 	if err != nil {
 		return fmt.Errorf("token mint: mint authz for user %q repo %q role %q: %w", pos[0], pos[1], *role, err)
 	}

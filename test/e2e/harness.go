@@ -187,7 +187,7 @@ func (h *harness) startBroker() {
 		AuthServiceAudience: "localhost",
 		AuthnTTL:            time.Duration(cfg.JWT.TTLSeconds) * time.Second,
 		AuthzTTL:            15 * time.Minute,
-	}, coreStore, coreStore, authz, signer, coreStore, coreStore)
+	}, coreStore, coreStore, authz, signer, coreStore)
 	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: cfg.Server.PublicBaseURL, SessionTTL: time.Duration(cfg.Security.SessionTTLSeconds) * time.Second}, nil, coreStore, coreStore, tokenSvc)
 	permissionSvc := service.NewPermissionService(coreStore, authz)
 	resourceSvc := service.NewResourceService(coreStore)
@@ -296,7 +296,8 @@ func (h *harness) loreEnv() []string {
 
 func (h *harness) mintAuthnToken(userEmailOrID string) string {
 	h.t.Helper()
-	res, _, err := h.tokens.MintAuthn(context.Background(), userEmailOrID, 0)
+	userID := h.resolveUserID(userEmailOrID)
+	res, _, err := h.tokens.MintAuthn(context.Background(), userID, 0)
 	if err != nil {
 		h.t.Fatalf("mint authn token: %v", err)
 	}
@@ -305,7 +306,8 @@ func (h *harness) mintAuthnToken(userEmailOrID string) string {
 
 func (h *harness) mintAuthnTokenTTL(userEmailOrID string, ttl time.Duration) string {
 	h.t.Helper()
-	res, _, err := h.tokens.MintAuthn(context.Background(), userEmailOrID, ttl)
+	userID := h.resolveUserID(userEmailOrID)
+	res, _, err := h.tokens.MintAuthn(context.Background(), userID, ttl)
 	if err != nil {
 		h.t.Fatalf("mint authn token: %v", err)
 	}
@@ -314,6 +316,7 @@ func (h *harness) mintAuthnTokenTTL(userEmailOrID string, ttl time.Duration) str
 
 func (h *harness) mintAuthnTokenAudience(userEmailOrID string, audience []string) string {
 	h.t.Helper()
+	userID := h.resolveUserID(userEmailOrID)
 	coreStore := sqlite.NewCoreStore(h.store)
 	authz := casbin.NewService(h.store)
 	tokenSvc := service.NewTokenService(service.TokenConfig{
@@ -321,12 +324,21 @@ func (h *harness) mintAuthnTokenAudience(userEmailOrID string, audience []string
 		Audience: audience,
 		AuthnTTL: time.Duration(h.cfg.JWT.TTLSeconds) * time.Second,
 		AuthzTTL: 15 * time.Minute,
-	}, coreStore, coreStore, authz, rs256.NewSigner(h.cfg.JWT.ActiveKID, coreStore), coreStore, coreStore)
-	res, _, err := tokenSvc.MintAuthn(context.Background(), userEmailOrID, 0)
+	}, coreStore, coreStore, authz, rs256.NewSigner(h.cfg.JWT.ActiveKID, coreStore), coreStore)
+	res, _, err := tokenSvc.MintAuthn(context.Background(), userID, 0)
 	if err != nil {
 		h.t.Fatalf("mint authn token: %v", err)
 	}
 	return res.Token
+}
+
+func (h *harness) resolveUserID(emailOrID string) string {
+	h.t.Helper()
+	user, err := sqlite.NewCoreStore(h.store).Resolve(context.Background(), emailOrID)
+	if err != nil {
+		h.t.Fatalf("resolve user %q: %v", emailOrID, err)
+	}
+	return user.ID
 }
 
 func (h *harness) authClient() (pbAuth.UrcAuthApiClient, func()) {

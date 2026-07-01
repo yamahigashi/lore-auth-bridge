@@ -63,7 +63,7 @@ func TestGetAuthSessionTokenIssueFailureIsInternal(t *testing.T) {
 		AuthServiceAudience: "auth.example.com",
 		AuthnTTL:            time.Hour,
 		AuthzTTL:            15 * time.Minute,
-	}, mem, mem, mem, failingSigner{authnErr: model.ErrNotFound}, mem, mem)
+	}, mem, mem, mem, failingSigner{authnErr: model.ErrNotFound}, mem)
 	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: "https://auth.example.com", SessionTTL: 10 * time.Minute}, nil, mem, mem, tokenSvc)
 	srv := New(Services{Login: loginSvc, Tokens: tokenSvc, Permissions: service.NewPermissionService(mem, mem)})
 

@@ -29,7 +29,7 @@ func TestExchangeOverTLSWire(t *testing.T) {
 	u := addAlice(mem)
 	resource := addGameAssets(mem)
 	mem.Grant(u.ID, resource.ResourceID)
-	authn, _, err := tokenSvc.MintAuthn(ctx, "alice@example.com", 0)
+	authn, _, err := tokenSvc.MintAuthn(ctx, u.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

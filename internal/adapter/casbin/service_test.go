@@ -21,7 +21,7 @@ func TestCanWithGroupWriterGrant(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AddUser(ctx, sqlite.AddUserParams{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}); err != nil {
+	if _, err := st.AddUser(ctx, sqlite.AddUserParams{Email: "alice@example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.AddGroup(ctx, "artists", ""); err != nil {
@@ -69,7 +69,7 @@ func TestDeletedRepositoryGrantIsNotLoaded(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	u, err := st.AddUser(ctx, sqlite.AddUserParams{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u, err := st.AddUser(ctx, sqlite.AddUserParams{Email: "alice@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestRoleSemanticsAreAppliedToLookupAndChecks(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	u, err := st.AddUser(ctx, sqlite.AddUserParams{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u, err := st.AddUser(ctx, sqlite.AddUserParams{Email: "alice@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}

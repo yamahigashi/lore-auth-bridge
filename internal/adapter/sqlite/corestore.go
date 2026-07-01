@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/model"
@@ -13,16 +14,6 @@ type CoreStore struct {
 }
 
 func NewCoreStore(st *Store) *CoreStore { return &CoreStore{Store: st} }
-
-func (s *CoreStore) FindByIdentity(ctx context.Context, provider, issuer, subject string) (model.User, error) {
-	u, err := s.Store.FindUserByIdentity(ctx, provider, issuer, subject)
-	return toModelUser(u), err
-}
-
-func (s *CoreStore) BindPreRegisteredIdentity(ctx context.Context, identity model.Identity) (model.User, error) {
-	u, err := s.Store.BindPreRegisteredIdentity(ctx, identity)
-	return toModelUser(u), err
-}
 
 func (s *CoreStore) Resolve(ctx context.Context, emailOrID string) (model.User, error) {
 	u, err := s.Store.ResolveUser(ctx, emailOrID)
@@ -40,26 +31,50 @@ func (s *CoreStore) GroupNames(ctx context.Context, userID string) ([]string, er
 
 func (s *CoreStore) AddUser(ctx context.Context, input model.AddUserInput) (model.User, error) {
 	u, err := s.Store.AddUser(ctx, AddUserParams{
-		Provider:      input.Provider,
-		Issuer:        input.Issuer,
-		Subject:       input.Subject,
-		Email:         input.Email,
-		EmailVerified: input.EmailVerified,
-		DisplayName:   input.DisplayName,
-		PictureURL:    input.PictureURL,
-		HostedDomain:  input.HostedDomain,
-	})
-	return toModelUser(u), err
-}
-
-func (s *CoreStore) AddPreRegisteredUser(ctx context.Context, input model.AddPreRegisteredUserInput) (model.User, error) {
-	u, err := s.Store.AddPreRegisteredUser(ctx, AddPreRegisteredUserParams{
-		Provider:    input.Provider,
-		Issuer:      input.Issuer,
 		Email:       input.Email,
 		DisplayName: input.DisplayName,
 	})
 	return toModelUser(u), err
+}
+
+func (s *CoreStore) AddInvitation(ctx context.Context, input model.AddInvitationInput) (model.User, model.IdentityInvitation, error) {
+	u, inv, err := s.Store.AddIdentityInvitation(ctx, AddInvitationParams{
+		ProviderID:    input.ProviderID,
+		Issuer:        input.Issuer,
+		Email:         input.Email,
+		DisplayName:   input.DisplayName,
+		BindingPolicy: input.BindingPolicy,
+		ExpiresAt:     input.ExpiresAt,
+	})
+	return toModelUser(u), toModelIdentityInvitation(inv), err
+}
+
+func (s *CoreStore) ResolveLogin(ctx context.Context, req model.LoginResolutionRequest) (model.TokenPrincipal, model.LoginBindingResult, error) {
+	u, externalIdentity, binding, err := s.Store.ResolveLogin(ctx, req)
+	if err != nil {
+		return model.TokenPrincipal{}, model.LoginBindingResult{}, err
+	}
+	principal, err := s.tokenPrincipal(ctx, u, externalIdentity.ProviderID)
+	if err != nil {
+		return model.TokenPrincipal{}, model.LoginBindingResult{}, err
+	}
+	return principal, binding, nil
+}
+
+func (s *CoreStore) PrincipalByUserID(ctx context.Context, userID string) (model.TokenPrincipal, error) {
+	u, err := s.Store.UserByID(ctx, userID)
+	if err != nil {
+		return model.TokenPrincipal{}, err
+	}
+	return s.tokenPrincipal(ctx, u, "bridge")
+}
+
+func (s *CoreStore) PrincipalByAuthnTokenJTI(ctx context.Context, jti string) (model.TokenPrincipal, error) {
+	u, err := s.Store.ActiveAuthnTokenUser(ctx, jti)
+	if err != nil {
+		return model.TokenPrincipal{}, err
+	}
+	return s.tokenPrincipal(ctx, u, "bridge")
 }
 
 func (s *CoreStore) ListUsers(ctx context.Context) ([]model.User, error) {
@@ -142,8 +157,12 @@ func (s *CoreStore) GetAuthSessionByNonce(ctx context.Context, nonce string) (mo
 }
 
 func (s *CoreStore) CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (string, model.LoginState, error) {
-	state, loginState, err := s.Store.CreateLoginState(ctx, CreateLoginStateParams{ProviderID: input.ProviderID, Nonce: input.Nonce, LoginURLNonce: input.LoginURLNonce, ReturnPath: input.ReturnPath, TTLSeconds: int(ttl.Seconds())})
+	state, loginState, err := s.Store.CreateLoginState(ctx, CreateLoginStateParams{ProviderID: input.ProviderID, Nonce: input.Nonce, LoginURLNonce: input.LoginURLNonce, ReturnPath: input.ReturnPath, PrivateState: input.PrivateState, TTLSeconds: int(ttl.Seconds())})
 	return state, toModelLoginState(loginState), err
+}
+
+func (s *CoreStore) SetLoginStatePrivateState(ctx context.Context, state string, privateState []byte) error {
+	return s.Store.SetLoginStatePrivateState(ctx, state, privateState)
 }
 
 func (s *CoreStore) ConsumeLoginState(ctx context.Context, state string) (model.LoginState, error) {
@@ -194,6 +213,28 @@ func (s *CoreStore) Record(ctx context.Context, token model.IssuedToken) error {
 func (s *CoreStore) FindActiveAuthnTokenUser(ctx context.Context, jti string) (model.User, error) {
 	u, err := s.Store.ActiveAuthnTokenUser(ctx, jti)
 	return toModelUser(u), err
+}
+
+func (s *CoreStore) tokenPrincipal(ctx context.Context, u *User, tokenIDP string) (model.TokenPrincipal, error) {
+	user := toModelUser(u)
+	if user.ID == "" {
+		return model.TokenPrincipal{}, model.ErrNotFound
+	}
+	if user.Status != "active" {
+		return model.TokenPrincipal{}, fmt.Errorf("%w: user is not active", model.ErrPermissionDenied)
+	}
+	groups, err := s.Store.UserGroupNames(ctx, user.ID)
+	if err != nil {
+		return model.TokenPrincipal{}, err
+	}
+	return model.TokenPrincipal{
+		UserID:            user.ID,
+		TokenSubject:      user.BridgeSubject(),
+		TokenIDP:          tokenIDP,
+		DisplayName:       user.Display(),
+		PreferredUsername: user.PreferredUsername(),
+		Groups:            groups,
+	}, nil
 }
 
 func (s *CoreStore) AddGroup(ctx context.Context, name, description string) (model.Group, error) {
@@ -261,7 +302,14 @@ func toModelUser(u *User) model.User {
 	if u == nil {
 		return model.User{}
 	}
-	return model.User{ID: u.ID, Provider: u.Provider, Issuer: u.Issuer, Subject: u.Subject, Email: u.Email.String, EmailVerified: u.EmailVerified, DisplayName: u.DisplayName.String, PictureURL: u.PictureURL.String, HostedDomain: u.HostedDomain.String, Status: u.Status}
+	return model.User{ID: u.ID, Email: u.Email.String, DisplayName: u.DisplayName.String, Status: u.Status}
+}
+
+func toModelIdentityInvitation(inv *IdentityInvitation) model.IdentityInvitation {
+	if inv == nil {
+		return model.IdentityInvitation{}
+	}
+	return model.IdentityInvitation{ID: inv.ID, UserID: inv.UserID, ProviderID: inv.ProviderID, Issuer: inv.Issuer, Email: inv.Email.String, BindingPolicy: inv.BindingPolicy, Status: inv.Status, AcceptedIdentityID: inv.AcceptedIdentityID.String, ExpiresAt: inv.ExpiresAt.Int64, AcceptedAt: inv.AcceptedAt.Int64}
 }
 
 func toModelResource(r *Repository) model.Resource {
@@ -296,7 +344,7 @@ func toModelLoginState(s *LoginState) model.LoginState {
 	if s == nil {
 		return model.LoginState{}
 	}
-	return model.LoginState{ID: s.ID, ProviderID: s.ProviderID, Nonce: s.Nonce.String, LoginURLNonce: s.LoginURLNonce.String, ReturnPath: s.ReturnPath.String, ExpiresAt: s.ExpiresAt}
+	return model.LoginState{ID: s.ID, ProviderID: s.ProviderID, Nonce: s.Nonce.String, LoginURLNonce: s.LoginURLNonce.String, ReturnPath: s.ReturnPath.String, PrivateState: append([]byte(nil), s.PrivateState...), ExpiresAt: s.ExpiresAt}
 }
 
 func toModelBrowserSession(s *Session) model.BrowserSession {

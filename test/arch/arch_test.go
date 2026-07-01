@@ -64,6 +64,7 @@ func TestADR0003LegacyInternalPackagesRemoved(t *testing.T) {
 	for _, rel := range []string{
 		"internal/store",
 		"internal/acl",
+		"internal/adapter/google",
 		"internal/googleauth",
 		"internal/issuer",
 		"internal/token",

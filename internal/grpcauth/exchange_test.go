@@ -24,7 +24,7 @@ func TestExchangeFlow(t *testing.T) {
 	resource := addGameAssets(mem)
 	mem.Grant(u.ID, resource.ResourceID)
 
-	authn, _, err := tokenSvc.MintAuthn(ctx, "alice@example.com", 0)
+	authn, _, err := tokenSvc.MintAuthn(ctx, u.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,16 +56,11 @@ func TestExchangeAuthnTokenUsesJTIForNonGoogleSubject(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem, tokenSvc := newTestServer()
-	u := mem.AddTestUser(model.User{
-		Provider: "keycloak-prod",
-		Issuer:   "https://sso.example.com/realms/prod",
-		Subject:  "subject:with:colon",
-		Email:    "alice@example.com",
-	})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	resource := addGameAssets(mem)
 	mem.Grant(u.ID, resource.ResourceID)
 
-	authn, _, err := tokenSvc.MintAuthn(ctx, "alice@example.com", 0)
+	authn, _, err := tokenSvc.MintAuthn(ctx, u.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,8 +97,8 @@ func TestExchangeInternalTokenIssueFailureIsInternal(t *testing.T) {
 		AuthServiceAudience: "auth.example.com",
 		AuthnTTL:            time.Hour,
 		AuthzTTL:            15 * time.Minute,
-	}, mem, mem, mem, mem, mem, mem)
-	authn, _, err := authnSvc.MintAuthn(ctx, "alice@example.com", 0)
+	}, mem, mem, mem, mem, mem)
+	authn, _, err := authnSvc.MintAuthn(ctx, u.ID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +109,7 @@ func TestExchangeInternalTokenIssueFailureIsInternal(t *testing.T) {
 		AuthServiceAudience: "auth.example.com",
 		AuthnTTL:            time.Hour,
 		AuthzTTL:            15 * time.Minute,
-	}, mem, mem, mem, mem, failingTokenLog{}, mem)
+	}, mem, mem, mem, mem, failingTokenLog{})
 	srv := New(Services{Login: nil, Tokens: tokenSvc, Permissions: service.NewPermissionService(mem, mem)})
 	mdCtx := metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+authn.Token))
 

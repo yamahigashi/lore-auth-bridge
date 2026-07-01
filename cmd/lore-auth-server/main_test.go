@@ -61,31 +61,39 @@ func TestRebacAllowedPeerCIDRsUsesConfiguredValues(t *testing.T) {
 	}
 }
 
-func TestGoogleConfigFromProviderIncludesAccountPolicy(t *testing.T) {
+func TestOIDCConfigFromProviderIncludesGoogleProfilePolicy(t *testing.T) {
 	t.Parallel()
 	providerCfg := config.IdentityProviderConfig{
-		Type:                  "google_oidc",
-		DisplayName:           "Google",
-		Issuer:                "https://accounts.google.com",
-		ClientID:              "client",
-		ClientSecretFile:      "secret",
-		RedirectURL:           "https://auth.example.com/auth/google/callback",
-		AllowedHostedDomains:  []string{"example.com"},
-		AllowPersonalAccounts: true,
+		Type:             "oidc",
+		Profile:          "google",
+		DisplayName:      "Google",
+		Issuer:           "https://accounts.google.com",
+		ClientID:         "client",
+		ClientSecretFile: "secret",
+		RedirectURL:      "https://auth.example.com/auth/google/callback",
+		PKCE:             "required",
+		Subject:          config.SubjectConfig{Strategy: "oidc_sub"},
+		Trust: config.TrustConfig{
+			HostedDomain:     config.HostedDomainTrust{Allowed: []string{"example.com"}},
+			PersonalAccounts: "deny",
+		},
 	}
 
-	got := googleConfigFromProvider("google", providerCfg, "client-secret")
-	if got.ProviderID != "google" || got.DisplayName != "Google" || got.Issuer != providerCfg.Issuer {
-		t.Fatalf("unexpected google descriptor config: %#v", got)
+	got := oidcConfigFromProvider("google", providerCfg, "client-secret")
+	if got.ProviderID != "google" || got.Profile != "google" || got.DisplayName != "Google" || got.Issuer != providerCfg.Issuer {
+		t.Fatalf("unexpected oidc descriptor config: %#v", got)
 	}
 	if got.ClientID != "client" || got.ClientSecret != "client-secret" || got.RedirectURL != providerCfg.RedirectURL {
-		t.Fatalf("unexpected google config: %#v", got)
+		t.Fatalf("unexpected oidc config: %#v", got)
 	}
 	if strings.Join(got.AllowedHostedDomains, ",") != "example.com" {
 		t.Fatalf("allowed hosted domains = %#v", got.AllowedHostedDomains)
 	}
-	if !got.AllowPersonalAccounts {
-		t.Fatal("allow personal accounts was not propagated")
+	if got.PersonalAccounts != "deny" {
+		t.Fatalf("personal account policy = %q", got.PersonalAccounts)
+	}
+	if got.PKCE != "required" {
+		t.Fatalf("pkce policy = %q, want required", got.PKCE)
 	}
 }
 

@@ -15,7 +15,7 @@ const callbackCode = "static"
 type Provider struct {
 	id          string
 	displayName string
-	identity    model.Identity
+	identity    model.ExternalIdentity
 }
 
 type Config struct {
@@ -48,15 +48,16 @@ func New(cfg Config) (*Provider, error) {
 	return &Provider{
 		id:          id,
 		displayName: displayName,
-		identity: model.Identity{
-			Provider:      id,
-			Issuer:        cfg.Issuer,
-			Subject:       cfg.Subject,
-			Email:         cfg.Email,
-			EmailVerified: cfg.EmailVerified,
-			Name:          cfg.Name,
-			PictureURL:    cfg.PictureURL,
-			HostedDomain:  cfg.HostedDomain,
+		identity: model.ExternalIdentity{
+			ProviderID:      id,
+			Issuer:          cfg.Issuer,
+			Subject:         cfg.Subject,
+			SubjectStrategy: "oidc_sub",
+			Email:           cfg.Email,
+			EmailVerified:   cfg.EmailVerified,
+			DisplayName:     cfg.Name,
+			PictureURL:      cfg.PictureURL,
+			HostedDomain:    cfg.HostedDomain,
 		},
 	}, nil
 }
@@ -77,9 +78,9 @@ func (p *Provider) BeginAuth(ctx context.Context, req ports.BeginAuthRequest) (p
 	return ports.BeginAuthResult{RedirectURL: callback.String()}, nil
 }
 
-func (p *Provider) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.Identity, error) {
+func (p *Provider) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.ExternalIdentity, error) {
 	if req.Code != callbackCode {
-		return model.Identity{}, fmt.Errorf("staticidp: invalid callback code")
+		return model.ExternalIdentity{}, fmt.Errorf("staticidp: invalid callback code")
 	}
 	return p.identity, nil
 }

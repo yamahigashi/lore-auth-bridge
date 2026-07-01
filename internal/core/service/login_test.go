@@ -43,26 +43,63 @@ func TestBeginAuthUsesRequestedProvider(t *testing.T) {
 	}
 }
 
+func TestCompleteAuthRejectsIdentityProviderMismatch(t *testing.T) {
+	t.Parallel()
+	idps := loginRegistryStub{defaultID: "google", providers: map[string]loginIDPStub{
+		"google": {descriptor: ports.IdentityProviderDescriptor{ID: "google", Issuer: "https://accounts.google.com"}, id: model.ExternalIdentity{
+			ProviderID: "keycloak-prod",
+			Issuer:     "https://accounts.google.com",
+			Subject:    "subject-1",
+		}},
+	}}
+	svc := NewLoginService(LoginConfig{}, idps, &preRegistrationUsersStub{}, &callbackStateStub{}, nil)
+
+	_, err := svc.CompleteAuth(context.Background(), "google", ports.CompleteAuthRequest{}, "")
+	if !errors.Is(err, model.ErrUnauthenticated) {
+		t.Fatalf("CompleteAuth error = %v, want ErrUnauthenticated", err)
+	}
+}
+
+func TestCompleteAuthRejectsIdentityIssuerMismatch(t *testing.T) {
+	t.Parallel()
+	idps := loginRegistryStub{defaultID: "google", providers: map[string]loginIDPStub{
+		"google": {descriptor: ports.IdentityProviderDescriptor{ID: "google", Issuer: "https://accounts.google.com"}, id: model.ExternalIdentity{
+			ProviderID: "google",
+			Issuer:     "https://evil.example.com",
+			Subject:    "subject-1",
+		}},
+	}}
+	svc := NewLoginService(LoginConfig{}, idps, &preRegistrationUsersStub{}, &callbackStateStub{}, nil)
+
+	_, err := svc.CompleteAuth(context.Background(), "google", ports.CompleteAuthRequest{}, "")
+	if !errors.Is(err, model.ErrUnauthenticated) {
+		t.Fatalf("CompleteAuth error = %v, want ErrUnauthenticated", err)
+	}
+}
+
 func TestCompleteOAuthCallbackBindsVerifiedEmailPreRegistration(t *testing.T) {
 	t.Parallel()
 	users := &preRegistrationUsersStub{
 		pending: model.User{
-			ID:       "user-1",
-			Provider: "google",
-			Issuer:   "https://accounts.google.com",
-			Email:    "alice@example.com",
-			Status:   "pending",
+			ID:     "user-1",
+			Email:  "alice@example.com",
+			Status: "pending",
 		},
 	}
 	state := &callbackStateStub{}
 	svc := NewLoginService(
 		LoginConfig{SessionTTL: time.Hour},
-		loginRegistryStub{defaultID: "google", providers: map[string]loginIDPStub{"google": {descriptor: ports.IdentityProviderDescriptor{ID: "google", Issuer: "https://accounts.google.com"}, id: model.Identity{
-			Issuer:        "https://accounts.google.com",
-			Subject:       "google-sub",
-			Email:         "Alice@Example.com",
-			EmailVerified: true,
-			Name:          "Alice",
+		loginRegistryStub{defaultID: "google", providers: map[string]loginIDPStub{"google": {descriptor: ports.IdentityProviderDescriptor{
+			ID:          "google",
+			Issuer:      "https://accounts.google.com",
+			TrustPolicy: model.LoginTrustPolicy{EmailBinding: "verified_email_invitation"},
+		}, id: model.ExternalIdentity{
+			Issuer:          "https://accounts.google.com",
+			Subject:         "google-sub",
+			SubjectStrategy: "oidc_sub",
+			Email:           "Alice@Example.com",
+			EmailVerified:   true,
+			DisplayName:     "Alice",
 		}}}},
 		users,
 		state,
@@ -76,7 +113,7 @@ func TestCompleteOAuthCallbackBindsVerifiedEmailPreRegistration(t *testing.T) {
 	if res.UnknownUser {
 		t.Fatal("verified pending user should be activated, not shown as unknown")
 	}
-	if res.User.ID != "user-1" || res.User.Subject != "google-sub" || res.User.Status != "active" {
+	if res.User.ID != "user-1" || res.User.Status != "active" {
 		t.Fatalf("unexpected bound user: %#v", res.User)
 	}
 	if state.createdFor != "user-1" {
@@ -88,20 +125,19 @@ func TestCompleteOAuthCallbackDoesNotBindUnverifiedEmail(t *testing.T) {
 	t.Parallel()
 	users := &preRegistrationUsersStub{
 		pending: model.User{
-			ID:       "user-1",
-			Provider: "google",
-			Issuer:   "https://accounts.google.com",
-			Email:    "alice@example.com",
-			Status:   "pending",
+			ID:     "user-1",
+			Email:  "alice@example.com",
+			Status: "pending",
 		},
 	}
 	svc := NewLoginService(
 		LoginConfig{SessionTTL: time.Hour},
-		loginRegistryStub{defaultID: "google", providers: map[string]loginIDPStub{"google": {descriptor: ports.IdentityProviderDescriptor{ID: "google", Issuer: "https://accounts.google.com"}, id: model.Identity{
-			Issuer:        "https://accounts.google.com",
-			Subject:       "google-sub",
-			Email:         "alice@example.com",
-			EmailVerified: false,
+		loginRegistryStub{defaultID: "google", providers: map[string]loginIDPStub{"google": {descriptor: ports.IdentityProviderDescriptor{ID: "google", Issuer: "https://accounts.google.com"}, id: model.ExternalIdentity{
+			Issuer:          "https://accounts.google.com",
+			Subject:         "google-sub",
+			SubjectStrategy: "oidc_sub",
+			Email:           "alice@example.com",
+			EmailVerified:   false,
 		}}}},
 		users,
 		&callbackStateStub{},
@@ -115,7 +151,7 @@ func TestCompleteOAuthCallbackDoesNotBindUnverifiedEmail(t *testing.T) {
 	if !res.UnknownUser {
 		t.Fatalf("unverified email should remain unknown: %#v", res)
 	}
-	if users.pending.Status != "pending" || users.pending.Subject != "" {
+	if users.pending.Status != "pending" {
 		t.Fatalf("pending user changed unexpectedly: %#v", users.pending)
 	}
 }
@@ -146,6 +182,10 @@ func (s *loginStateStub) ConsumeAuthSession(ctx context.Context, id string) erro
 }
 
 func (s *loginStateStub) CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (string, model.LoginState, error) {
+	panic("not used")
+}
+
+func (s *loginStateStub) SetLoginStatePrivateState(ctx context.Context, state string, privateState []byte) error {
 	panic("not used")
 }
 
@@ -194,7 +234,7 @@ func TestGetAuthSessionExpiredCompletedSessionReturnsNotFound(t *testing.T) {
 type loginIDPStub struct {
 	descriptor ports.IdentityProviderDescriptor
 	authURL    string
-	id         model.Identity
+	id         model.ExternalIdentity
 }
 
 func (s loginIDPStub) Descriptor() ports.IdentityProviderDescriptor {
@@ -205,7 +245,7 @@ func (s loginIDPStub) BeginAuth(ctx context.Context, req ports.BeginAuthRequest)
 	return ports.BeginAuthResult{RedirectURL: s.authURL + "?state=" + req.State + "&nonce=" + req.Nonce}, nil
 }
 
-func (s loginIDPStub) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.Identity, error) {
+func (s loginIDPStub) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.ExternalIdentity, error) {
 	return s.id, nil
 }
 
@@ -233,13 +273,6 @@ type preRegistrationUsersStub struct {
 	pending model.User
 }
 
-func (s *preRegistrationUsersStub) FindByIdentity(ctx context.Context, provider, issuer, subject string) (model.User, error) {
-	if s.pending.Provider == provider && s.pending.Issuer == issuer && s.pending.Subject == subject && s.pending.Status == "active" {
-		return s.pending, nil
-	}
-	return model.User{}, model.ErrNotFound
-}
-
 func (s *preRegistrationUsersStub) Resolve(ctx context.Context, emailOrID string) (model.User, error) {
 	if s.pending.ID == emailOrID || s.pending.Email == emailOrID {
 		return s.pending, nil
@@ -259,22 +292,39 @@ func (s *preRegistrationUsersStub) AddUser(ctx context.Context, input model.AddU
 	panic("not used")
 }
 
-func (s *preRegistrationUsersStub) AddPreRegisteredUser(ctx context.Context, input model.AddPreRegisteredUserInput) (model.User, error) {
+func (s *preRegistrationUsersStub) ResolveLogin(ctx context.Context, req model.LoginResolutionRequest) (model.TokenPrincipal, model.LoginBindingResult, error) {
+	identity := req.Identity
+	if req.Policy.EmailBinding != "verified_email_invitation" {
+		return model.TokenPrincipal{}, model.LoginBindingResult{}, model.ErrNotFound
+	}
+	if !identity.EmailVerified || s.pending.Email != "alice@example.com" {
+		return model.TokenPrincipal{}, model.LoginBindingResult{}, model.ErrNotFound
+	}
+	s.pending.Email = identity.Email
+	s.pending.DisplayName = identity.DisplayName
+	s.pending.Status = "active"
+	return model.TokenPrincipal{
+		UserID:            s.pending.ID,
+		TokenSubject:      "user:" + s.pending.ID,
+		TokenIDP:          identity.ProviderID,
+		DisplayName:       s.pending.DisplayName,
+		PreferredUsername: s.pending.Email,
+	}, model.LoginBindingResult{Status: "bound_invitation"}, nil
+}
+
+func (s *preRegistrationUsersStub) PrincipalByUserID(ctx context.Context, userID string) (model.TokenPrincipal, error) {
+	if s.pending.ID != userID {
+		return model.TokenPrincipal{}, model.ErrNotFound
+	}
+	return model.TokenPrincipal{UserID: s.pending.ID, TokenSubject: "user:" + s.pending.ID, PreferredUsername: s.pending.Email}, nil
+}
+
+func (s *preRegistrationUsersStub) PrincipalByAuthnTokenJTI(ctx context.Context, jti string) (model.TokenPrincipal, error) {
 	panic("not used")
 }
 
-func (s *preRegistrationUsersStub) BindPreRegisteredIdentity(ctx context.Context, identity model.Identity) (model.User, error) {
-	if !identity.EmailVerified || s.pending.Email != "alice@example.com" {
-		return model.User{}, model.ErrNotFound
-	}
-	s.pending.Subject = identity.Subject
-	s.pending.Email = identity.Email
-	s.pending.EmailVerified = identity.EmailVerified
-	s.pending.DisplayName = identity.Name
-	s.pending.PictureURL = identity.PictureURL
-	s.pending.HostedDomain = identity.HostedDomain
-	s.pending.Status = "active"
-	return s.pending, nil
+func (s *preRegistrationUsersStub) AddInvitation(ctx context.Context, input model.AddInvitationInput) (model.User, model.IdentityInvitation, error) {
+	panic("not used")
 }
 
 func (s *preRegistrationUsersStub) ListUsers(ctx context.Context) ([]model.User, error) {
@@ -310,6 +360,10 @@ func (s *callbackStateStub) ConsumeAuthSession(ctx context.Context, id string) e
 }
 
 func (s *callbackStateStub) CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (string, model.LoginState, error) {
+	panic("not used")
+}
+
+func (s *callbackStateStub) SetLoginStatePrivateState(ctx context.Context, state string, privateState []byte) error {
 	panic("not used")
 }
 

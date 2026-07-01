@@ -17,7 +17,6 @@ var providerIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 
 type Config struct {
 	Server            ServerConfig            `yaml:"server"`
-	Google            GoogleConfig            `yaml:"google"`
 	IdentityProviders IdentityProvidersConfig `yaml:"identity_providers"`
 	Database          DatabaseConfig          `yaml:"database"`
 	JWT               JWTConfig               `yaml:"jwt"`
@@ -33,35 +32,40 @@ type ServerConfig struct {
 	PublicBaseURL   string `yaml:"public_base_url"`
 }
 
-type GoogleConfig struct {
-	ClientID              string   `yaml:"client_id"`
-	ClientSecretFile      string   `yaml:"client_secret_file"`
-	RedirectURL           string   `yaml:"redirect_url"`
-	AllowedHostedDomains  []string `yaml:"allowed_hosted_domains"`
-	AllowPersonalAccounts bool     `yaml:"allow_personal_accounts"`
-}
-
-func (c GoogleConfig) Enabled() bool {
-	return c.ClientID != "" || c.ClientSecretFile != "" || c.RedirectURL != ""
-}
-
 type IdentityProvidersConfig struct {
 	Default   string                            `yaml:"default"`
 	Providers map[string]IdentityProviderConfig `yaml:"providers"`
 }
 
 type IdentityProviderConfig struct {
-	Type                  string            `yaml:"type"`
-	DisplayName           string            `yaml:"display_name"`
-	Issuer                string            `yaml:"issuer"`
-	ClientID              string            `yaml:"client_id"`
-	ClientSecretFile      string            `yaml:"client_secret_file"`
-	RedirectURL           string            `yaml:"redirect_url"`
-	Scopes                []string          `yaml:"scopes"`
-	ClaimMapping          map[string]string `yaml:"claim_mapping"`
-	AllowedHostedDomains  []string          `yaml:"allowed_hosted_domains"`
-	AllowPersonalAccounts bool              `yaml:"allow_personal_accounts"`
-	AllowedEmailDomains   []string          `yaml:"allowed_email_domains"`
+	Type             string            `yaml:"type"`
+	Profile          string            `yaml:"profile"`
+	DisplayName      string            `yaml:"display_name"`
+	Issuer           string            `yaml:"issuer"`
+	ClientID         string            `yaml:"client_id"`
+	ClientSecretFile string            `yaml:"client_secret_file"`
+	RedirectURL      string            `yaml:"redirect_url"`
+	Scopes           []string          `yaml:"scopes"`
+	PKCE             string            `yaml:"pkce"`
+	Subject          SubjectConfig     `yaml:"subject"`
+	Claims           map[string]string `yaml:"claims"`
+	Trust            TrustConfig       `yaml:"trust"`
+}
+
+type SubjectConfig struct {
+	Strategy    string `yaml:"strategy"`
+	RequiredTID string `yaml:"required_tid"`
+}
+
+type TrustConfig struct {
+	EmailBinding        string            `yaml:"email_binding"`
+	AllowedEmailDomains []string          `yaml:"allowed_email_domains"`
+	HostedDomain        HostedDomainTrust `yaml:"hosted_domain"`
+	PersonalAccounts    string            `yaml:"personal_accounts"`
+}
+
+type HostedDomainTrust struct {
+	Allowed []string `yaml:"allowed"`
 }
 
 type DatabaseConfig struct {
@@ -133,36 +137,19 @@ func (c *Config) applyDefaults() {
 	if c.Lore.AuthURL == "" && c.Server.PublicBaseURL != "" {
 		c.Lore.AuthURL = "ucs-auth://" + stripScheme(c.Server.PublicBaseURL)
 	}
-	c.normalizeIdentityProviders()
 	for id, provider := range c.IdentityProviders.Providers {
 		if len(provider.Scopes) == 0 {
 			provider.Scopes = []string{"openid", "email", "profile"}
+		}
+		if provider.Subject.Strategy == "" {
+			provider.Subject.Strategy = "oidc_sub"
+		}
+		if provider.Trust.EmailBinding == "" {
+			provider.Trust.EmailBinding = "disabled"
 			c.IdentityProviders.Providers[id] = provider
+			continue
 		}
-	}
-}
-
-func (c *Config) normalizeIdentityProviders() {
-	if c.IdentityProviders.Providers == nil {
-		c.IdentityProviders.Providers = map[string]IdentityProviderConfig{}
-	}
-	if c.Google.Enabled() {
-		if _, exists := c.IdentityProviders.Providers["google"]; !exists {
-			c.IdentityProviders.Providers["google"] = IdentityProviderConfig{
-				Type:                  "google_oidc",
-				DisplayName:           "Google",
-				Issuer:                "https://accounts.google.com",
-				ClientID:              c.Google.ClientID,
-				ClientSecretFile:      c.Google.ClientSecretFile,
-				RedirectURL:           c.Google.RedirectURL,
-				Scopes:                []string{"openid", "email", "profile"},
-				AllowedHostedDomains:  append([]string(nil), c.Google.AllowedHostedDomains...),
-				AllowPersonalAccounts: c.Google.AllowPersonalAccounts,
-			}
-		}
-		if c.IdentityProviders.Default == "" {
-			c.IdentityProviders.Default = "google"
-		}
+		c.IdentityProviders.Providers[id] = provider
 	}
 }
 
@@ -237,17 +224,6 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: security.rebac_allowed_peer_cidrs[%d]: %w", i, err)
 		}
 	}
-	if c.Google.Enabled() {
-		if c.Google.ClientID == "" {
-			return fmt.Errorf("config: google.client_id is required when Google login is configured")
-		}
-		if c.Google.ClientSecretFile == "" {
-			return fmt.Errorf("config: google.client_secret_file is required when Google login is configured")
-		}
-		if c.Google.RedirectURL == "" {
-			return fmt.Errorf("config: google.redirect_url is required when Google login is configured")
-		}
-	}
 	if err := c.validateIdentityProviders(); err != nil {
 		return err
 	}
@@ -274,10 +250,13 @@ func (c *Config) validateIdentityProviders() error {
 		if provider.Type == "" {
 			return fmt.Errorf("config: identity_providers.providers[%q].type is required", id)
 		}
-		switch provider.Type {
-		case "google_oidc", "oidc":
-		default:
+		if provider.Type != "oidc" {
 			return fmt.Errorf("config: identity_providers.providers[%q].type %q is unknown", id, provider.Type)
+		}
+		switch provider.Profile {
+		case "", "google", "keycloak", "entra":
+		default:
+			return fmt.Errorf("config: identity_providers.providers[%q].profile %q is unknown", id, provider.Profile)
 		}
 		if provider.Issuer == "" {
 			return fmt.Errorf("config: identity_providers.providers[%q].issuer is required", id)
@@ -299,11 +278,41 @@ func (c *Config) validateIdentityProviders() error {
 			return err
 		}
 		expectedPath := "/auth/" + id + "/callback"
-		if redirect.Path != expectedPath && !(id == "google" && provider.Type == "google_oidc" && redirect.Path == "/oauth/google/callback") {
+		if redirect.Path != expectedPath {
 			return fmt.Errorf("config: identity_providers.providers[%q].redirect_url path must be %q", id, expectedPath)
 		}
 		if !containsString(provider.Scopes, "openid") {
 			return fmt.Errorf("config: identity_providers.providers[%q].scopes must include openid", id)
+		}
+		switch provider.Subject.Strategy {
+		case "oidc_sub":
+		case "entra_oid_tid":
+			if strings.TrimSpace(provider.Subject.RequiredTID) == "" {
+				return fmt.Errorf("config: identity_providers.providers[%q].subject.required_tid is required for entra_oid_tid", id)
+			}
+		case "email", "upn", "preferred_username":
+			return fmt.Errorf("config: identity_providers.providers[%q].subject.strategy %q is not a stable identity key", id, provider.Subject.Strategy)
+		default:
+			return fmt.Errorf("config: identity_providers.providers[%q].subject.strategy %q is unknown", id, provider.Subject.Strategy)
+		}
+		switch provider.Trust.EmailBinding {
+		case "disabled", "verified_email_invitation":
+		default:
+			return fmt.Errorf("config: identity_providers.providers[%q].trust.email_binding %q is unknown", id, provider.Trust.EmailBinding)
+		}
+		personalAccounts := strings.TrimSpace(provider.Trust.PersonalAccounts)
+		switch personalAccounts {
+		case "", "allow", "deny":
+		default:
+			return fmt.Errorf("config: identity_providers.providers[%q].trust.personal_accounts %q is unknown", id, provider.Trust.PersonalAccounts)
+		}
+		if personalAccounts != "" && provider.Profile != "google" {
+			return fmt.Errorf("config: identity_providers.providers[%q].trust.personal_accounts is only valid for google profile", id)
+		}
+		switch provider.PKCE {
+		case "", "required":
+		default:
+			return fmt.Errorf("config: identity_providers.providers[%q].pkce %q is unknown", id, provider.PKCE)
 		}
 	}
 	return nil

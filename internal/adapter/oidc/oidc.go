@@ -2,6 +2,10 @@ package oidcadapter
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -13,25 +17,39 @@ import (
 )
 
 type Provider struct {
-	id                  string
-	displayName         string
-	issuer              string
-	oauth2Config        oauth2.Config
-	verifier            *oidc.IDTokenVerifier
-	claimMapping        map[string]string
-	allowedEmailDomains map[string]struct{}
+	id                     string
+	profile                string
+	displayName            string
+	issuer                 string
+	oauth2Config           oauth2.Config
+	verifier               *oidc.IDTokenVerifier
+	claimMapping           map[string]string
+	subjectStrategy        string
+	requiredTenantID       string
+	emailBinding           string
+	pkce                   string
+	allowedEmailDomainList []string
+	allowedHostedDomains   map[string]struct{}
+	personalAccounts       string
 }
 
 type Config struct {
-	ProviderID          string
-	DisplayName         string
-	Issuer              string
-	ClientID            string
-	ClientSecret        string
-	RedirectURL         string
-	Scopes              []string
-	ClaimMapping        map[string]string
-	AllowedEmailDomains []string
+	ProviderID           string
+	Profile              string
+	DisplayName          string
+	Issuer               string
+	ClientID             string
+	ClientSecret         string
+	RedirectURL          string
+	Scopes               []string
+	ClaimMapping         map[string]string
+	SubjectStrategy      string
+	RequiredTenantID     string
+	EmailBinding         string
+	PKCE                 string
+	AllowedEmailDomains  []string
+	AllowedHostedDomains []string
+	PersonalAccounts     string
 }
 
 func New(ctx context.Context, cfg Config) (*Provider, error) {
@@ -43,6 +61,16 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	}
 	if cfg.ClientID == "" {
 		return nil, fmt.Errorf("oidc: client id is required")
+	}
+	profile := strings.TrimSpace(cfg.Profile)
+	personalAccounts := strings.TrimSpace(cfg.PersonalAccounts)
+	switch personalAccounts {
+	case "", "allow", "deny":
+	default:
+		return nil, fmt.Errorf("oidc: personal_accounts %q is unknown", cfg.PersonalAccounts)
+	}
+	if personalAccounts != "" && profile != "google" {
+		return nil, fmt.Errorf("oidc: personal_accounts is only valid for google profile")
 	}
 	provider, err := oidc.NewProvider(ctx, cfg.Issuer)
 	if err != nil {
@@ -62,8 +90,10 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	if len(scopes) == 0 {
 		scopes = []string{oidc.ScopeOpenID, "email", "profile"}
 	}
+	allowedEmailDomainList := normalizeDomainList(cfg.AllowedEmailDomains)
 	return &Provider{
 		id:          cfg.ProviderID,
+		profile:     profile,
 		displayName: displayNameOrDefault(cfg.DisplayName, cfg.ProviderID),
 		issuer:      issuer,
 		oauth2Config: oauth2.Config{
@@ -73,9 +103,15 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 			Scopes:       scopes,
 			Endpoint:     provider.Endpoint(),
 		},
-		verifier:            provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
-		claimMapping:        copyClaimMapping(cfg.ClaimMapping),
-		allowedEmailDomains: normalizeDomains(cfg.AllowedEmailDomains),
+		verifier:               provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+		claimMapping:           copyClaimMapping(cfg.ClaimMapping),
+		subjectStrategy:        defaultString(cfg.SubjectStrategy, "oidc_sub"),
+		requiredTenantID:       strings.TrimSpace(cfg.RequiredTenantID),
+		emailBinding:           defaultString(cfg.EmailBinding, "disabled"),
+		pkce:                   strings.TrimSpace(cfg.PKCE),
+		allowedEmailDomainList: allowedEmailDomainList,
+		allowedHostedDomains:   normalizeDomains(cfg.AllowedHostedDomains),
+		personalAccounts:       personalAccounts,
 	}, nil
 }
 
@@ -85,54 +121,109 @@ func (p *Provider) Descriptor() ports.IdentityProviderDescriptor {
 		Type:        "oidc",
 		DisplayName: p.displayName,
 		Issuer:      p.issuer,
+		TrustPolicy: model.LoginTrustPolicy{
+			EmailBinding:        p.emailBinding,
+			AllowedEmailDomains: append([]string(nil), p.allowedEmailDomainList...),
+		},
 	}
 }
 
 func (p *Provider) BeginAuth(ctx context.Context, req ports.BeginAuthRequest) (ports.BeginAuthResult, error) {
 	options := []oauth2.AuthCodeOption{oauth2.AccessTypeOnline}
+	privateState := oidcPrivateState{}
 	if req.Nonce != "" {
 		options = append(options, oidc.Nonce(req.Nonce))
 	}
 	if req.LoginHint != "" {
 		options = append(options, oauth2.SetAuthURLParam("login_hint", req.LoginHint))
 	}
-	return ports.BeginAuthResult{RedirectURL: p.oauth2Config.AuthCodeURL(req.State, options...)}, nil
+	if p.pkce == "required" {
+		verifier, err := randomVerifier()
+		if err != nil {
+			return ports.BeginAuthResult{}, err
+		}
+		privateState.CodeVerifier = verifier
+		options = append(options,
+			oauth2.SetAuthURLParam("code_challenge", codeChallengeS256(verifier)),
+			oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+		)
+	}
+	rawPrivateState, err := json.Marshal(privateState)
+	if err != nil {
+		return ports.BeginAuthResult{}, err
+	}
+	if privateState.CodeVerifier == "" {
+		rawPrivateState = nil
+	}
+	return ports.BeginAuthResult{RedirectURL: p.oauth2Config.AuthCodeURL(req.State, options...), PrivateState: rawPrivateState}, nil
 }
 
-func (p *Provider) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.Identity, error) {
-	token, err := p.oauth2Config.Exchange(ctx, req.Code)
+func (p *Provider) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.ExternalIdentity, error) {
+	options, err := p.tokenExchangeOptions(req.PrivateState)
 	if err != nil {
-		return model.Identity{}, fmt.Errorf("oidc: exchange code: %w", err)
+		return model.ExternalIdentity{}, err
+	}
+	token, err := p.oauth2Config.Exchange(ctx, req.Code, options...)
+	if err != nil {
+		return model.ExternalIdentity{}, fmt.Errorf("oidc: exchange code: %w", err)
 	}
 	rawIDToken, ok := token.Extra("id_token").(string)
 	if !ok || rawIDToken == "" {
-		return model.Identity{}, fmt.Errorf("oidc: oauth response missing id_token")
+		return model.ExternalIdentity{}, fmt.Errorf("oidc: oauth response missing id_token")
 	}
 	idToken, err := p.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return model.Identity{}, fmt.Errorf("oidc: verify id token: %w", err)
+		return model.ExternalIdentity{}, fmt.Errorf("oidc: verify id token: %w", err)
 	}
 	if req.Nonce != "" && idToken.Nonce != req.Nonce {
-		return model.Identity{}, fmt.Errorf("oidc: id token nonce mismatch")
+		return model.ExternalIdentity{}, fmt.Errorf("oidc: id token nonce mismatch")
 	}
 	var claims map[string]any
 	if err := idToken.Claims(&claims); err != nil {
-		return model.Identity{}, fmt.Errorf("oidc: decode id token claims: %w", err)
+		return model.ExternalIdentity{}, fmt.Errorf("oidc: decode id token claims: %w", err)
 	}
-	identity := model.Identity{
-		Provider: p.id,
-		Issuer:   idToken.Issuer,
-		Subject:  idToken.Subject,
+	subject, err := p.subject(claims, idToken.Subject)
+	if err != nil {
+		return model.ExternalIdentity{}, err
 	}
+	identity := model.ExternalIdentity{ProviderID: p.id, Issuer: idToken.Issuer, Subject: subject, SubjectStrategy: p.subjectStrategy}
 	identity.Email = stringClaim(claims, p.claim("email", "email"))
 	identity.EmailVerified = boolClaim(claims, p.claim("email_verified", "email_verified"))
-	identity.Name = stringClaim(claims, p.claim("name", "name"))
+	identity.DisplayName = stringClaim(claims, p.claim("name", "name"))
 	identity.PictureURL = stringClaim(claims, p.claim("picture", "picture"))
 	identity.HostedDomain = stringClaim(claims, p.claim("hosted_domain", "hd"))
-	if err := p.validateEmailDomain(identity.Email, identity.EmailVerified); err != nil {
-		return model.Identity{}, err
+	if err := p.validateTrust(identity); err != nil {
+		return model.ExternalIdentity{}, err
 	}
 	return identity, nil
+}
+
+func (p *Provider) subject(claims map[string]any, oidcSubject string) (string, error) {
+	switch p.subjectStrategy {
+	case "", "oidc_sub":
+		return oidcSubject, nil
+	case "entra_oid_tid":
+		tid := stringClaim(claims, "tid")
+		if p.requiredTenantID != "" && tid != p.requiredTenantID {
+			return "", fmt.Errorf("%w: oidc tenant mismatch", model.ErrPermissionDenied)
+		}
+		oid := stringClaim(claims, "oid")
+		if tid == "" || oid == "" {
+			return "", fmt.Errorf("oidc: entra_oid_tid requires tid and oid claims")
+		}
+		return tid + ":" + oid, nil
+	default:
+		return "", fmt.Errorf("oidc: unsupported subject strategy %q", p.subjectStrategy)
+	}
+}
+
+func (p *Provider) validateTrust(identity model.ExternalIdentity) error {
+	if p.profile == "google" {
+		if err := p.validateHostedDomain(identity); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *Provider) claim(canonical, fallback string) string {
@@ -142,21 +233,42 @@ func (p *Provider) claim(canonical, fallback string) string {
 	return fallback
 }
 
-func (p *Provider) validateEmailDomain(email string, verified bool) error {
-	if len(p.allowedEmailDomains) == 0 {
+func (p *Provider) validateHostedDomain(id model.ExternalIdentity) error {
+	hostedDomain := strings.ToLower(strings.TrimSpace(id.HostedDomain))
+	if len(p.allowedHostedDomains) > 0 {
+		if _, ok := p.allowedHostedDomains[hostedDomain]; !ok {
+			return fmt.Errorf("%w: google hosted domain is not allowed", model.ErrPermissionDenied)
+		}
 		return nil
 	}
-	if !verified {
-		return fmt.Errorf("%w: oidc email must be verified", model.ErrPermissionDenied)
-	}
-	domain := emailDomain(email)
-	if domain == "" {
-		return fmt.Errorf("%w: oidc email domain is required", model.ErrPermissionDenied)
-	}
-	if _, ok := p.allowedEmailDomains[domain]; !ok {
-		return fmt.Errorf("%w: oidc email domain is not allowed", model.ErrPermissionDenied)
+	if hostedDomain == "" && p.personalAccounts == "deny" {
+		return fmt.Errorf("%w: google personal accounts are not allowed", model.ErrPermissionDenied)
 	}
 	return nil
+}
+
+type oidcPrivateState struct {
+	CodeVerifier string `json:"code_verifier,omitempty"`
+}
+
+func (p *Provider) tokenExchangeOptions(raw []byte) ([]oauth2.AuthCodeOption, error) {
+	if len(raw) == 0 {
+		if p.pkce == "required" {
+			return nil, fmt.Errorf("oidc: pkce code_verifier missing")
+		}
+		return nil, nil
+	}
+	var privateState oidcPrivateState
+	if err := json.Unmarshal(raw, &privateState); err != nil {
+		return nil, fmt.Errorf("oidc: decode private state: %w", err)
+	}
+	if privateState.CodeVerifier == "" {
+		if p.pkce == "required" {
+			return nil, fmt.Errorf("oidc: pkce code_verifier missing")
+		}
+		return nil, nil
+	}
+	return []oauth2.AuthCodeOption{oauth2.SetAuthURLParam("code_verifier", privateState.CodeVerifier)}, nil
 }
 
 func copyClaimMapping(in map[string]string) map[string]string {
@@ -168,23 +280,32 @@ func copyClaimMapping(in map[string]string) map[string]string {
 }
 
 func normalizeDomains(values []string) map[string]struct{} {
-	out := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		value = strings.ToLower(strings.TrimSpace(value))
-		if value != "" {
-			out[value] = struct{}{}
-		}
-	}
-	return out
+	return domainsToSet(normalizeDomainList(values))
 }
 
-func emailDomain(email string) string {
-	email = strings.TrimSpace(strings.ToLower(email))
-	at := strings.LastIndex(email, "@")
-	if at < 0 || at == len(email)-1 {
-		return ""
+func normalizeDomainList(values []string) []string {
+	seen := map[string]struct{}{}
+	list := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		list = append(list, value)
 	}
-	return email[at+1:]
+	return list
+}
+
+func domainsToSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		out[value] = struct{}{}
+	}
+	return out
 }
 
 func stringClaim(claims map[string]any, name string) string {
@@ -208,4 +329,24 @@ func displayNameOrDefault(displayName, providerID string) string {
 		return displayName
 	}
 	return providerID
+}
+
+func defaultString(value, fallback string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func randomVerifier() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("oidc: generate pkce verifier: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func codeChallengeS256(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }

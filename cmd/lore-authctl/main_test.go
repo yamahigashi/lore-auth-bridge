@@ -8,9 +8,10 @@ import (
 	"testing"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/sqlite"
+	"github.com/yamahigashi/lore-auth-bridge/internal/core/model"
 )
 
-func TestUserInviteCreatesPendingPreRegisteredUser(t *testing.T) {
+func TestUserInviteCreatesIdentityInvitation(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeTestConfig(t, dir)
@@ -32,8 +33,22 @@ func TestUserInviteCreatesPendingPreRegisteredUser(t *testing.T) {
 	if user.Status != "pending" {
 		t.Fatalf("status = %q, want pending", user.Status)
 	}
-	if !strings.HasPrefix(user.Subject, "pending:") {
-		t.Fatalf("subject = %q, want internal pending subject", user.Subject)
+	core := sqlite.NewCoreStore(st)
+	principal, binding, err := core.ResolveLogin(context.Background(), model.LoginResolutionRequest{
+		Identity: model.ExternalIdentity{
+			ProviderID:    "google",
+			Issuer:        "https://accounts.google.com",
+			Subject:       "google-sub",
+			Email:         "alice@example.com",
+			EmailVerified: true,
+		},
+		Policy: model.LoginTrustPolicy{EmailBinding: "verified_email_invitation"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.UserID != user.ID || binding.Status != "bound_invitation" {
+		t.Fatalf("invite did not reserve bindable user: principal=%#v binding=%#v user=%#v", principal, binding, user)
 	}
 }
 
@@ -56,8 +71,22 @@ func TestUserInviteIDPUsesConfiguredIssuer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.Provider != "keycloak-prod" || user.Issuer != "https://sso.example.com/realms/prod" {
-		t.Fatalf("identity provider = %s issuer = %s", user.Provider, user.Issuer)
+	core := sqlite.NewCoreStore(st)
+	principal, _, err := core.ResolveLogin(context.Background(), model.LoginResolutionRequest{
+		Identity: model.ExternalIdentity{
+			ProviderID:    "keycloak-prod",
+			Issuer:        "https://sso.example.com/realms/prod",
+			Subject:       "subject:with:colon",
+			Email:         "alice@example.com",
+			EmailVerified: true,
+		},
+		Policy: model.LoginTrustPolicy{EmailBinding: "verified_email_invitation"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.UserID != user.ID {
+		t.Fatalf("resolved principal user id = %q, want %q", principal.UserID, user.ID)
 	}
 }
 
@@ -75,12 +104,12 @@ func TestUserInviteRequiresIDP(t *testing.T) {
 	}
 }
 
-func TestUserAddIDPUsesConfiguredIssuer(t *testing.T) {
+func TestUserAddCreatesActiveBridgePrincipal(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeTestConfigWithIDP(t, dir)
 
-	if err := cmdUser([]string{"add", "--config", cfgPath, "--idp", "keycloak-prod", "--subject", "subject:with:colon", "--email", "Alice@Example.com", "--email-verified"}); err != nil {
+	if err := cmdUser([]string{"add", "--config", cfgPath, "--email", "Alice@Example.com", "--name", "Alice"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -90,26 +119,22 @@ func TestUserAddIDPUsesConfiguredIssuer(t *testing.T) {
 	}
 	defer st.Close()
 
-	user, err := st.FindUserByIdentity(context.Background(), "keycloak-prod", "https://sso.example.com/realms/prod", "subject:with:colon")
+	user, err := st.FindUserByEmail(context.Background(), "alice@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.Status != "active" || !user.EmailVerified {
+	if user.Status != "active" || user.ID == "" {
 		t.Fatalf("unexpected user: %#v", user)
 	}
 }
 
-func TestUserAddRequiresIDP(t *testing.T) {
+func TestUserAddDoesNotRequireIDP(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := writeTestConfigWithIDP(t, dir)
 
-	err := cmdUser([]string{"add", "--config", cfgPath, "--subject", "subject:with:colon", "--email", "Alice@Example.com", "--email-verified"})
-	if err == nil {
-		t.Fatal("expected user add without --idp to fail")
-	}
-	if !strings.Contains(err.Error(), "--idp is required") {
-		t.Fatalf("error = %q, want --idp requirement", err)
+	if err := cmdUser([]string{"add", "--config", cfgPath, "--email", "Alice@Example.com"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

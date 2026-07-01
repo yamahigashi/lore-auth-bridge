@@ -34,118 +34,284 @@ func normalizeEmail(email string) string {
 }
 
 type AddUserParams struct {
-	Provider      string
-	Issuer        string
-	Subject       string
-	Email         string
-	EmailVerified bool
-	DisplayName   string
-	PictureURL    string
-	HostedDomain  string
-}
-
-type AddPreRegisteredUserParams struct {
-	Provider    string
-	Issuer      string
 	Email       string
 	DisplayName string
 }
 
+type AddInvitationParams struct {
+	ProviderID    string
+	Issuer        string
+	Email         string
+	DisplayName   string
+	BindingPolicy string
+	ExpiresAt     int64
+}
+
+const bridgePrincipalProvider = "bridge"
+const bridgePrincipalIssuer = "bridge"
+
 func (s *Store) AddUser(ctx context.Context, p AddUserParams) (*User, error) {
 	now := UnixNow()
-	u := &User{ID: NewID(), Provider: p.Provider, Issuer: p.Issuer, Subject: p.Subject, Email: nullString(p.Email), EmailVerified: p.EmailVerified, DisplayName: nullString(p.DisplayName), PictureURL: nullString(p.PictureURL), HostedDomain: nullString(p.HostedDomain), Status: "active", CreatedAt: now, UpdatedAt: now}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO users (id, provider, issuer, subject, email, email_normalized, email_verified, display_name, picture_url, hosted_domain, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, u.ID, u.Provider, u.Issuer, u.Subject, u.Email, nullString(normalizeEmail(p.Email)), boolInt(u.EmailVerified), u.DisplayName, u.PictureURL, u.HostedDomain, u.Status, u.CreatedAt, u.UpdatedAt)
+	id := NewID()
+	u := &User{ID: id, Email: nullString(p.Email), DisplayName: nullString(p.DisplayName), Status: "active", CreatedAt: now, UpdatedAt: now}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO users (id, primary_email, primary_email_normalized, display_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, u.ID, u.Email, nullString(normalizeEmail(p.Email)), u.DisplayName, u.Status, u.CreatedAt, u.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("store: add user: %w", err)
 	}
 	return u, nil
 }
 
-func (s *Store) AddPreRegisteredUser(ctx context.Context, p AddPreRegisteredUserParams) (*User, error) {
+func (s *Store) AddIdentityInvitation(ctx context.Context, p AddInvitationParams) (*User, *IdentityInvitation, error) {
 	email := strings.TrimSpace(p.Email)
 	emailNormalized := normalizeEmail(email)
-	if p.Provider == "" || p.Issuer == "" || emailNormalized == "" {
-		return nil, fmt.Errorf("%w: provider, issuer, and email are required", model.ErrInvalidArgument)
+	if strings.TrimSpace(p.ProviderID) == "" || strings.TrimSpace(p.Issuer) == "" || emailNormalized == "" {
+		return nil, nil, fmt.Errorf("%w: provider_id, issuer, and email are required", model.ErrInvalidArgument)
+	}
+	bindingPolicy := strings.TrimSpace(p.BindingPolicy)
+	if bindingPolicy == "" {
+		bindingPolicy = "verified_email_invitation"
 	}
 	now := UnixNow()
-	id := NewID()
-	u := &User{ID: id, Provider: p.Provider, Issuer: p.Issuer, Subject: "pending:" + id, Email: nullString(email), DisplayName: nullString(p.DisplayName), Status: "pending", CreatedAt: now, UpdatedAt: now}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO users (id, provider, issuer, subject, email, email_normalized, email_verified, display_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`, u.ID, u.Provider, u.Issuer, u.Subject, u.Email, emailNormalized, u.DisplayName, u.Status, u.CreatedAt, u.UpdatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("store: add pre-registered user: %w", err)
+	userID := NewID()
+	user := &User{
+		ID:          userID,
+		Email:       nullString(email),
+		DisplayName: nullString(p.DisplayName),
+		Status:      "pending",
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
-	return u, nil
+	invitation := &IdentityInvitation{
+		ID:              NewID(),
+		UserID:          userID,
+		ProviderID:      strings.TrimSpace(p.ProviderID),
+		Issuer:          strings.TrimSpace(p.Issuer),
+		Email:           nullString(email),
+		EmailNormalized: nullString(emailNormalized),
+		BindingPolicy:   bindingPolicy,
+		Status:          "pending",
+		CreatedAt:       now,
+		ExpiresAt:       sql.NullInt64{Int64: p.ExpiresAt, Valid: p.ExpiresAt != 0},
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, `INSERT INTO users (id, primary_email, primary_email_normalized, display_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		user.ID, user.Email, nullString(emailNormalized), user.DisplayName, user.Status, user.CreatedAt, user.UpdatedAt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: add invitation user: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO identity_invitations (id, user_id, provider_id, issuer, email, email_normalized, binding_policy, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		invitation.ID, invitation.UserID, invitation.ProviderID, invitation.Issuer, invitation.Email, invitation.EmailNormalized, invitation.BindingPolicy, invitation.Status, invitation.CreatedAt, invitation.ExpiresAt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: add identity invitation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return user, invitation, nil
 }
 
 func (s *Store) FindUserByEmail(ctx context.Context, email string) (*User, error) {
-	return s.scanUser(s.db.QueryRowContext(ctx, `SELECT id, provider, issuer, subject, email, email_verified, display_name, picture_url, hosted_domain, status, created_at, updated_at, last_login_at FROM users WHERE email_normalized = ? ORDER BY created_at LIMIT 1`, normalizeEmail(email)))
-}
-
-func (s *Store) FindUserByIdentity(ctx context.Context, provider, issuer, subject string) (*User, error) {
-	return s.scanUser(s.db.QueryRowContext(ctx, `SELECT id, provider, issuer, subject, email, email_verified, display_name, picture_url, hosted_domain, status, created_at, updated_at, last_login_at FROM users WHERE provider = ? AND issuer = ? AND subject = ?`, provider, issuer, subject))
+	return s.scanUser(s.db.QueryRowContext(ctx, `SELECT id, primary_email, display_name, status, created_at, updated_at, last_login_at FROM users WHERE primary_email_normalized = ? ORDER BY created_at LIMIT 1`, normalizeEmail(email)))
 }
 
 func (s *Store) UserByID(ctx context.Context, id string) (*User, error) {
-	return s.scanUser(s.db.QueryRowContext(ctx, `SELECT id, provider, issuer, subject, email, email_verified, display_name, picture_url, hosted_domain, status, created_at, updated_at, last_login_at FROM users WHERE id = ?`, id))
+	return s.scanUser(s.db.QueryRowContext(ctx, `SELECT id, primary_email, display_name, status, created_at, updated_at, last_login_at FROM users WHERE id = ?`, id))
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
 
 func (s *Store) scanUser(row rowScanner) (*User, error) {
 	var u User
-	var subject sql.NullString
-	var emailVerified int
-	err := row.Scan(&u.ID, &u.Provider, &u.Issuer, &subject, &u.Email, &emailVerified, &u.DisplayName, &u.PictureURL, &u.HostedDomain, &u.Status, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
+	err := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	u.Subject = subject.String
-	u.EmailVerified = intBool(emailVerified)
 	return &u, nil
 }
 
-func (s *Store) BindPreRegisteredIdentity(ctx context.Context, identity model.Identity) (*User, error) {
-	if !identity.EmailVerified || strings.TrimSpace(identity.Email) == "" {
-		return nil, ErrNotFound
+func (s *Store) FindExternalIdentity(ctx context.Context, providerID, issuer, subject string) (*ExternalIdentity, error) {
+	return s.scanExternalIdentity(s.db.QueryRowContext(ctx, `SELECT id, user_id, provider_id, issuer, subject, subject_strategy, email, email_verified, display_name, picture_url, hosted_domain, status, first_seen_at, last_seen_at FROM external_identities WHERE provider_id = ? AND issuer = ? AND subject = ?`, providerID, issuer, subject))
+}
+
+func (s *Store) IdentityInvitationByID(ctx context.Context, id string) (*IdentityInvitation, error) {
+	return s.scanIdentityInvitation(s.db.QueryRowContext(ctx, `SELECT id, user_id, provider_id, issuer, email, email_normalized, binding_policy, status, accepted_identity_id, created_at, expires_at, accepted_at FROM identity_invitations WHERE id = ?`, id))
+}
+
+func (s *Store) ResolveLogin(ctx context.Context, req model.LoginResolutionRequest) (*User, *ExternalIdentity, model.LoginBindingResult, error) {
+	identity := req.Identity
+	providerID := strings.TrimSpace(identity.ProviderID)
+	issuer := strings.TrimSpace(identity.Issuer)
+	subject := strings.TrimSpace(identity.Subject)
+	if providerID == "" || issuer == "" || subject == "" {
+		return nil, nil, model.LoginBindingResult{}, fmt.Errorf("%w: provider_id, issuer, and subject are required", model.ErrInvalidArgument)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, model.LoginBindingResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if user, err := s.scanUser(tx.QueryRowContext(ctx, `SELECT id, provider, issuer, subject, email, email_verified, display_name, picture_url, hosted_domain, status, created_at, updated_at, last_login_at FROM users WHERE provider = ? AND issuer = ? AND subject = ?`, identity.Provider, identity.Issuer, identity.Subject)); err == nil {
-		return user, tx.Commit()
-	} else if !errors.Is(err, ErrNotFound) {
-		return nil, err
+	existingIdentity, err := s.scanExternalIdentity(tx.QueryRowContext(ctx, `SELECT id, user_id, provider_id, issuer, subject, subject_strategy, email, email_verified, display_name, picture_url, hosted_domain, status, first_seen_at, last_seen_at FROM external_identities WHERE provider_id = ? AND issuer = ? AND subject = ? AND status = 'active'`, providerID, issuer, subject))
+	if err == nil {
+		now := UnixNow()
+		if _, err := tx.ExecContext(ctx, `UPDATE external_identities SET last_seen_at = ? WHERE id = ?`, now, existingIdentity.ID); err != nil {
+			return nil, nil, model.LoginBindingResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?`, now, now, existingIdentity.UserID); err != nil {
+			return nil, nil, model.LoginBindingResult{}, err
+		}
+		user, err := s.scanUser(tx.QueryRowContext(ctx, `SELECT id, primary_email, display_name, status, created_at, updated_at, last_login_at FROM users WHERE id = ?`, existingIdentity.UserID))
+		if err != nil {
+			return nil, nil, model.LoginBindingResult{}, err
+		}
+		if user.Status != "active" {
+			return nil, nil, model.LoginBindingResult{}, fmt.Errorf("%w: user is not active", model.ErrPermissionDenied)
+		}
+		return user, existingIdentity, model.LoginBindingResult{Status: "existing", ExternalIdentityID: existingIdentity.ID}, tx.Commit()
 	}
-
+	if !errors.Is(err, ErrNotFound) {
+		return nil, nil, model.LoginBindingResult{}, err
+	}
+	if !identity.EmailVerified || strings.TrimSpace(identity.Email) == "" {
+		return nil, nil, model.LoginBindingResult{}, ErrNotFound
+	}
+	if !allowsVerifiedEmailInvitationBinding(req.Policy) {
+		return nil, nil, model.LoginBindingResult{}, ErrNotFound
+	}
 	emailNormalized := normalizeEmail(identity.Email)
-	pending, err := s.scanUser(tx.QueryRowContext(ctx, `SELECT id, provider, issuer, subject, email, email_verified, display_name, picture_url, hosted_domain, status, created_at, updated_at, last_login_at FROM users WHERE provider = ? AND issuer = ? AND email_normalized = ? AND status = 'pending'`, identity.Provider, identity.Issuer, emailNormalized))
-	if err != nil {
-		return nil, err
+	if !emailDomainAllowed(emailNormalized, req.Policy.AllowedEmailDomains) {
+		return nil, nil, model.LoginBindingResult{}, ErrNotFound
 	}
-
-	now := UnixNow()
-	res, err := tx.ExecContext(ctx, `UPDATE users SET subject = ?, email = ?, email_normalized = ?, email_verified = 1, display_name = ?, picture_url = ?, hosted_domain = ?, status = 'active', updated_at = ?, last_login_at = ? WHERE id = ? AND status = 'pending'`, identity.Subject, identity.Email, emailNormalized, nullString(identity.Name), nullString(identity.PictureURL), nullString(identity.HostedDomain), now, now, pending.ID)
+	invitation, err := s.scanIdentityInvitation(tx.QueryRowContext(ctx, `
+SELECT id, user_id, provider_id, issuer, email, email_normalized, binding_policy, status, accepted_identity_id, created_at, expires_at, accepted_at
+FROM identity_invitations
+WHERE provider_id = ?
+  AND issuer = ?
+  AND email_normalized = ?
+  AND binding_policy = ?
+  AND status = 'pending'
+  AND (expires_at IS NULL OR expires_at > ?)
+ORDER BY created_at
+LIMIT 1`, providerID, issuer, emailNormalized, model.LoginEmailBindingVerifiedEmailInvitation, UnixNow()))
 	if err != nil {
-		return nil, fmt.Errorf("store: bind pre-registered identity: %w", err)
+		return nil, nil, model.LoginBindingResult{}, err
+	}
+	now := UnixNow()
+	subjectStrategy := strings.TrimSpace(identity.SubjectStrategy)
+	if subjectStrategy == "" {
+		subjectStrategy = "oidc_sub"
+	}
+	externalIdentity := &ExternalIdentity{
+		ID:              NewID(),
+		UserID:          invitation.UserID,
+		ProviderID:      providerID,
+		Issuer:          issuer,
+		Subject:         subject,
+		SubjectStrategy: subjectStrategy,
+		Email:           nullString(identity.Email),
+		EmailVerified:   identity.EmailVerified,
+		DisplayName:     nullString(identity.DisplayName),
+		PictureURL:      nullString(identity.PictureURL),
+		HostedDomain:    nullString(identity.HostedDomain),
+		Status:          "active",
+		FirstSeenAt:     now,
+		LastSeenAt:      now,
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO external_identities (id, user_id, provider_id, issuer, subject, subject_strategy, email, email_verified, display_name, picture_url, hosted_domain, status, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		externalIdentity.ID, externalIdentity.UserID, externalIdentity.ProviderID, externalIdentity.Issuer, externalIdentity.Subject, externalIdentity.SubjectStrategy, externalIdentity.Email, boolInt(externalIdentity.EmailVerified), externalIdentity.DisplayName, externalIdentity.PictureURL, externalIdentity.HostedDomain, externalIdentity.Status, externalIdentity.FirstSeenAt, externalIdentity.LastSeenAt)
+	if err != nil {
+		return nil, nil, model.LoginBindingResult{}, fmt.Errorf("store: add external identity: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE identity_invitations SET status = 'accepted', accepted_identity_id = ?, accepted_at = ? WHERE id = ? AND status = 'pending'`, externalIdentity.ID, now, invitation.ID)
+	if err != nil {
+		return nil, nil, model.LoginBindingResult{}, err
 	}
 	if err := requireAffected(res); err != nil {
-		return nil, err
+		return nil, nil, model.LoginBindingResult{}, err
 	}
-	user, err := s.scanUser(tx.QueryRowContext(ctx, `SELECT id, provider, issuer, subject, email, email_verified, display_name, picture_url, hosted_domain, status, created_at, updated_at, last_login_at FROM users WHERE id = ?`, pending.ID))
+	displayName := identity.DisplayName
+	if displayName == "" {
+		displayName = invitation.Email.String
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE users SET primary_email = ?, primary_email_normalized = ?, display_name = ?, status = 'active', updated_at = ?, last_login_at = ? WHERE id = ?`,
+		identity.Email, emailNormalized, nullString(displayName), now, now, invitation.UserID)
+	if err != nil {
+		return nil, nil, model.LoginBindingResult{}, err
+	}
+	if err := requireAffected(res); err != nil {
+		return nil, nil, model.LoginBindingResult{}, err
+	}
+	user, err := s.scanUser(tx.QueryRowContext(ctx, `SELECT id, primary_email, display_name, status, created_at, updated_at, last_login_at FROM users WHERE id = ?`, invitation.UserID))
+	if err != nil {
+		return nil, nil, model.LoginBindingResult{}, err
+	}
+	return user, externalIdentity, model.LoginBindingResult{Status: "bound_invitation", ExternalIdentityID: externalIdentity.ID, InvitationID: invitation.ID}, tx.Commit()
+}
+
+func allowsVerifiedEmailInvitationBinding(policy model.LoginTrustPolicy) bool {
+	return strings.TrimSpace(policy.EmailBinding) == model.LoginEmailBindingVerifiedEmailInvitation
+}
+
+func emailDomainAllowed(email string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	domain := emailDomain(email)
+	if domain == "" {
+		return false
+	}
+	for _, allowedDomain := range allowed {
+		if strings.EqualFold(strings.TrimSpace(allowedDomain), domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func emailDomain(email string) string {
+	email = strings.ToLower(strings.TrimSpace(email))
+	at := strings.LastIndex(email, "@")
+	if at < 0 || at == len(email)-1 {
+		return ""
+	}
+	return email[at+1:]
+}
+
+func (s *Store) scanExternalIdentity(row rowScanner) (*ExternalIdentity, error) {
+	var id ExternalIdentity
+	var emailVerified int
+	err := row.Scan(&id.ID, &id.UserID, &id.ProviderID, &id.Issuer, &id.Subject, &id.SubjectStrategy, &id.Email, &emailVerified, &id.DisplayName, &id.PictureURL, &id.HostedDomain, &id.Status, &id.FirstSeenAt, &id.LastSeenAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
-	return user, tx.Commit()
+	id.EmailVerified = intBool(emailVerified)
+	return &id, nil
+}
+
+func (s *Store) scanIdentityInvitation(row rowScanner) (*IdentityInvitation, error) {
+	var inv IdentityInvitation
+	err := row.Scan(&inv.ID, &inv.UserID, &inv.ProviderID, &inv.Issuer, &inv.Email, &inv.EmailNormalized, &inv.BindingPolicy, &inv.Status, &inv.AcceptedIdentityID, &inv.CreatedAt, &inv.ExpiresAt, &inv.AcceptedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &inv, nil
 }
 
 func (s *Store) DisableUser(ctx context.Context, emailOrID string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE users SET status = 'disabled', updated_at = ? WHERE id = ? OR email_normalized = ?`, UnixNow(), emailOrID, normalizeEmail(emailOrID))
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET status = 'disabled', updated_at = ? WHERE id = ? OR primary_email_normalized = ?`, UnixNow(), emailOrID, normalizeEmail(emailOrID))
 	if err != nil {
 		return err
 	}
@@ -153,7 +319,7 @@ func (s *Store) DisableUser(ctx context.Context, emailOrID string) error {
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, provider, issuer, subject, email, email_verified, display_name, picture_url, hosted_domain, status, created_at, updated_at, last_login_at FROM users ORDER BY email, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, primary_email, display_name, status, created_at, updated_at, last_login_at FROM users ORDER BY primary_email, id`)
 	if err != nil {
 		return nil, err
 	}

@@ -20,12 +20,12 @@ type LoginConfig struct {
 type LoginService struct {
 	cfg    LoginConfig
 	idps   ports.IdentityProviderRegistry
-	users  ports.UserDirectory
+	users  ports.AccountDirectory
 	state  ports.StateStore
 	tokens *TokenService
 }
 
-func NewLoginService(cfg LoginConfig, idps ports.IdentityProviderRegistry, users ports.UserDirectory, state ports.StateStore, tokens *TokenService) *LoginService {
+func NewLoginService(cfg LoginConfig, idps ports.IdentityProviderRegistry, users ports.AccountDirectory, state ports.StateStore, tokens *TokenService) *LoginService {
 	return &LoginService{cfg: cfg, idps: idps, users: users, state: state, tokens: tokens}
 }
 
@@ -41,7 +41,7 @@ type AuthSessionTokenResult struct {
 }
 
 type OAuthCallbackResult struct {
-	Identity       model.Identity
+	Identity       model.ExternalIdentity
 	User           model.User
 	BrowserSession model.BrowserSession
 	UnknownUser    bool
@@ -148,10 +148,10 @@ func (s *LoginService) CompleteAuth(ctx context.Context, providerID string, req 
 	if err != nil {
 		return OAuthCallbackResult{}, fmt.Errorf("%w: oauth identity exchange: %w", model.ErrUnauthenticated, err)
 	}
-	if identity.Provider == "" {
-		identity.Provider = descriptor.ID
+	if identity.ProviderID == "" {
+		identity.ProviderID = descriptor.ID
 	}
-	if identity.Provider != descriptor.ID {
+	if identity.ProviderID != descriptor.ID {
 		return OAuthCallbackResult{}, fmt.Errorf("%w: identity provider mismatch", model.ErrUnauthenticated)
 	}
 	if identity.Issuer == "" {
@@ -160,19 +160,17 @@ func (s *LoginService) CompleteAuth(ctx context.Context, providerID string, req 
 	if descriptor.Issuer != "" && identity.Issuer != descriptor.Issuer {
 		return OAuthCallbackResult{}, fmt.Errorf("%w: identity issuer mismatch", model.ErrUnauthenticated)
 	}
-	user, err := s.users.FindByIdentity(ctx, identity.Provider, identity.Issuer, identity.Subject)
+	principal, _, err := s.users.ResolveLogin(ctx, model.LoginResolutionRequest{
+		Identity: identity,
+		Policy:   descriptor.TrustPolicy,
+	})
 	if errors.Is(err, model.ErrNotFound) {
-		user, err = s.users.BindPreRegisteredIdentity(ctx, identity)
-		if errors.Is(err, model.ErrNotFound) {
-			return OAuthCallbackResult{Identity: identity, UnknownUser: true}, nil
-		}
+		return OAuthCallbackResult{Identity: identity, UnknownUser: true}, nil
 	}
 	if err != nil {
 		return OAuthCallbackResult{}, err
 	}
-	if user.Status != "active" {
-		return OAuthCallbackResult{}, fmt.Errorf("%w: user disabled", model.ErrPermissionDenied)
-	}
+	user := userFromPrincipal(principal)
 	if loginNonce != "" {
 		authSession, err := s.state.GetAuthSessionByNonce(ctx, loginNonce)
 		if err == nil {
@@ -194,6 +192,15 @@ func (s *LoginService) CompleteAuth(ctx context.Context, providerID string, req 
 		return OAuthCallbackResult{}, err
 	}
 	return OAuthCallbackResult{Identity: identity, User: user, BrowserSession: session}, nil
+}
+
+func userFromPrincipal(principal model.TokenPrincipal) model.User {
+	return model.User{
+		ID:          principal.UserID,
+		Email:       principal.PreferredUsername,
+		DisplayName: principal.DisplayName,
+		Status:      "active",
+	}
 }
 
 func (s *LoginService) identityProvider(providerID string) (ports.IdentityProvider, ports.IdentityProviderDescriptor, error) {

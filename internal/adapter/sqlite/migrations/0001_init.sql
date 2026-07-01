@@ -10,19 +10,13 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL,
-  issuer TEXT NOT NULL,
-  subject TEXT NOT NULL,
-  email TEXT,
-  email_verified INTEGER NOT NULL DEFAULT 0,
   display_name TEXT,
-  picture_url TEXT,
-  hosted_domain TEXT,
+  primary_email TEXT,
+  primary_email_normalized TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  last_login_at INTEGER,
-  UNIQUE (provider, issuer, subject)
+  last_login_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS groups (
@@ -128,7 +122,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
   FOREIGN KEY (actor_user_id) REFERENCES users(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_primary_email
+ON users(primary_email_normalized)
+WHERE primary_email_normalized IS NOT NULL AND status <> 'deleted';
 CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_grants_repo ON grants(repository_id);
 CREATE INDEX IF NOT EXISTS idx_grants_subject ON grants(subject_type, subject_id);

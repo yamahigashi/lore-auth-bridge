@@ -14,6 +14,7 @@ type StateStore interface {
 	CompleteAuthSession(ctx context.Context, id, userID string) error
 	ConsumeAuthSession(ctx context.Context, id string) error
 	CreateLoginState(ctx context.Context, input model.LoginStateInput, ttl time.Duration) (state string, loginState model.LoginState, err error)
+	SetLoginStatePrivateState(ctx context.Context, state string, privateState []byte) error
 	ConsumeLoginState(ctx context.Context, state string) (model.LoginState, error)
 	CreateBrowserSession(ctx context.Context, userID string, ttl time.Duration) (model.BrowserSession, error)
 	UserByBrowserSession(ctx context.Context, sessionID string) (model.User, error)

@@ -58,7 +58,7 @@ func (s *Store) AddIssuedTokenV2(ctx context.Context, p AddIssuedTokenParams, ki
 
 func (s *Store) ActiveAuthnTokenUser(ctx context.Context, jti string) (*User, error) {
 	return s.scanUser(s.db.QueryRowContext(ctx, `
-SELECT u.id, u.provider, u.issuer, u.subject, u.email, u.email_verified, u.display_name, u.picture_url, u.hosted_domain, u.status, u.created_at, u.updated_at, u.last_login_at
+SELECT u.id, u.primary_email, u.display_name, u.status, u.created_at, u.updated_at, u.last_login_at
 FROM issued_tokens it
 JOIN users u ON u.id = it.user_id
 WHERE it.jti = ?

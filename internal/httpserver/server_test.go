@@ -23,14 +23,14 @@ import (
 type fakeIDP struct {
 	descriptor ports.IdentityProviderDescriptor
 	authURL    string
-	id         model.Identity
+	id         model.ExternalIdentity
 }
 
 func (f fakeIDP) Descriptor() ports.IdentityProviderDescriptor {
 	if f.descriptor.ID != "" {
 		return f.descriptor
 	}
-	return ports.IdentityProviderDescriptor{ID: "google", Type: "google_oidc", DisplayName: "Google", Issuer: "https://accounts.google.com"}
+	return ports.IdentityProviderDescriptor{ID: "google", Type: "oidc", DisplayName: "Google", Issuer: "https://accounts.google.com"}
 }
 
 func (f fakeIDP) BeginAuth(ctx context.Context, req ports.BeginAuthRequest) (ports.BeginAuthResult, error) {
@@ -46,7 +46,7 @@ func (f fakeIDP) BeginAuth(ctx context.Context, req ports.BeginAuthRequest) (por
 	return ports.BeginAuthResult{RedirectURL: authURL + "?" + values.Encode()}, nil
 }
 
-func (f fakeIDP) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.Identity, error) {
+func (f fakeIDP) CompleteAuth(ctx context.Context, req ports.CompleteAuthRequest) (model.ExternalIdentity, error) {
 	return f.id, nil
 }
 
@@ -113,11 +113,22 @@ func newHTTPTestServerWithIDPs(cfg *config.Config, providers ...fakeIDP) (*Serve
 		AuthServiceAudience: "auth.example.com",
 		AuthnTTL:            time.Hour,
 		AuthzTTL:            15 * time.Minute,
-	}, mem, mem, mem, mem, mem, mem)
+	}, mem, mem, mem, mem, mem)
 	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: cfg.Server.PublicBaseURL, SessionTTL: time.Duration(cfg.Security.SessionTTLSeconds) * time.Second}, idps, mem, mem, tokenSvc)
 	resourceSvc := service.NewResourceService(mem)
 	permissionSvc := service.NewPermissionService(mem, mem)
 	return NewWithOptions(Options{Config: cfg, Login: loginSvc, Tokens: tokenSvc, Resources: resourceSvc, Permissions: permissionSvc, State: mem, JWKS: mem, Device: fakeDevice{}}), mem
+}
+
+func addHTTPTestExternalIdentity(mem *memory.Store, user model.User, identity model.ExternalIdentity) {
+	identity.UserID = user.ID
+	if identity.Email == "" {
+		identity.Email = user.Email
+	}
+	if identity.Status == "" {
+		identity.Status = "active"
+	}
+	mem.AddTestExternalIdentity(identity)
 }
 
 func TestJWKSHandlerPublishesKeys(t *testing.T) {
@@ -144,7 +155,7 @@ func TestSecurityHeadersAreSet(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +195,7 @@ func TestLoginRedirectsToSingleDefaultProvider(t *testing.T) {
 	}
 }
 
-func TestGoogleStartAliasCreatesProviderBoundState(t *testing.T) {
+func TestAuthStartCreatesProviderBoundState(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
@@ -192,7 +203,7 @@ func TestGoogleStartAliasCreatesProviderBoundState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/start?login_nonce="+sess.LoginURLNonce, nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/google/start?login_nonce="+sess.LoginURLNonce, nil)
 	rr := httptest.NewRecorder()
 
 	srv.Handler().ServeHTTP(rr, req)
@@ -267,7 +278,7 @@ func TestUnknownProviderStartDoesNotCreateLoginState(t *testing.T) {
 	}
 }
 
-func TestGoogleStartAliasDoesNotCreateLoginStateWithoutGoogleProvider(t *testing.T) {
+func TestLegacyGoogleStartRouteIsNotFound(t *testing.T) {
 	t.Parallel()
 	srv, mem := newHTTPTestServerWithIDPs(nil,
 		fakeIDP{descriptor: ports.IdentityProviderDescriptor{ID: "keycloak-prod", Type: "oidc", DisplayName: "Company SSO", Issuer: "https://sso.example.com/realms/prod"}, authURL: "https://sso.example.com/auth"},
@@ -333,17 +344,18 @@ func TestAuthCallbackRejectsStateProviderMismatch(t *testing.T) {
 	}
 }
 
-func TestGoogleCallbackCreatesSessionForRegisteredUser(t *testing.T) {
+func TestAuthCallbackCreatesSessionForRegisteredUser(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
-	mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
+	addHTTPTestExternalIdentity(mem, u, model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
 	state, _, err := mem.CreateLoginState(ctx, model.LoginStateInput{ProviderID: "google"}, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusFound {
@@ -354,15 +366,15 @@ func TestGoogleCallbackCreatesSessionForRegisteredUser(t *testing.T) {
 	}
 }
 
-func TestGoogleCallbackShowsWhoamiForUnregisteredUser(t *testing.T) {
+func TestAuthCallbackShowsWhoamiForUnregisteredUser(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "new@example.com"}})
+	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "new@example.com"}})
 	state, _, err := mem.CreateLoginState(ctx, model.LoginStateInput{ProviderID: "google"}, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -373,16 +385,17 @@ func TestGoogleCallbackShowsWhoamiForUnregisteredUser(t *testing.T) {
 	}
 }
 
-func TestGoogleCallbackDisabledUserIsForbidden(t *testing.T) {
+func TestAuthCallbackDisabledUserIsForbidden(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
-	mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com", Status: "disabled"})
+	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com", Status: "disabled"})
+	addHTTPTestExternalIdentity(mem, u, model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
 	state, _, err := mem.CreateLoginState(ctx, model.LoginStateInput{ProviderID: "google"}, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {
@@ -390,13 +403,14 @@ func TestGoogleCallbackDisabledUserIsForbidden(t *testing.T) {
 	}
 }
 
-func TestGoogleCallbackLoginSessionStoreFailureIsInternal(t *testing.T) {
+func TestAuthCallbackLoginSessionStoreFailureIsInternal(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
-	mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
+	addHTTPTestExternalIdentity(mem, u, model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
 	idps := idpregistry.New("google")
-	if err := idps.Register(fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}}); err != nil {
+	if err := idps.Register(fakeIDP{id: model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}}); err != nil {
 		t.Fatal(err)
 	}
 	srv.login = service.NewLoginService(service.LoginConfig{PublicBaseURL: srv.cfg.Server.PublicBaseURL, SessionTTL: time.Hour}, idps, mem, failingNonceState{Store: mem}, srv.tokens)
@@ -405,7 +419,7 @@ func TestGoogleCallbackLoginSessionStoreFailureIsInternal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusInternalServerError {
@@ -417,7 +431,8 @@ func TestTokenMintPageIssuesWriterToken(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
+	addHTTPTestExternalIdentity(mem, u, model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
 	resource := mem.AddTestResource(model.Resource{Name: "game-assets", RemoteURL: "lore://example", LoreRepositoryID: "0194b726b34e72b0b45550b88a967076"})
 	mem.Grant(u.ID, resource.ResourceID)
 	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
@@ -458,7 +473,7 @@ func TestTokenMintRequiresCSRFAndSameOrigin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	resource := mem.AddTestResource(model.Resource{Name: "game-assets", RemoteURL: "lore://example", LoreRepositoryID: "0194b726b34e72b0b45550b88a967076"})
 	mem.Grant(u.ID, resource.ResourceID)
 	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
@@ -520,7 +535,7 @@ func TestTokenMintPermissionDeniedUsesSafeBody(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	mem.AddTestResource(model.Resource{Name: "game-assets", RemoteURL: "lore://example", LoreRepositoryID: "0194b726b34e72b0b45550b88a967076"})
 	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
 	if err != nil {
@@ -551,7 +566,7 @@ func TestTokenPageShowsOnlyWriterAccessibleRepositories(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	writer := mem.AddTestResource(model.Resource{Name: "writer-repo", RemoteURL: "lore://writer", LoreRepositoryID: "writer-id"})
 	reader := mem.AddTestResource(model.Resource{Name: "reader-repo", RemoteURL: "lore://reader", LoreRepositoryID: "reader-id"})
 	mem.AddTestResource(model.Resource{Name: "ungranted-repo", RemoteURL: "lore://ungranted", LoreRepositoryID: "ungranted-id"})
@@ -582,7 +597,7 @@ func TestTokenPageListsRepositoriesWithoutPerPermissionLookups(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	first := mem.AddTestResource(model.Resource{Name: "first-repo", RemoteURL: "lore://first", LoreRepositoryID: "first-id"})
 	second := mem.AddTestResource(model.Resource{Name: "second-repo", RemoteURL: "lore://second", LoreRepositoryID: "second-id"})
 	mem.GrantRole(u.ID, first.ResourceID, model.RoleWriter)
@@ -614,7 +629,7 @@ func TestLogoutRequiresCSRFAndSameOrigin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -668,7 +683,7 @@ func TestSessionCSRFEndpointIssuesNoStoreToken(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -788,7 +803,7 @@ func TestFormEndpointsRejectLargeBodies(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	resource := mem.AddTestResource(model.Resource{Name: "game-assets", RemoteURL: "lore://example", LoreRepositoryID: "0194b726b34e72b0b45550b88a967076"})
 	mem.Grant(u.ID, resource.ResourceID)
 	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
@@ -844,7 +859,7 @@ func TestDeviceGetShowsConfirmationWithoutApproving(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -874,7 +889,7 @@ func TestDeviceApprovePostRequiresCSRFAndSameOrigin(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	srv, mem := newHTTPTestServer(nil, fakeIDP{})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
 	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -956,11 +971,12 @@ func TestDeviceTokenLookupErrorUsesSafeBody(t *testing.T) {
 	}
 }
 
-func TestLoginSessionCompletesViaGoogleCallback(t *testing.T) {
+func TestLoginSessionCompletesViaAuthCallback(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.Identity{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
-	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	srv, mem := newHTTPTestServer(nil, fakeIDP{id: model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"}})
+	u := mem.AddTestUser(model.User{Email: "alice@example.com"})
+	addHTTPTestExternalIdentity(mem, u, model.ExternalIdentity{ProviderID: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
 	code, sess, err := mem.CreateAuthSession(ctx, "client-state", 10*time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -970,7 +986,7 @@ func TestLoginSessionCompletesViaGoogleCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/oauth/google/callback?state="+state+"&code=code", nil)
+	req := httptest.NewRequest(http.MethodGet, "/auth/google/callback?state="+state+"&code=code", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {

@@ -97,7 +97,7 @@ func (s *Server) rateLimitPublic(next http.Handler) http.Handler {
 
 func isRateLimitedHTTPPath(path string) bool {
 	switch {
-	case path == "/api/device/start", path == "/api/device/token", path == "/login", path == "/oauth/google/start":
+	case path == "/api/device/start", path == "/api/device/token", path == "/login":
 		return true
 	case strings.HasPrefix(path, "/auth/") && strings.HasSuffix(path, "/start"):
 		return true
@@ -121,8 +121,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /login", s.handleLogin)
 	s.mux.HandleFunc("GET /auth/{provider}/start", s.handleAuthStart)
 	s.mux.HandleFunc("GET /auth/{provider}/callback", s.handleAuthCallback)
-	s.mux.HandleFunc("GET /oauth/google/start", s.handleGoogleStart)
-	s.mux.HandleFunc("GET /oauth/google/callback", s.handleGoogleCallback)
 	s.mux.HandleFunc("GET /login/session/{nonce}", s.handleLoginSession)
 	s.mux.HandleFunc("GET /whoami", s.handleWhoami)
 	s.mux.HandleFunc("GET /api/me", s.handleMe)
@@ -137,6 +135,10 @@ func (s *Server) routes() {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	u, ok, err := s.currentUser(r)
 	if err != nil {
 		slog.Error("browser session lookup failed", "route", "/", "error", err)
@@ -144,7 +146,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ok {
-		_, _ = fmt.Fprintf(w, "lore-auth-bridge\nlogged in as %s\n", stringOr(u.Email, u.Subject))
+		_, _ = fmt.Fprintf(w, "lore-auth-bridge\nlogged in as %s\n", stringOr(u.Email, u.BridgeSubject()))
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -225,10 +227,6 @@ func (s *Server) handleAuthStart(w http.ResponseWriter, r *http.Request) {
 	s.startAuthProvider(w, r, r.PathValue("provider"))
 }
 
-func (s *Server) handleGoogleStart(w http.ResponseWriter, r *http.Request) {
-	s.startAuthProvider(w, r, "google")
-}
-
 func (s *Server) startAuthProvider(w http.ResponseWriter, r *http.Request, providerID string) {
 	if s.login == nil {
 		http.Error(w, "identity provider login not configured", http.StatusServiceUnavailable)
@@ -267,15 +265,18 @@ func (s *Server) startAuthProvider(w http.ResponseWriter, r *http.Request, provi
 		writeLoginProviderError(w, err)
 		return
 	}
+	if len(res.PrivateState) > 0 {
+		if err := s.state.SetLoginStatePrivateState(r.Context(), state, res.PrivateState); err != nil {
+			slog.Error("oauth private state persistence failed", "provider", providerID, "error", err)
+			http.Error(w, "state failed", http.StatusInternalServerError)
+			return
+		}
+	}
 	http.Redirect(w, r, res.RedirectURL, http.StatusFound)
 }
 
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	s.completeAuthProvider(w, r, r.PathValue("provider"))
-}
-
-func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
-	s.completeAuthProvider(w, r, "google")
 }
 
 func (s *Server) completeAuthProvider(w http.ResponseWriter, r *http.Request, providerID string) {
@@ -294,7 +295,7 @@ func (s *Server) completeAuthProvider(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 	clearCookie(w, stateCookieName)
-	res, err := s.login.CompleteAuth(r.Context(), providerID, ports.CompleteAuthRequest{Code: r.URL.Query().Get("code"), State: state, Nonce: loginState.Nonce, RedirectURL: s.authCallbackURL(providerID), Params: r.URL.Query()}, loginState.LoginURLNonce)
+	res, err := s.login.CompleteAuth(r.Context(), providerID, ports.CompleteAuthRequest{Code: r.URL.Query().Get("code"), State: state, Nonce: loginState.Nonce, RedirectURL: s.authCallbackURL(providerID), Params: r.URL.Query(), PrivateState: loginState.PrivateState}, loginState.LoginURLNonce)
 	if err != nil {
 		switch {
 		case errors.Is(err, model.ErrUnsupported):
@@ -584,7 +585,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ok {
-		identity := model.Identity{Issuer: u.Issuer, Subject: u.Subject, Email: u.Email, EmailVerified: u.EmailVerified, Name: u.DisplayName, HostedDomain: u.HostedDomain}
+		identity := model.ExternalIdentity{Issuer: "bridge", Subject: u.BridgeSubject(), Email: u.Email, DisplayName: u.DisplayName}
 		renderWhoami(w, identity)
 		return
 	}
@@ -603,7 +604,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"id": u.ID, "email": u.Email, "subject": u.Subject, "status": u.Status})
+	_ = json.NewEncoder(w).Encode(map[string]any{"id": u.ID, "email": u.Email, "subject": u.BridgeSubject(), "status": u.Status})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -795,7 +796,7 @@ func parseFormBody(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func renderWhoami(w http.ResponseWriter, id model.Identity) {
+func renderWhoami(w http.ResponseWriter, id model.ExternalIdentity) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = whoamiTemplate.Execute(w, id)
 }
@@ -865,10 +866,10 @@ var whoamiTemplate = template.Must(template.New("whoami").Parse(`<h1>Identity</h
   <dt>subject</dt><dd>{{.Subject}}</dd>
   <dt>email</dt><dd>{{.Email}}</dd>
   <dt>email_verified</dt><dd>{{.EmailVerified}}</dd>
-  <dt>name</dt><dd>{{.Name}}</dd>
+  <dt>name</dt><dd>{{.DisplayName}}</dd>
   <dt>hosted_domain</dt><dd>{{.HostedDomain}}</dd>
 </dl>
-<p>Ask the administrator to invite this email or register this issuer and subject. No Lore token was issued.</p>`))
+<p>Ask the administrator to invite this verified email. No Lore token was issued.</p>`))
 
 func clearCookie(w http.ResponseWriter, name string) {
 	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})

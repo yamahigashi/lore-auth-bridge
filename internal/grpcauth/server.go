@@ -63,7 +63,7 @@ func (s *Server) GetAuthSession(ctx context.Context, req *pb.GetAuthSessionReque
 	return &pb.GetAuthSessionResponse{UserToken: &pb.UserToken{
 		UserToken: res.Token.Token,
 		ExpiresAt: res.Token.ExpiresAt,
-		UserId:    res.User.SubjectClaim(),
+		UserId:    res.User.BridgeSubject(),
 		UserName:  res.User.Display(),
 	}}, nil
 }
@@ -90,7 +90,7 @@ func (s *Server) ExchangeUserTokenForMultiresourceToken(ctx context.Context, req
 	return &pb.ExchangeUserTokenForMultiresourceTokenResponse{Token: &pb.UserToken{
 		UserToken: res.Token,
 		ExpiresAt: res.ExpiresAt,
-		UserId:    authn.User.SubjectClaim(),
+		UserId:    authn.User.BridgeSubject(),
 		UserName:  authn.User.Display(),
 	}}, nil
 }

@@ -9,7 +9,7 @@ import (
 type IdentityProvider interface {
 	Descriptor() IdentityProviderDescriptor
 	BeginAuth(ctx context.Context, req BeginAuthRequest) (BeginAuthResult, error)
-	CompleteAuth(ctx context.Context, req CompleteAuthRequest) (model.Identity, error)
+	CompleteAuth(ctx context.Context, req CompleteAuthRequest) (model.ExternalIdentity, error)
 }
 
 type IdentityProviderDescriptor struct {
@@ -17,6 +17,7 @@ type IdentityProviderDescriptor struct {
 	Type        string
 	DisplayName string
 	Issuer      string
+	TrustPolicy model.LoginTrustPolicy
 }
 
 type BeginAuthRequest struct {
@@ -27,15 +28,17 @@ type BeginAuthRequest struct {
 }
 
 type BeginAuthResult struct {
-	RedirectURL string
+	RedirectURL  string
+	PrivateState []byte
 }
 
 type CompleteAuthRequest struct {
-	Code        string
-	State       string
-	Nonce       string
-	RedirectURL string
-	Params      map[string][]string
+	Code         string
+	State        string
+	Nonce        string
+	RedirectURL  string
+	Params       map[string][]string
+	PrivateState []byte
 }
 
 type IdentityProviderRegistry interface {
