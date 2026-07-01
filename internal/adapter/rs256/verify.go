@@ -72,7 +72,10 @@ func ParseAndVerify(compact string, pub *rsa.PublicKey, opts VerifyOptions) (*Lo
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	if claims.ExpiresAt != 0 && now.Unix() >= claims.ExpiresAt {
+	if claims.ExpiresAt == 0 {
+		return nil, errors.New("token: missing exp")
+	}
+	if now.Unix() >= claims.ExpiresAt {
 		return nil, errors.New("token: expired")
 	}
 	if opts.Issuer != "" && claims.Issuer != opts.Issuer {

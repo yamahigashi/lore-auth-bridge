@@ -96,7 +96,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("startup: parse security.rebac_allowed_peer_cidrs: %w", err)
 	}
-	grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(grpcrebac.UnaryPeerAllowlistInterceptor(rebacPeerPrefixes)))
+	grpcOpts = append(grpcOpts, grpc.ChainUnaryInterceptor(
+		grpcrebac.UnaryPeerAllowlistInterceptor(rebacPeerPrefixes),
+		grpcauth.UnaryRateLimitInterceptor(),
+	))
 	if cfg.Server.GRPCTLSCertFile != "" || cfg.Server.GRPCTLSKeyFile != "" {
 		creds, err := credentials.NewServerTLSFromFile(cfg.Server.GRPCTLSCertFile, cfg.Server.GRPCTLSKeyFile)
 		if err != nil {

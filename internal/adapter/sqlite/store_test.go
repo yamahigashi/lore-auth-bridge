@@ -245,6 +245,46 @@ func TestDeletedRepositoryIsHiddenFromActiveResolversButVisibleInList(t *testing
 	}
 }
 
+func TestCoreStoreListReturnsOnlyActiveRepositories(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	active, err := s.AddRepository(ctx, "active-repo", "lore://active", "active-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := s.AddRepository(ctx, "deleted-repo", "lore://deleted", "deleted-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SoftDeleteResource(ctx, model.ResourceIDForRepositoryID(deleted.LoreRepositoryID)); err != nil {
+		t.Fatal(err)
+	}
+
+	resources, err := NewCoreStore(s).List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resources) != 1 || resources[0].ID != active.ID {
+		t.Fatalf("CoreStore.List = %#v, want only active repository %q", resources, active.ID)
+	}
+
+	all, err := s.ListRepositories(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("ListRepositories = %#v, want active and deleted rows", all)
+	}
+}
+
 func TestManualRepoAddDoesNotUpdateReBACCreatedRepository(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

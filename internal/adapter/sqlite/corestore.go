@@ -101,7 +101,7 @@ func (s *CoreStore) GetByName(ctx context.Context, name string) (model.Resource,
 }
 
 func (s *CoreStore) List(ctx context.Context) ([]model.Resource, error) {
-	repos, err := s.Store.ListRepositories(ctx)
+	repos, err := s.Store.ListActiveRepositories(ctx)
 	if err != nil {
 		return nil, err
 	}

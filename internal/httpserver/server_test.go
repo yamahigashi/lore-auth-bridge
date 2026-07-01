@@ -140,6 +140,34 @@ func TestJWKSHandlerPublishesKeys(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersAreSet(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	htmlReq := httptest.NewRequest(http.MethodGet, "/tokens", nil)
+	htmlReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	htmlRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(htmlRR, htmlReq)
+	if htmlRR.Code != http.StatusOK {
+		t.Fatalf("html status = %d, want %d body=%s", htmlRR.Code, http.StatusOK, htmlRR.Body.String())
+	}
+	assertSecurityHeaders(t, htmlRR)
+
+	jwksReq := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+	jwksRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(jwksRR, jwksReq)
+	if got := jwksRR.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("JWKS Content-Type = %q, want application/json", got)
+	}
+	assertSecurityHeaders(t, jwksRR)
+}
+
 func TestLoginRedirectsToSingleDefaultProvider(t *testing.T) {
 	t.Parallel()
 	srv, _ := newHTTPTestServer(nil, fakeIDP{})
@@ -397,8 +425,15 @@ func TestTokenMintPageIssuesWriterToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/tokens/mint", strings.NewReader("repository=game-assets"))
+	getReq := httptest.NewRequest(http.MethodGet, "/tokens", nil)
+	getReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	getRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRR, getReq)
+	token := hiddenInputValue(t, getRR.Body.String(), "csrf_token")
+
+	req := httptest.NewRequest(http.MethodPost, "/tokens/mint", strings.NewReader("repository=game-assets&csrf_token="+token))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://auth.example.com")
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -419,6 +454,68 @@ func TestTokenMintPageIssuesWriterToken(t *testing.T) {
 	}
 }
 
+func TestTokenMintRequiresCSRFAndSameOrigin(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	resource := mem.AddTestResource(model.Resource{Name: "game-assets", RemoteURL: "lore://example", LoreRepositoryID: "0194b726b34e72b0b45550b88a967076"})
+	mem.Grant(u.ID, resource.ResourceID)
+	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing := httptest.NewRequest(http.MethodPost, "/tokens/mint", strings.NewReader("repository=game-assets"))
+	missing.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	missing.Header.Set("Origin", "https://auth.example.com")
+	missing.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	missingRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(missingRR, missing)
+	if missingRR.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf status = %d, want %d body=%s", missingRR.Code, http.StatusForbidden, missingRR.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/tokens", nil)
+	getReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	getRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRR, getReq)
+	token := hiddenInputValue(t, getRR.Body.String(), "csrf_token")
+
+	badOrigin := httptest.NewRequest(http.MethodPost, "/tokens/mint", strings.NewReader("repository=game-assets&csrf_token="+token))
+	badOrigin.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	badOrigin.Header.Set("Origin", "https://evil.example.com")
+	badOrigin.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	badOriginRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(badOriginRR, badOrigin)
+	if badOriginRR.Code != http.StatusForbidden {
+		t.Fatalf("bad origin status = %d, want %d body=%s", badOriginRR.Code, http.StatusForbidden, badOriginRR.Body.String())
+	}
+
+	good := httptest.NewRequest(http.MethodPost, "/tokens/mint", strings.NewReader("repository=game-assets&csrf_token="+token))
+	good.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	good.Header.Set("Origin", "https://auth.example.com")
+	good.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	goodRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(goodRR, good)
+	if goodRR.Code != http.StatusOK {
+		t.Fatalf("good mint status = %d, want %d body=%s", goodRR.Code, http.StatusOK, goodRR.Body.String())
+	}
+	if !strings.Contains(goodRR.Body.String(), "lore auth login") {
+		t.Fatalf("missing login command: %s", goodRR.Body.String())
+	}
+
+	reuse := httptest.NewRequest(http.MethodPost, "/tokens/mint", strings.NewReader("repository=game-assets&csrf_token="+token))
+	reuse.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reuse.Header.Set("Origin", "https://auth.example.com")
+	reuse.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	reuseRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(reuseRR, reuse)
+	if reuseRR.Code != http.StatusForbidden {
+		t.Fatalf("csrf reuse status = %d, want %d body=%s", reuseRR.Code, http.StatusForbidden, reuseRR.Body.String())
+	}
+}
+
 func TestTokenMintPermissionDeniedUsesSafeBody(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -430,8 +527,15 @@ func TestTokenMintPermissionDeniedUsesSafeBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/tokens/mint", strings.NewReader("repository=game-assets"))
+	getReq := httptest.NewRequest(http.MethodGet, "/tokens", nil)
+	getReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	getRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRR, getReq)
+	token := hiddenInputValue(t, getRR.Body.String(), "csrf_token")
+
+	req := httptest.NewRequest(http.MethodPost, "/tokens/mint", strings.NewReader("repository=game-assets&csrf_token="+token))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://auth.example.com")
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -506,6 +610,101 @@ func TestTokenPageListsRepositoriesWithoutPerPermissionLookups(t *testing.T) {
 	}
 }
 
+func TestLogoutRequiresCSRFAndSameOrigin(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	missing.Header.Set("Origin", "https://auth.example.com")
+	missing.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	missingRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(missingRR, missing)
+	if missingRR.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf status = %d, want %d body=%s", missingRR.Code, http.StatusForbidden, missingRR.Body.String())
+	}
+	assertSessionStillValid(t, srv, sess.ID)
+
+	token, err := mem.CreateCSRFToken(ctx, sess.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badOrigin := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	badOrigin.Header.Set("Origin", "https://evil.example.com")
+	badOrigin.Header.Set("X-CSRF-Token", token)
+	badOrigin.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	badOriginRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(badOriginRR, badOrigin)
+	if badOriginRR.Code != http.StatusForbidden {
+		t.Fatalf("bad origin status = %d, want %d body=%s", badOriginRR.Code, http.StatusForbidden, badOriginRR.Body.String())
+	}
+	assertSessionStillValid(t, srv, sess.ID)
+
+	good := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	good.Header.Set("Origin", "https://auth.example.com")
+	good.Header.Set("X-CSRF-Token", token)
+	good.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	goodRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(goodRR, good)
+	if goodRR.Code != http.StatusNoContent {
+		t.Fatalf("good logout status = %d, want %d body=%s", goodRR.Code, http.StatusNoContent, goodRR.Body.String())
+	}
+
+	me := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	me.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	meRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(meRR, me)
+	if meRR.Code != http.StatusUnauthorized {
+		t.Fatalf("session still valid after logout: status=%d body=%s", meRR.Code, meRR.Body.String())
+	}
+}
+
+func TestSessionCSRFEndpointIssuesNoStoreToken(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/session/csrf", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	var body struct {
+		CSRFToken string `json:"csrf_token"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.CSRFToken == "" {
+		t.Fatalf("missing csrf token: %s", rr.Body.String())
+	}
+
+	logout := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
+	logout.Header.Set("Origin", "https://auth.example.com")
+	logout.Header.Set("X-CSRF-Token", body.CSRFToken)
+	logout.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	logoutRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(logoutRR, logout)
+	if logoutRR.Code != http.StatusNoContent {
+		t.Fatalf("logout status = %d, want %d body=%s", logoutRR.Code, http.StatusNoContent, logoutRR.Body.String())
+	}
+}
+
 func TestDeviceStartAndPendingTokenHTTP(t *testing.T) {
 	t.Parallel()
 	srv, _ := newHTTPTestServer(nil, fakeIDP{})
@@ -537,6 +736,33 @@ func TestDeviceStartAndPendingTokenHTTP(t *testing.T) {
 	}
 }
 
+func TestPublicHTTPEndpointsAreRateLimitedByPeer(t *testing.T) {
+	t.Parallel()
+	srv, _ := newHTTPTestServer(nil, fakeIDP{})
+
+	var last *httptest.ResponseRecorder
+	for i := 0; i < 65; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/device/start", strings.NewReader(`{"remote_url":"lore://example","repository":"game-assets"}`))
+		req.RemoteAddr = "203.0.113.10:12345"
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rr, req)
+		last = rr
+	}
+	if last.Code != http.StatusTooManyRequests {
+		t.Fatalf("last same-peer status = %d, want %d body=%s", last.Code, http.StatusTooManyRequests, last.Body.String())
+	}
+
+	otherPeer := httptest.NewRequest(http.MethodPost, "/api/device/start", strings.NewReader(`{"remote_url":"lore://example","repository":"game-assets"}`))
+	otherPeer.RemoteAddr = "203.0.113.11:12345"
+	otherPeer.Header.Set("Content-Type", "application/json")
+	otherPeerRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(otherPeerRR, otherPeer)
+	if otherPeerRR.Code != http.StatusOK {
+		t.Fatalf("other peer status = %d, want %d body=%s", otherPeerRR.Code, http.StatusOK, otherPeerRR.Body.String())
+	}
+}
+
 func TestDeviceJSONEndpointsRejectUnknownFieldsAndLargeBodies(t *testing.T) {
 	t.Parallel()
 	srv, _ := newHTTPTestServer(nil, fakeIDP{})
@@ -556,6 +782,62 @@ func TestDeviceJSONEndpointsRejectUnknownFieldsAndLargeBodies(t *testing.T) {
 	if largeRR.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("large body status = %d, want %d body=%s", largeRR.Code, http.StatusRequestEntityTooLarge, largeRR.Body.String())
 	}
+}
+
+func TestFormEndpointsRejectLargeBodies(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	srv, mem := newHTTPTestServer(nil, fakeIDP{})
+	u := mem.AddTestUser(model.User{Provider: "google", Issuer: "https://accounts.google.com", Subject: "sub", Email: "alice@example.com"})
+	resource := mem.AddTestResource(model.Resource{Name: "game-assets", RemoteURL: "lore://example", LoreRepositoryID: "0194b726b34e72b0b45550b88a967076"})
+	mem.Grant(u.ID, resource.ResourceID)
+	sess, err := mem.CreateBrowserSession(ctx, u.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tokenReq := httptest.NewRequest(http.MethodGet, "/tokens", nil)
+	tokenReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	tokenRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(tokenRR, tokenReq)
+	mintCSRF := hiddenInputValue(t, tokenRR.Body.String(), "csrf_token")
+
+	largeMint := httptest.NewRequest(http.MethodPost, "/tokens/mint", strings.NewReader("repository="+strings.Repeat("A", maxJSONBodyBytes)+"&csrf_token="+mintCSRF))
+	largeMint.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	largeMint.Header.Set("Origin", "https://auth.example.com")
+	largeMint.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	largeMintRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(largeMintRR, largeMint)
+	if largeMintRR.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("large mint status = %d, want %d body=%s", largeMintRR.Code, http.StatusRequestEntityTooLarge, largeMintRR.Body.String())
+	}
+
+	deviceReq := httptest.NewRequest(http.MethodGet, "/device?user_code=ABCD-EFGH", nil)
+	deviceReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	deviceRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(deviceRR, deviceReq)
+	deviceCSRF := hiddenInputValue(t, deviceRR.Body.String(), "csrf_token")
+
+	largeDevice := httptest.NewRequest(http.MethodPost, "/device/approve", strings.NewReader("user_code="+strings.Repeat("A", maxJSONBodyBytes)+"&csrf_token="+deviceCSRF))
+	largeDevice.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	largeDevice.Header.Set("Origin", "https://auth.example.com")
+	largeDevice.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	largeDeviceRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(largeDeviceRR, largeDevice)
+	if largeDeviceRR.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("large device status = %d, want %d body=%s", largeDeviceRR.Code, http.StatusRequestEntityTooLarge, largeDeviceRR.Body.String())
+	}
+
+	largeLogout := httptest.NewRequest(http.MethodPost, "/api/logout", strings.NewReader("csrf_token="+strings.Repeat("A", maxJSONBodyBytes)))
+	largeLogout.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	largeLogout.Header.Set("Origin", "https://auth.example.com")
+	largeLogout.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sess.ID})
+	largeLogoutRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(largeLogoutRR, largeLogout)
+	if largeLogoutRR.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("large logout status = %d, want %d body=%s", largeLogoutRR.Code, http.StatusRequestEntityTooLarge, largeLogoutRR.Body.String())
+	}
+	assertSessionStillValid(t, srv, sess.ID)
 }
 
 func TestDeviceGetShowsConfirmationWithoutApproving(t *testing.T) {
@@ -792,4 +1074,31 @@ func hiddenInputValue(t *testing.T, html, name string) string {
 		t.Fatalf("unterminated value for input %q in %s", name, html)
 	}
 	return html[start : start+end]
+}
+
+func assertSessionStillValid(t *testing.T, srv *Server, sessionID string) {
+	t.Helper()
+	me := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	me.AddCookie(&http.Cookie{Name: sessionCookieName, Value: sessionID})
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, me)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("session was revoked unexpectedly: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func assertSecurityHeaders(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if got := rr.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rr.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("Referrer-Policy = %q, want no-referrer", got)
+	}
+	csp := rr.Header().Get("Content-Security-Policy")
+	for _, want := range []string{"default-src 'none'", "form-action 'self'", "frame-ancestors 'none'", "script-src 'none'"} {
+		if !strings.Contains(csp, want) {
+			t.Fatalf("Content-Security-Policy = %q, missing %q", csp, want)
+		}
+	}
 }

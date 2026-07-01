@@ -2,11 +2,16 @@ package rs256
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +177,26 @@ func TestNewLoreClaimsCanOmitResourcesForNegativeProbe(t *testing.T) {
 	}
 }
 
+func TestParseAndVerifyRejectsMissingExpiration(t *testing.T) {
+	t.Parallel()
+
+	key, err := GenerateSigningKey("test-kid", 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact := signRawJWT(t, key, map[string]any{
+		"iss": "https://auth.example.com",
+		"aud": []string{"lore-service", "lore.example.com"},
+		"sub": "google:TEST",
+		"idp": "google",
+	})
+
+	_, err = ParseAndVerify(compact, key.Public(), VerifyOptions{Issuer: "https://auth.example.com", Audience: "lore-service", Now: time.Unix(1000, 0).UTC()})
+	if err == nil || !strings.Contains(err.Error(), "missing exp") {
+		t.Fatalf("ParseAndVerify error = %v, want missing exp", err)
+	}
+}
+
 func TestSignerValidateReportsMissingActiveKeyAsSigningKeyUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -257,4 +282,25 @@ func (s signerKeyStoreStub) SigningKeyByKID(ctx context.Context, kid string) (mo
 
 func (s signerKeyStoreStub) PublicJWKS(ctx context.Context) ([]json.RawMessage, error) {
 	return nil, nil
+}
+
+func signRawJWT(t *testing.T, key *SigningKey, payload map[string]any) string {
+	t.Helper()
+	headerJSON, err := json.Marshal(jwtHeader{Alg: key.Alg, Typ: "JWT", Kid: key.Kid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedHeader := base64.RawURLEncoding.EncodeToString(headerJSON)
+	encodedPayload := base64.RawURLEncoding.EncodeToString(payloadJSON)
+	signingInput := encodedHeader + "." + encodedPayload
+	hash := sha256.Sum256([]byte(signingInput))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key.Private, crypto.SHA256, hash[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
 }

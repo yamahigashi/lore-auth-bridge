@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/ports"
 	"github.com/yamahigashi/lore-auth-bridge/internal/core/service"
 	"github.com/yamahigashi/lore-auth-bridge/internal/device"
+	"github.com/yamahigashi/lore-auth-bridge/internal/ratelimit"
 )
 
 const (
@@ -40,6 +42,7 @@ type Server struct {
 	jwks      ports.TokenSigner
 	device    DeviceService
 	mux       *http.ServeMux
+	limiter   *ratelimit.Limiter
 }
 
 type Options struct {
@@ -61,7 +64,7 @@ type DeviceService interface {
 }
 
 func NewWithOptions(opts Options) *Server {
-	s := &Server{cfg: opts.Config, login: opts.Login, tokens: opts.Tokens, resources: opts.Resources, perms: opts.Permissions, state: opts.State, jwks: opts.JWKS, device: opts.Device, mux: http.NewServeMux()}
+	s := &Server{cfg: opts.Config, login: opts.Login, tokens: opts.Tokens, resources: opts.Resources, perms: opts.Permissions, state: opts.State, jwks: opts.JWKS, device: opts.Device, mux: http.NewServeMux(), limiter: ratelimit.New(60, time.Minute)}
 	if s.cfg == nil {
 		s.cfg = &config.Config{}
 		s.cfg.Security.SessionTTLSeconds = 3600
@@ -70,7 +73,46 @@ func NewWithOptions(opts Options) *Server {
 	return s
 }
 
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return securityHeaders(s.rateLimitPublic(s.mux)) }
+
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'none'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) rateLimitPublic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isRateLimitedHTTPPath(r.URL.Path) && !s.limiter.Allow(peerHost(r.RemoteAddr)) {
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isRateLimitedHTTPPath(path string) bool {
+	switch {
+	case path == "/api/device/start", path == "/api/device/token", path == "/login", path == "/oauth/google/start":
+		return true
+	case strings.HasPrefix(path, "/auth/") && strings.HasSuffix(path, "/start"):
+		return true
+	default:
+		return false
+	}
+}
+
+func peerHost(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return remoteAddr
+}
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
@@ -84,6 +126,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /login/session/{nonce}", s.handleLoginSession)
 	s.mux.HandleFunc("GET /whoami", s.handleWhoami)
 	s.mux.HandleFunc("GET /api/me", s.handleMe)
+	s.mux.HandleFunc("GET /api/session/csrf", s.handleSessionCSRF)
 	s.mux.HandleFunc("POST /api/logout", s.handleLogout)
 	s.mux.HandleFunc("GET /tokens", s.handleTokenPage)
 	s.mux.HandleFunc("POST /tokens/mint", s.handleTokenMint)
@@ -291,7 +334,7 @@ func randomURLToken(byteLen int) (string, error) {
 }
 
 func (s *Server) handleTokenPage(w http.ResponseWriter, r *http.Request) {
-	u, ok, err := s.currentUser(r)
+	u, sessionID, ok, err := s.currentBrowserSession(r)
 	if err != nil {
 		slog.Error("browser session lookup failed", "route", "/tokens", "error", err)
 		http.Error(w, "session unavailable", http.StatusInternalServerError)
@@ -332,15 +375,22 @@ func (s *Server) handleTokenPage(w http.ResponseWriter, r *http.Request) {
 		}
 		repos = append(repos, resource)
 	}
+	csrfToken, err := s.state.CreateCSRFToken(r.Context(), sessionID, 10*time.Minute)
+	if err != nil {
+		slog.Error("csrf token generation failed", "route", "/tokens", "error", err)
+		http.Error(w, "token page unavailable", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = tokenPageTemplate.Execute(w, struct {
-		User  model.User
-		Repos []model.Resource
-	}{User: u, Repos: repos})
+		User      model.User
+		Repos     []model.Resource
+		CSRFToken string
+	}{User: u, Repos: repos, CSRFToken: csrfToken})
 }
 
 func (s *Server) handleTokenMint(w http.ResponseWriter, r *http.Request) {
-	u, ok, err := s.currentUser(r)
+	u, sessionID, ok, err := s.currentBrowserSession(r)
 	if err != nil {
 		slog.Error("browser session lookup failed", "route", "/tokens/mint", "error", err)
 		http.Error(w, "session unavailable", http.StatusInternalServerError)
@@ -350,8 +400,20 @@ func (s *Server) handleTokenMint(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
+	if !s.sameOrigin(r) {
+		http.Error(w, "invalid origin", http.StatusForbidden)
+		return
+	}
+	if !parseFormBody(w, r) {
+		return
+	}
+	csrfToken := r.FormValue("csrf_token")
+	if csrfToken == "" {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
+		return
+	}
+	if err := s.state.ConsumeCSRFToken(r.Context(), sessionID, csrfToken); err != nil {
+		http.Error(w, "invalid csrf token", http.StatusForbidden)
 		return
 	}
 	repo := r.FormValue("repository")
@@ -448,8 +510,7 @@ func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid origin", http.StatusForbidden)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
+	if !parseFormBody(w, r) {
 		return
 	}
 	userCode := r.FormValue("user_code")
@@ -546,13 +607,68 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(sessionCookieName); err == nil {
-		if err := s.state.RevokeBrowserSession(r.Context(), c.Value); err != nil && !errors.Is(err, model.ErrNotFound) {
+	_, sessionID, ok, err := s.currentBrowserSession(r)
+	if err != nil {
+		slog.Error("browser session lookup failed", "route", "/api/logout", "error", err)
+		http.Error(w, "session unavailable", http.StatusInternalServerError)
+		return
+	}
+	if ok {
+		if !s.sameOrigin(r) {
+			http.Error(w, "invalid origin", http.StatusForbidden)
+			return
+		}
+		csrfToken, parsed := csrfTokenFromRequest(w, r)
+		if !parsed {
+			return
+		}
+		if csrfToken == "" {
+			http.Error(w, "invalid csrf token", http.StatusForbidden)
+			return
+		}
+		if err := s.state.ConsumeCSRFToken(r.Context(), sessionID, csrfToken); err != nil {
+			http.Error(w, "invalid csrf token", http.StatusForbidden)
+			return
+		}
+		if err := s.state.RevokeBrowserSession(r.Context(), sessionID); err != nil && !errors.Is(err, model.ErrNotFound) {
 			slog.Error("browser session revoke failed", "error", err)
 		}
 	}
 	clearCookie(w, sessionCookieName)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleSessionCSRF(w http.ResponseWriter, r *http.Request) {
+	_, sessionID, ok, err := s.currentBrowserSession(r)
+	if err != nil {
+		slog.Error("browser session lookup failed", "route", "/api/session/csrf", "error", err)
+		http.Error(w, "session unavailable", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "not logged in", http.StatusUnauthorized)
+		return
+	}
+	token, err := s.state.CreateCSRFToken(r.Context(), sessionID, 10*time.Minute)
+	if err != nil {
+		slog.Error("csrf token generation failed", "route", "/api/session/csrf", "error", err)
+		http.Error(w, "csrf unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"csrf_token": token})
+}
+
+func csrfTokenFromRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if token := strings.TrimSpace(r.Header.Get("X-CSRF-Token")); token != "" {
+		return token, true
+	}
+	if !parseFormBody(w, r) {
+		return "", false
+	}
+	return r.FormValue("csrf_token"), true
 }
 
 func (s *Server) currentUser(r *http.Request) (model.User, bool, error) {
@@ -661,6 +777,24 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	return true
 }
 
+func parseFormBody(w http.ResponseWriter, r *http.Request) bool {
+	if r.ContentLength > maxJSONBodyBytes {
+		http.Error(w, "form body too large", http.StatusRequestEntityTooLarge)
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "form body too large", http.StatusRequestEntityTooLarge)
+			return false
+		}
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
 func renderWhoami(w http.ResponseWriter, id model.Identity) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = whoamiTemplate.Execute(w, id)
@@ -695,10 +829,11 @@ var providerPickerTemplate = template.Must(template.New("provider-picker").Parse
 </ul>`))
 
 var tokenPageTemplate = template.Must(template.New("tokens").Parse(`<h1>Issue Lore token</h1>
-<p>User: {{.User.Email}}</p>
-<form method="post" action="/tokens/mint">
-  <label>Repository
-    <select name="repository">
+	<p>User: {{.User.Email}}</p>
+	<form method="post" action="/tokens/mint">
+	  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+	  <label>Repository
+	    <select name="repository">
       {{range .Repos}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
     </select>
   </label>

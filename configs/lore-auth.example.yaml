@@ -3,6 +3,8 @@ server:
   # https://auth.example.com and forwards to these loopback listeners.
   # If bridge is exposed directly, bind to a non-loopback address instead.
   # Apply rate limits for login and device-flow endpoints at the public proxy.
+  # Configure proxy access logs to omit or redact query strings such as
+  # OAuth code and device user_code values.
   # When exposing gRPC through a public proxy, restrict /ucs.auth.RebacApi/*
   # at the proxy so only loreserver can call ReBAC resource sync.
   listen: "127.0.0.1:8080"

@@ -139,6 +139,18 @@ The relevant endpoints are `/api/device/start`, `/api/device/token`, `/auth/{pro
 
 Device flow and OAuth start endpoints are reachable by anonymous callers, so limit them by IP, forwarded client IP, or edge identity.
 
+The bridge also applies a small per-peer in-process rate limit to these public endpoints.
+
+That limit is defense in depth.
+Behind a reverse proxy, the bridge sees the proxy as the peer unless a trusted proxy policy is implemented, so the app-level limiter is not a replacement for edge rate limiting.
+
+Configure access logs so URL query strings and sensitive path values are not recorded.
+
+For NGINX, prefer a log format based on `$uri` instead of `$request_uri`.
+For Caddy or another reverse proxy, omit or redact query strings.
+
+Do not log OAuth callback `code` values, device `user_code` values, `/login/session/{nonce}` nonces, or token bodies.
+
 ## identity_providers
 
 ```yaml
