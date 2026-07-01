@@ -25,7 +25,7 @@ If you use IdP integration, also read:
 1. [Identity Providers](setup/identity-providers.md)
 2. [Google OIDC](setup/google-oidc.md) for the Google-specific example
 
-To run the bridge, `loreserver`, and the `lore` CLI locally end to end, continue with [Local Smoke Test](setup/local-smoke-test.md).
+After the individual setup pages, use [Hands-on Quickstart](setup/hands-on-quickstart.md) to check the full bridge, `loreserver`, and `lore` CLI flow.
 
 ## Components
 
@@ -48,9 +48,9 @@ The bridge matches the `issuer` and `subject` returned by the IdP against regist
 
 The bridge does not issue tokens to unregistered users.
 
-With Google OIDC, an administrator can preregister a user email with `lore-authctl user invite`.
+With IdP login, an administrator can preregister a user email with `lore-authctl user invite --idp <provider-id>`.
 
-When that user logs in for the first time and Google returns the same verified email, the login becomes usable.
+When that user logs in for the first time and the IdP returns the same verified email, the login becomes usable.
 
 If the subject is already known, an administrator can also register the user with `lore-authctl user add`.
 
@@ -66,6 +66,6 @@ When IdP login is enabled, the IdP client configuration and the bridge configura
 
 Manage users and repository permissions with `lore-authctl`.
 
-## Local Verification
+## Full Flow Check
 
-Concrete commands for running the bridge, `loreserver`, and the `lore` CLI locally are kept in [Local Smoke Test](setup/local-smoke-test.md).
+The repository creation and clone flow is covered in [Hands-on Quickstart](setup/hands-on-quickstart.md).

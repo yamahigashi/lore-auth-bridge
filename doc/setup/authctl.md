@@ -9,7 +9,7 @@ It manages users, groups, repositories, grants, signing keys, and manually issue
 The examples below store the config path in a variable.
 
 ```bash
-CONFIG=.manual/lore-auth.yaml
+CONFIG=.quickstart/lore-auth.yaml
 ```
 
 ## init-db
@@ -40,19 +40,21 @@ go run ./cmd/lore-authctl key list --config "$CONFIG"
 
 ## user invite
 
-When Google OIDC is enabled, an administrator can preregister a user by Google account email.
+When IdP login is enabled, an administrator can preregister a user by provider ID and email.
 
 ```bash
+PROVIDER_ID=company-sso
+
 go run ./cmd/lore-authctl user invite \
   --config "$CONFIG" \
-  --idp google \
+  --idp "$PROVIDER_ID" \
   --email alice@example.com \
   --name "Alice Example"
 ```
 
 This registration alone does not issue a token.
 
-When the user opens `/login` and Google returns an `email_verified=true` email that matches the invitation, that login becomes usable.
+When the user opens `/login` and the IdP returns a verified email that matches the invitation, that login becomes usable.
 
 `--idp` reads the provider instance from `identity_providers.providers` and fills the stored provider ID and issuer.
 
@@ -71,11 +73,11 @@ go run ./cmd/lore-authctl user add \
   --name "Manual User"
 ```
 
-The `provider`, `issuer`, and `subject` values in this example are for local verification.
+The `provider`, `issuer`, and `subject` values in this example are for the no-IdP check.
 
 Use direct `--provider` and `--issuer` only for token-only configs that do not define `identity_providers`.
 
-When explicitly registering a Google OIDC subject for real login, prefer `--idp google --subject <subject>`.
+When explicitly registering a subject for IdP login, prefer `--idp <provider-id> --subject <subject>`.
 
 When `identity_providers` is configured, `user add` requires `--idp`.
 
@@ -167,12 +169,12 @@ The command returns `allow` when access is permitted.
 
 ## token mint-authn
 
-When logging in without Google OIDC, manually issue an authn token.
+When IdP login is not used, manually issue an authn token.
 
 ```bash
 go run ./cmd/lore-authctl token mint-authn \
   --config "$CONFIG" \
-  --out .manual/authn.jwt \
+  --out .quickstart/authn.jwt \
   manual@example.com
 ```
 
@@ -187,7 +189,7 @@ Pass the issued token to `lore auth login --token-type lore`.
 ```bash
 lore auth login \
   --token-type lore \
-  --token "$(cat .manual/authn.jwt)" \
+  --token "$(cat .quickstart/authn.jwt)" \
   --auth-url https://localhost:8081 \
   lore://localhost:41337
 ```

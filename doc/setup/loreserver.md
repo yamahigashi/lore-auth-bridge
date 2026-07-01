@@ -6,18 +6,18 @@ This page describes the `loreserver` settings required to use the bridge with au
 
 See [Configuration](configuration.md) for bridge-side settings.
 
-See [Local Smoke Test](local-smoke-test.md) for a full local run.
+See [Hands-on Quickstart](hands-on-quickstart.md) for the full bridge and Lore CLI flow check.
 
 ## Config File
 
-For local verification, place an environment TOML file under `LORE_CONFIG_PATH`.
+In the Hands-on Quickstart setup, place an environment TOML file under `LORE_CONFIG_PATH`.
 
-The example uses `.manual/loreconfig/e2e.toml`.
+The example uses `.quickstart/loreconfig/e2e.toml`.
 
 ```bash
-mkdir -p .manual/loreconfig .manual/data .manual/home
+mkdir -p .quickstart/loreconfig .quickstart/data .quickstart/home
 
-cat > .manual/loreconfig/e2e.toml <<EOF
+cat > .quickstart/loreconfig/e2e.toml <<EOF
 [environment.endpoint]
 auth_url = "https://localhost:8081"
 
@@ -29,16 +29,16 @@ jwt_audience = ["lore-service", "localhost"]
 endpoint = "http://localhost:8080/.well-known/jwks.json"
 
 [immutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 
 [mutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 EOF
 ```
 
 Some `loreserver` distributions require a base config.
 
-In that case, copy the `default.toml` bundled with Lore to `.manual/loreconfig/default.toml`.
+In that case, copy the `default.toml` bundled with Lore to `.quickstart/loreconfig/default.toml`.
 
 ## environment.endpoint
 
@@ -53,7 +53,7 @@ auth_url = "https://localhost:8081"
 
 The `lore` CLI requests authz token exchange from `epic_urc.UrcAuthApi` during repository operations.
 
-For local verification, keep this value aligned with `lore.auth_url` in the bridge config: `https://localhost:8081`.
+In that setup, keep this value aligned with `lore.auth_url` in the bridge config: `https://localhost:8081`.
 
 `RebacApi` is treated as a service-to-service API dedicated to `loreserver`.
 
@@ -102,15 +102,15 @@ It is not the gRPC endpoint.
 
 ```toml
 [immutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 
 [mutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 ```
 
 Local verification uses the same working directory for both stores.
 
-To avoid existing data, delete `.manual/data` and rerun the setup.
+To avoid existing data, delete `.quickstart/data` and rerun the setup.
 
 ## Startup
 
@@ -119,11 +119,11 @@ Pass `SSL_CERT_FILE` to `loreserver` so it trusts the gRPC TLS certificate.
 ```bash
 export TRUST_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"
 # For a self-signed certificate:
-# export TRUST_CERT_FILE="$PWD/.manual/grpc/tls.crt"
+# export TRUST_CERT_FILE="$PWD/.quickstart/grpc/tls.crt"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
-export LORE_CONFIG_PATH="$PWD/.manual/loreconfig"
+export LORE_CONFIG_PATH="$PWD/.quickstart/loreconfig"
 export LORE_ENV=e2e
-export HOME="$PWD/.manual/home"
+export HOME="$PWD/.quickstart/home"
 
 loreserver
 ```
@@ -143,7 +143,7 @@ If `loreserver` cannot connect to the bridge gRPC endpoint, check the following:
 - `auth_url` is a TLS endpoint such as `https://localhost:8081`.
 - The bridge is running on `server.grpc_listen`.
 - `SSL_CERT_FILE` points to a certificate or CA readable by `loreserver`.
-- With `mkcert`, `SSL_CERT_FILE` points to the root CA, for example `$(mkcert -CAROOT)/rootCA.pem`, not `.manual/grpc/tls.crt`.
+- With `mkcert`, `SSL_CERT_FILE` points to the root CA, for example `$(mkcert -CAROOT)/rootCA.pem`, not `.quickstart/grpc/tls.crt`.
 - Restart `loreserver` after changing `SSL_CERT_FILE`.
 - `jwt_issuer` matches the bridge `jwt.issuer`.
 - `jwt_audience` includes the remote host.
@@ -154,7 +154,7 @@ If `lore auth login --token` succeeds but `lore repository create` fails with `"
 Check that `SSL_CERT_FILE` is the correct trust anchor.
 
 ```bash
-openssl verify -CAfile "$SSL_CERT_FILE" .manual/grpc/tls.crt
+openssl verify -CAfile "$SSL_CERT_FILE" .quickstart/grpc/tls.crt
 ```
 
 If the result is not `OK`, `loreserver` cannot trust the bridge gRPC endpoint.

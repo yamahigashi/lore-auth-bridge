@@ -95,7 +95,7 @@ identity_providers:
       display_name: "Google"
       issuer: "https://accounts.google.com"
       client_id: "<Google OAuth Client ID>"
-      client_secret_file: ".manual/google_client_secret"
+      client_secret_file: ".quickstart/google_client_secret"
       redirect_url: "http://localhost:8080/auth/google/callback"
       scopes: [openid, email, profile]
       allowed_hosted_domains: []
@@ -107,8 +107,8 @@ Do not write the Client secret directly into YAML.
 Store it in a file.
 
 ```bash
-printf '%s' '<Google OAuth Client Secret>' > .manual/google_client_secret
-chmod 600 .manual/google_client_secret
+printf '%s' '<Google OAuth Client Secret>' > .quickstart/google_client_secret
+chmod 600 .quickstart/google_client_secret
 ```
 
 In production, use an HTTPS public URL.
@@ -149,7 +149,7 @@ Usually, an administrator registers the target user's email.
 
 ```bash
 go run ./cmd/lore-authctl user invite \
-  --config .manual/lore-auth.yaml \
+  --config .quickstart/lore-auth.yaml \
   --idp google \
   --email '<Google email>' \
   --name '<display name>'
@@ -167,7 +167,7 @@ An administrator can register the user with that `issuer` and `subject`.
 
 ```bash
 go run ./cmd/lore-authctl user add \
-  --config .manual/lore-auth.yaml \
+  --config .quickstart/lore-auth.yaml \
   --idp google \
   --subject '<subject from whoami>' \
   --email '<Google email>' \

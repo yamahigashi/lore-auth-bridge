@@ -1,10 +1,12 @@
-# Local Smoke Test
+# Hands-on Quickstart
 
-このページは、bridge、`loreserver`、`lore` CLI をローカルで起動し、repository create から clone まで動かす手順です。
+[English](hands-on-quickstart.md)
 
-Google OIDC を使わず、`lore-authctl token mint-authn` で authn token を発行します。
+このページでは、IdP を使わない構成で bridge、`loreserver`、`lore` CLI を起動し、repository create から clone までの流れを確認します。
 
-Google OIDC でログインする場合は [Google OIDC](google-oidc.md) を参照してください。
+外部 IdP を使わず、`lore-authctl token mint-authn` で authn token を発行します。
+
+IdP login を使う場合は [Identity Providers](identity-providers.ja.md) を参照してください。
 
 ## 事前確認
 
@@ -17,10 +19,10 @@ go vet ./...
 go build ./...
 ```
 
-## 検証用ディレクトリ
+## 作業ディレクトリ
 
 ```bash
-mkdir -p .manual/{keys,grpc,data,loreconfig,home}
+mkdir -p .quickstart/{keys,grpc,data,loreconfig,home}
 ```
 
 ## TLS
@@ -28,7 +30,7 @@ mkdir -p .manual/{keys,grpc,data,loreconfig,home}
 `mkcert` がある場合は次を使います。
 
 ```bash
-mkcert -cert-file .manual/grpc/tls.crt -key-file .manual/grpc/tls.key localhost 127.0.0.1
+mkcert -cert-file .quickstart/grpc/tls.crt -key-file .quickstart/grpc/tls.key localhost 127.0.0.1
 export TRUST_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
 ```
@@ -39,39 +41,39 @@ export SSL_CERT_FILE="$TRUST_CERT_FILE"
 openssl req -x509 -newkey rsa:2048 -nodes \
   -subj "/CN=localhost" \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
-  -keyout .manual/grpc/tls.key \
-  -out .manual/grpc/tls.crt \
+  -keyout .quickstart/grpc/tls.key \
+  -out .quickstart/grpc/tls.crt \
   -days 1
 
-export TRUST_CERT_FILE="$PWD/.manual/grpc/tls.crt"
+export TRUST_CERT_FILE="$PWD/.quickstart/grpc/tls.crt"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
 ```
 
 別のターミナルでも同じ値を使うため、環境変数をファイルに保存します。
 
 ```bash
-cat > .manual/env <<EOF
+cat > .quickstart/env <<EOF
 export TRUST_CERT_FILE="$TRUST_CERT_FILE"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
-export LORE_CONFIG_PATH="$PWD/.manual/loreconfig"
+export LORE_CONFIG_PATH="$PWD/.quickstart/loreconfig"
 export LORE_ENV=e2e
-export HOME="$PWD/.manual/home"
+export HOME="$PWD/.quickstart/home"
 EOF
 ```
 
 ## bridge config
 
 ```bash
-cat > .manual/lore-auth.yaml <<'YAML'
+cat > .quickstart/lore-auth.yaml <<'YAML'
 server:
   listen: "127.0.0.1:8080"
   grpc_listen: "127.0.0.1:8081"
-  grpc_tls_cert_file: ".manual/grpc/tls.crt"
-  grpc_tls_key_file: ".manual/grpc/tls.key"
+  grpc_tls_cert_file: ".quickstart/grpc/tls.crt"
+  grpc_tls_key_file: ".quickstart/grpc/tls.key"
   public_base_url: "http://localhost:8080"
 
 database:
-  path: ".manual/lore-auth.sqlite3"
+  path: ".quickstart/lore-auth.sqlite3"
 
 jwt:
   issuer: "http://localhost:8080"
@@ -79,7 +81,7 @@ jwt:
     - "lore-service"
     - "localhost"
   ttl_seconds: 3600
-  signing_key_dir: ".manual/keys"
+  signing_key_dir: ".quickstart/keys"
   active_kid: "manual-1"
 
 lore:
@@ -99,7 +101,7 @@ YAML
 ## DB、鍵、user
 
 ```bash
-CONFIG=.manual/lore-auth.yaml
+CONFIG=.quickstart/lore-auth.yaml
 
 go run ./cmd/lore-authctl init-db --config "$CONFIG"
 
@@ -122,7 +124,7 @@ go run ./cmd/lore-authctl user add \
 別のターミナルで起動します。
 
 ```bash
-go run ./cmd/lore-auth-server -config .manual/lore-auth.yaml
+go run ./cmd/lore-auth-server -config .quickstart/lore-auth.yaml
 ```
 
 HTTP 側を確認します。
@@ -137,14 +139,14 @@ curl -f http://localhost:8080/.well-known/jwks.json
 ```bash
 go run ./cmd/lore-authctl token mint-authn \
   --config "$CONFIG" \
-  --out .manual/authn.jwt \
+  --out .quickstart/authn.jwt \
   manual@example.com
 ```
 
 ## loreserver config
 
 ```bash
-cat > .manual/loreconfig/e2e.toml <<EOF
+cat > .quickstart/loreconfig/e2e.toml <<EOF
 [environment.endpoint]
 auth_url = "https://localhost:8081"
 
@@ -156,23 +158,23 @@ jwt_audience = ["lore-service", "localhost"]
 endpoint = "http://localhost:8080/.well-known/jwks.json"
 
 [immutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 
 [mutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 EOF
 ```
 
 `loreserver` が base config を要求する配布形態では、Lore に同梱された `default.toml` が必要です。
 
-その場合は、配布物に含まれる `default.toml` を `.manual/loreconfig/default.toml` にコピーします。
+その場合は、配布物に含まれる `default.toml` を `.quickstart/loreconfig/default.toml` にコピーします。
 
 ## loreserver 起動
 
 別のターミナルで起動します。
 
 ```bash
-source .manual/env
+source .quickstart/env
 
 loreserver
 ```
@@ -182,7 +184,7 @@ loreserver
 別のターミナルで実行します。
 
 ```bash
-source .manual/env
+source .quickstart/env
 ```
 
 authn token を登録します。
@@ -190,7 +192,7 @@ authn token を登録します。
 ```bash
 lore auth login \
   --token-type lore \
-  --token "$(cat .manual/authn.jwt)" \
+  --token "$(cat .quickstart/authn.jwt)" \
   --auth-url https://localhost:8081 \
   lore://localhost:41337
 ```
@@ -232,7 +234,7 @@ go run ./cmd/lore-authctl check \
 clone を確認します。
 
 ```bash
-lore clone lore://localhost:41337/manual-repo .manual/clone-manual-repo
+lore clone lore://localhost:41337/manual-repo .quickstart/clone-manual-repo
 ```
 
 ## 失敗時の確認点
@@ -241,14 +243,14 @@ lore clone lore://localhost:41337/manual-repo .manual/clone-manual-repo
 
 `lore repository create` が `"Failed to connect to rebac service"` で失敗する場合は、`loreserver` から bridge の `RebacApi` へ TLS 接続できていません。
 
-特に mkcert を使っている場合、`SSL_CERT_FILE` に `.manual/grpc/tls.crt` を指定していないか確認してください。
+特に mkcert を使っている場合、`SSL_CERT_FILE` に `.quickstart/grpc/tls.crt` を指定していないか確認してください。
 
-mkcert では `.manual/grpc/tls.crt` は leaf 証明書であり、信頼 anchor ではありません。
+mkcert では `.quickstart/grpc/tls.crt` は leaf 証明書であり、信頼 anchor ではありません。
 
 `SSL_CERT_FILE` には `$(mkcert -CAROOT)/rootCA.pem` を指定します。
 
 ```bash
-openssl verify -CAfile "$SSL_CERT_FILE" .manual/grpc/tls.crt
+openssl verify -CAfile "$SSL_CERT_FILE" .quickstart/grpc/tls.crt
 ```
 
 この確認が `OK` にならない場合、`loreserver` は bridge gRPC の TLS 証明書を検証できません。
@@ -263,4 +265,4 @@ bridge の gRPC log、`loreserver` log、`lore-authctl check` の結果を順に
 
 JWT 検証が失敗する場合は、`jwt.issuer`、loreserver の `jwt_issuer`、`jwt.audience`、`jwt_audience` を確認します。
 
-ローカル確認では `localhost` と `127.0.0.1` を混ぜないでください。
+この手順では `localhost` と `127.0.0.1` を混ぜないでください。

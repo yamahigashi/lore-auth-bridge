@@ -1,21 +1,23 @@
 # Loreserver
 
+[English](loreserver.md)
+
 このページは、auth 有効化状態の `loreserver` が bridge を使うための設定です。
 
-bridge 側の設定は [Configuration](configuration.md) を参照してください。
+bridge 側の設定は [Configuration](configuration.ja.md) を参照してください。
 
-ローカルで一通り動かす手順は [Local Smoke Test](local-smoke-test.md) にまとめています。
+bridge と Lore CLI を含めた全体フローの確認は [Hands-on Quickstart](hands-on-quickstart.ja.md) を参照してください。
 
 ## 設定ファイル
 
-ローカル動作確認では、`LORE_CONFIG_PATH` 配下に environment 用 TOML を置きます。
+Hands-on Quickstart の構成では、`LORE_CONFIG_PATH` 配下に environment 用 TOML を置きます。
 
-例では `.manual/loreconfig/e2e.toml` を使います。
+例では `.quickstart/loreconfig/e2e.toml` を使います。
 
 ```bash
-mkdir -p .manual/loreconfig .manual/data .manual/home
+mkdir -p .quickstart/loreconfig .quickstart/data .quickstart/home
 
-cat > .manual/loreconfig/e2e.toml <<EOF
+cat > .quickstart/loreconfig/e2e.toml <<EOF
 [environment.endpoint]
 auth_url = "https://localhost:8081"
 
@@ -27,16 +29,16 @@ jwt_audience = ["lore-service", "localhost"]
 endpoint = "http://localhost:8080/.well-known/jwks.json"
 
 [immutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 
 [mutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 EOF
 ```
 
 `loreserver` が base config を要求する配布形態では、Lore に同梱された `default.toml` が必要です。
 
-その場合は、配布物に含まれる `default.toml` を `.manual/loreconfig/default.toml` にコピーします。
+その場合は、配布物に含まれる `default.toml` を `.quickstart/loreconfig/default.toml` にコピーします。
 
 ## environment.endpoint
 
@@ -51,7 +53,7 @@ auth_url = "https://localhost:8081"
 
 `lore` CLI は repository 操作時に `epic_urc.UrcAuthApi` へ authz token exchange を要求します。
 
-ローカル確認では bridge config の `lore.auth_url` と同じ `https://localhost:8081` に揃えます。
+この構成では、bridge config の `lore.auth_url` と同じ `https://localhost:8081` に揃えます。
 
 `RebacApi` は loreserver 専用の service-to-service API として扱います。
 
@@ -100,15 +102,15 @@ gRPC endpoint ではありません。
 
 ```toml
 [immutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 
 [mutable_store.local]
-path = "$PWD/.manual/data"
+path = "$PWD/.quickstart/data"
 ```
 
-ローカル動作確認では同じ作業ディレクトリを使います。
+この例では同じ作業ディレクトリを使います。
 
-既存データを避けたい場合は `.manual/data` を削除してからやり直します。
+既存データを避けたい場合は `.quickstart/data` を削除してからやり直します。
 
 ## 起動
 
@@ -117,11 +119,11 @@ path = "$PWD/.manual/data"
 ```bash
 export TRUST_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"
 # 自己署名証明書を使う場合:
-# export TRUST_CERT_FILE="$PWD/.manual/grpc/tls.crt"
+# export TRUST_CERT_FILE="$PWD/.quickstart/grpc/tls.crt"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
-export LORE_CONFIG_PATH="$PWD/.manual/loreconfig"
+export LORE_CONFIG_PATH="$PWD/.quickstart/loreconfig"
 export LORE_ENV=e2e
-export HOME="$PWD/.manual/home"
+export HOME="$PWD/.quickstart/home"
 
 loreserver
 ```
@@ -139,7 +141,7 @@ loreserver
 - `auth_url` が `https://localhost:8081` などの TLS endpoint になっている。
 - bridge が `server.grpc_listen` で起動している。
 - `SSL_CERT_FILE` が `loreserver` から読める証明書または CA を指している。
-  - mkcert の場合は `.manual/grpc/tls.crt` ではなく root CA（例: `$(mkcert -CAROOT)/rootCA.pem`）を指す。
+  - mkcert の場合は `.quickstart/grpc/tls.crt` ではなく root CA（例: `$(mkcert -CAROOT)/rootCA.pem`）を指す。
   - `SSL_CERT_FILE` を変更したら `loreserver` を再起動する。
 - `jwt_issuer` と bridge の `jwt.issuer` が一致している。
 - `jwt_audience` に remote host が含まれている。
@@ -150,7 +152,7 @@ loreserver
 `SSL_CERT_FILE` が正しい信頼 anchor かを次で確認してください。
 
 ```bash
-openssl verify -CAfile "$SSL_CERT_FILE" .manual/grpc/tls.crt
+openssl verify -CAfile "$SSL_CERT_FILE" .quickstart/grpc/tls.crt
 ```
 
 `OK` にならない場合、`loreserver` は bridge gRPC endpoint を信頼できません。

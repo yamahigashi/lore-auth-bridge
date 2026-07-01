@@ -6,16 +6,16 @@ Lore auth exchange must be reachable through gRPC over TLS.
 
 The bridge HTTP/JWKS endpoint and the `UrcAuthApi` / `RebacApi` gRPC endpoint are separate endpoints.
 
-For local verification, treat HTTP as `http://localhost:8080` and gRPC TLS as `https://localhost:8081`.
+In the Hands-on Quickstart setup, treat HTTP as `http://localhost:8080` and gRPC TLS as `https://localhost:8081`.
 
 ## mkcert
 
 When `mkcert` is available, using a local CA is the simplest option.
 
 ```bash
-mkdir -p .manual/grpc
+mkdir -p .quickstart/grpc
 
-mkcert -cert-file .manual/grpc/tls.crt -key-file .manual/grpc/tls.key localhost 127.0.0.1
+mkcert -cert-file .quickstart/grpc/tls.crt -key-file .quickstart/grpc/tls.key localhost 127.0.0.1
 
 export TRUST_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
@@ -30,16 +30,16 @@ With `mkcert`, point it at the root CA, not the leaf certificate.
 If `mkcert` is unavailable, a short-lived self-signed certificate is enough for verification.
 
 ```bash
-mkdir -p .manual/grpc
+mkdir -p .quickstart/grpc
 
 openssl req -x509 -newkey rsa:2048 -nodes \
   -subj "/CN=localhost" \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
-  -keyout .manual/grpc/tls.key \
-  -out .manual/grpc/tls.crt \
+  -keyout .quickstart/grpc/tls.key \
+  -out .quickstart/grpc/tls.crt \
   -days 1
 
-export TRUST_CERT_FILE="$PWD/.manual/grpc/tls.crt"
+export TRUST_CERT_FILE="$PWD/.quickstart/grpc/tls.crt"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
 ```
 
@@ -47,7 +47,7 @@ The certificate must include `localhost` or `127.0.0.1` as a Subject Alternative
 
 Mixing `localhost` and `127.0.0.1` across CLI commands and config makes certificate verification and JWT audience debugging harder.
 
-For local verification, choose one host form and keep it consistent.
+Choose one host form and keep it consistent.
 
 ## Production Certificate
 
@@ -64,13 +64,13 @@ Even when TLS terminates at a reverse proxy or load balancer, the `auth_url` see
 
 ## Trust Settings For loreserver And lore CLI
 
-For local verification, pass the same `SSL_CERT_FILE` to both `loreserver` and the `lore` CLI.
+In that setup, pass the same `SSL_CERT_FILE` to both `loreserver` and the `lore` CLI.
 
 ```bash
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
-export LORE_CONFIG_PATH="$PWD/.manual/loreconfig"
+export LORE_CONFIG_PATH="$PWD/.quickstart/loreconfig"
 export LORE_ENV=e2e
-export HOME="$PWD/.manual/home"
+export HOME="$PWD/.quickstart/home"
 ```
 
 If `SSL_CERT_FILE` is not set, `lore auth login` may succeed while authz exchange during repository operations fails.
@@ -82,7 +82,7 @@ Check this first when the following symptoms appear:
 - `lore auth login` returns `Authentication successful`.
 - `lore repository create` fails with `code: 'Internal error', message: "Failed to connect to rebac service"`.
 
-The usual cause is that `SSL_CERT_FILE` points to the `mkcert` leaf certificate, `.manual/grpc/tls.crt`.
+The usual cause is that `SSL_CERT_FILE` points to the `mkcert` leaf certificate, `.quickstart/grpc/tls.crt`.
 
 During repository creation, `loreserver` connects to `auth_url` over gRPC TLS for ReBAC sync.
 
@@ -115,7 +115,7 @@ Environment variables are read at startup, so restart `loreserver` and any `lore
 Use `openssl` to check whether `SSL_CERT_FILE` is a valid trust anchor.
 
 ```bash
-openssl verify -CAfile "$SSL_CERT_FILE" .manual/grpc/tls.crt
+openssl verify -CAfile "$SSL_CERT_FILE" .quickstart/grpc/tls.crt
 ```
 
 If the command returns `OK`, the file can be used as a trust anchor.

@@ -13,10 +13,10 @@ Private keys stay on the filesystem and are not stored in the DB or JWKS.
 Create the active key after applying DB migrations.
 
 ```bash
-go run ./cmd/lore-authctl init-db --config .manual/lore-auth.yaml
+go run ./cmd/lore-authctl init-db --config .quickstart/lore-auth.yaml
 
 go run ./cmd/lore-authctl key generate \
-  --config .manual/lore-auth.yaml \
+  --config .quickstart/lore-auth.yaml \
   --kid manual-1
 ```
 
@@ -29,7 +29,7 @@ go run ./cmd/lore-authctl key generate \
 Check registered key metadata.
 
 ```bash
-go run ./cmd/lore-authctl key list --config .manual/lore-auth.yaml
+go run ./cmd/lore-authctl key list --config .quickstart/lore-auth.yaml
 ```
 
 The output contains `kid`, algorithm, status, and private key path.
@@ -38,7 +38,7 @@ The output contains `kid`, algorithm, status, and private key path.
 
 ```yaml
 jwt:
-  signing_key_dir: ".manual/keys"
+  signing_key_dir: ".quickstart/keys"
   active_kid: "manual-1"
 ```
 
@@ -54,7 +54,7 @@ Private key files are written with mode `0600`.
 
 Make the directory readable only by the operating user.
 
-Do not commit verification directories such as `.manual/keys` or `.probe/`.
+Do not commit verification directories such as `.quickstart/keys` or `.probe/`.
 
 ## JWKS
 

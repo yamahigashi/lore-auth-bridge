@@ -1,19 +1,21 @@
 # TLS
 
+[English](tls.md)
+
 Lore の auth exchange は gRPC over TLS で到達できる必要があります。
 
 bridge の HTTP/JWKS endpoint と、`UrcAuthApi` / `RebacApi` の gRPC endpoint は別です。
 
-ローカル動作確認では HTTP を `http://localhost:8080`、gRPC TLS を `https://localhost:8081` として扱います。
+Hands-on Quickstart の構成では HTTP を `http://localhost:8080`、gRPC TLS を `https://localhost:8081` として扱います。
 
 ## mkcert
 
 `mkcert` が使える環境では、ローカル CA を使うのが簡単です。
 
 ```bash
-mkdir -p .manual/grpc
+mkdir -p .quickstart/grpc
 
-mkcert -cert-file .manual/grpc/tls.crt -key-file .manual/grpc/tls.key localhost 127.0.0.1
+mkcert -cert-file .quickstart/grpc/tls.crt -key-file .quickstart/grpc/tls.key localhost 127.0.0.1
 
 export TRUST_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
@@ -28,16 +30,16 @@ export SSL_CERT_FILE="$TRUST_CERT_FILE"
 `mkcert` がない場合は、短命の自己署名証明書でも確認できます。
 
 ```bash
-mkdir -p .manual/grpc
+mkdir -p .quickstart/grpc
 
 openssl req -x509 -newkey rsa:2048 -nodes \
   -subj "/CN=localhost" \
   -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
-  -keyout .manual/grpc/tls.key \
-  -out .manual/grpc/tls.crt \
+  -keyout .quickstart/grpc/tls.key \
+  -out .quickstart/grpc/tls.crt \
   -days 1
 
-export TRUST_CERT_FILE="$PWD/.manual/grpc/tls.crt"
+export TRUST_CERT_FILE="$PWD/.quickstart/grpc/tls.crt"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
 ```
 
@@ -45,7 +47,7 @@ export SSL_CERT_FILE="$TRUST_CERT_FILE"
 
 CLI と config で `localhost` と `127.0.0.1` を混ぜると、証明書検証や JWT audience の切り分けが難しくなります。
 
-ローカル確認ではどちらか一方に揃えます。
+どちらか一方に揃えてください。
 
 ## 本番証明書
 
@@ -62,13 +64,13 @@ server:
 
 ## loreserver と lore CLI の信頼設定
 
-ローカル確認では、`loreserver` と `lore` CLI の両方に同じ `SSL_CERT_FILE` を渡します。
+この構成では、`loreserver` と `lore` CLI の両方に同じ `SSL_CERT_FILE` を渡します。
 
 ```bash
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
-export LORE_CONFIG_PATH="$PWD/.manual/loreconfig"
+export LORE_CONFIG_PATH="$PWD/.quickstart/loreconfig"
 export LORE_ENV=e2e
-export HOME="$PWD/.manual/home"
+export HOME="$PWD/.quickstart/home"
 ```
 
 `SSL_CERT_FILE` を設定していない場合、`lore auth login` が成功しても repository 操作時の authz exchange で失敗することがあります。
@@ -80,7 +82,7 @@ export HOME="$PWD/.manual/home"
 - `lore auth login` は `Authentication successful` になる。
 - しかし `lore repository create` が `code: 'Internal error', message: "Failed to connect to rebac service"` で失敗する。
 
-原因は、`SSL_CERT_FILE` が mkcert の **leaf 証明書（`.manual/grpc/tls.crt`）** を指していることです。
+原因は、`SSL_CERT_FILE` が mkcert の **leaf 証明書（`.quickstart/grpc/tls.crt`）** を指していることです。
 
 `loreserver` は repository create のときに `auth_url`（gRPC TLS）へ ReBAC 同期で接続します。
 
@@ -111,7 +113,7 @@ export SSL_CERT_FILE="$(mkcert -CAROOT)/rootCA.pem"
 `SSL_CERT_FILE` が信頼 anchor として正しいかは `openssl` で確認できます。
 
 ```bash
-openssl verify -CAfile "$SSL_CERT_FILE" .manual/grpc/tls.crt
+openssl verify -CAfile "$SSL_CERT_FILE" .quickstart/grpc/tls.crt
 ```
 
 `OK` が返れば信頼 anchor として使えます。

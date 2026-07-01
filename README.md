@@ -6,11 +6,11 @@
 
 It provides login, repository-scoped token exchange, JWKS-based signature verification, and repository lifecycle synchronization for the Lore CLI and `loreserver`.
 
-The current backend set is Google OIDC, SQLite, and Casbin.
+The current backend set is OIDC identity providers, SQLite, and Casbin.
 
 ## Features
 
-- Browser login with Google OIDC
+- Browser login with OIDC identity providers
 - Administrative CLI for users, groups, repositories, grants, and signing keys
 - RS256 signing for authn tokens and repository-scoped authz tokens
 - Public key distribution through a JWKS endpoint
@@ -31,7 +31,7 @@ Main procedure pages:
 - [Authctl](doc/setup/authctl.md)
 - [Identity Providers](doc/setup/identity-providers.md)
 - [Google OIDC](doc/setup/google-oidc.md)
-- [Local Smoke Test](doc/setup/local-smoke-test.md)
+- [Hands-on Quickstart](doc/setup/hands-on-quickstart.md)
 
 ## Binaries
 
@@ -94,7 +94,7 @@ go vet ./...
 
 An example configuration is available at [configs/lore-auth.example.yaml](configs/lore-auth.example.yaml).
 
-The database, JWT issuer / audience, signing key, Google OIDC settings, TLS, and `loreserver` auth configuration must be aligned.
+The database, JWT issuer / audience, signing key, IdP settings, TLS, and `loreserver` auth configuration must be aligned.
 
 See the [Setup Guide](doc/setup-guide.md) for the full procedure.
 
@@ -107,16 +107,19 @@ On Windows, use `.\bin\lore-authctl.exe` and `.\bin\lore-auth-server.exe`.
 
 ## User Registration
 
-When Google OIDC is enabled, an administrator can preregister a user by Google account email.
+When IdP login is enabled, an administrator can preregister a user by provider ID and email.
 
 ```bash
+PROVIDER_ID=company-sso
+
 ./bin/lore-authctl user invite \
   --config configs/lore-auth.example.yaml \
+  --idp "$PROVIDER_ID" \
   --email alice@example.com \
   --name "Alice Example"
 ```
 
-See [Google OIDC](doc/setup/google-oidc.md) and [Authctl](doc/setup/authctl.md) for details.
+See [Identity Providers](doc/setup/identity-providers.md) and [Authctl](doc/setup/authctl.md) for details.
 
 ## Claim Contract Verification
 

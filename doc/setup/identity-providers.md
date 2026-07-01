@@ -26,9 +26,9 @@ If the user is registered, the browser session or CLI auth session completes.
 
 If the user is not registered, no token is issued and the whoami page displays the identity.
 
-With Google OIDC, an administrator can register a user with `lore-authctl user invite --idp google --email <address>`.
+When the IdP returns verified email addresses, an administrator can preregister a user with `lore-authctl user invite --idp <provider-id> --email <address>`.
 
-If the registered user's first login returns a verified Google email that matches the invitation, that login completes.
+If the registered user's first login returns a matching verified email from the IdP, that login completes.
 
 If the subject is already known, an administrator can also register the user with `lore-authctl user add --idp <provider> --subject <subject>`.
 
@@ -50,7 +50,7 @@ When explicitly registering a subject for IdP login, register the `issuer` and `
 
 ```bash
 go run ./cmd/lore-authctl user add \
-  --config .manual/lore-auth.yaml \
+  --config .quickstart/lore-auth.yaml \
   --provider manual \
   --issuer local \
   --subject manual-subject \
@@ -59,8 +59,8 @@ go run ./cmd/lore-authctl user add \
   --name "Manual User"
 
 go run ./cmd/lore-authctl token mint-authn \
-  --config .manual/lore-auth.yaml \
-  --out .manual/authn.jwt \
+  --config .quickstart/lore-auth.yaml \
+  --out .quickstart/authn.jwt \
   manual@example.com
 ```
 

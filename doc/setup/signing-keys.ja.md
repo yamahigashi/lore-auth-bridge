@@ -1,5 +1,7 @@
 # Signing Keys
 
+[English](signing-keys.md)
+
 bridge は authn token と authz token を RS256 で署名します。
 
 loreserver は bridge の JWKS endpoint から public key を取得し、JWT を検証します。
@@ -11,10 +13,10 @@ private key は filesystem に置き、DB と JWKS には保存しません。
 DB migration 後に active key を作ります。
 
 ```bash
-go run ./cmd/lore-authctl init-db --config .manual/lore-auth.yaml
+go run ./cmd/lore-authctl init-db --config .quickstart/lore-auth.yaml
 
 go run ./cmd/lore-authctl key generate \
-  --config .manual/lore-auth.yaml \
+  --config .quickstart/lore-auth.yaml \
   --kid manual-1
 ```
 
@@ -27,7 +29,7 @@ go run ./cmd/lore-authctl key generate \
 登録された key metadata を確認します。
 
 ```bash
-go run ./cmd/lore-authctl key list --config .manual/lore-auth.yaml
+go run ./cmd/lore-authctl key list --config .quickstart/lore-auth.yaml
 ```
 
 出力には `kid`、algorithm、status、private key path が含まれます。
@@ -36,7 +38,7 @@ go run ./cmd/lore-authctl key list --config .manual/lore-auth.yaml
 
 ```yaml
 jwt:
-  signing_key_dir: ".manual/keys"
+  signing_key_dir: ".quickstart/keys"
   active_kid: "manual-1"
 ```
 
@@ -52,7 +54,7 @@ private key file は `0600` で書き出されます。
 
 directory は運用ユーザーだけが読める権限にしてください。
 
-検証用の `.manual/keys` や `.probe/` はコミットしないでください。
+検証用の `.quickstart/keys` や `.probe/` はコミットしないでください。
 
 ## JWKS
 

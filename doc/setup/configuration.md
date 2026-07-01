@@ -6,7 +6,7 @@
 
 This page explains each setting.
 
-See [Local Smoke Test](local-smoke-test.md) for an end-to-end local run.
+See [Hands-on Quickstart](hands-on-quickstart.md) for the full flow check.
 
 ## server
 
@@ -14,8 +14,8 @@ See [Local Smoke Test](local-smoke-test.md) for an end-to-end local run.
 server:
   listen: "127.0.0.1:8080"
   grpc_listen: "127.0.0.1:8081"
-  grpc_tls_cert_file: ".manual/grpc/tls.crt"
-  grpc_tls_key_file: ".manual/grpc/tls.key"
+  grpc_tls_cert_file: ".quickstart/grpc/tls.crt"
+  grpc_tls_key_file: ".quickstart/grpc/tls.key"
   public_base_url: "http://localhost:8080"
 ```
 
@@ -39,7 +39,7 @@ Keeping it aligned with `jwt.issuer` makes verification easier.
 
 ```yaml
 database:
-  path: ".manual/lore-auth.sqlite3"
+  path: ".quickstart/lore-auth.sqlite3"
 ```
 
 `path` is the SQLite database path.
@@ -59,7 +59,7 @@ jwt:
     - "lore-service"
     - "localhost"
   ttl_seconds: 3600
-  signing_key_dir: ".manual/keys"
+  signing_key_dir: ".quickstart/keys"
   active_kid: "manual-1"
 ```
 
@@ -95,7 +95,7 @@ lore:
 
 `auth_url` is the auth gRPC endpoint through which Lore reaches `UrcAuthApi` and `RebacApi`.
 
-For local verification, use `https://localhost:8081`.
+In the Hands-on Quickstart setup, use `https://localhost:8081`.
 
 `auth_url` must be an HTTPS gRPC endpoint.
 
