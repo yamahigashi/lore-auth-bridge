@@ -25,6 +25,8 @@ If you use IdP integration, also read:
 1. [Identity Providers](setup/identity-providers.md)
 2. [Google OIDC](setup/google-oidc.md) for the Google-specific example
 
+If you expose the bridge and Lore remote through Tailscale, also read [Tailscale](setup/tailscale.md).
+
 After the individual setup pages, use [Hands-on Quickstart](setup/hands-on-quickstart.md) to check the full bridge, `loreserver`, and `lore` CLI flow.
 
 ## Components

@@ -201,6 +201,10 @@ If no registered user matches, the bridge does not issue a token and displays th
 
 If `redirect_uri_mismatch` appears, check that the Authorized redirect URI in Google Cloud exactly matches `identity_providers.providers.google.redirect_url`.
 
+If the login flow reports `No Lore token was issued`, Google login succeeded but the bridge did not find a matching registered user.
+
+Register the user with `lore-authctl user invite` or `lore-authctl user add`, then retry login.
+
 If login is rejected while an External app is in testing mode, check that the Google account used for login is listed in test users.
 
 If any of `identity_providers.providers.google.client_id`, `identity_providers.providers.google.client_secret_file`, or `identity_providers.providers.google.redirect_url` is empty, Google login is not enabled.

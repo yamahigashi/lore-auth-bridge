@@ -134,6 +134,10 @@ loreserver
 
 `lore` CLI を別のターミナルで動かす場合も、同じ `LORE_CONFIG_PATH`、`LORE_ENV`、`HOME`、`SSL_CERT_FILE` を設定します。
 
+`loreserver` は起動時に bridge の JWKS endpoint から public key を取得し、設定された `jwt_issuer` と `jwt_audience` で JWT 検証を初期化します。
+
+bridge の `jwt.issuer`、`jwt.audience`、signing key、JWKS endpoint、または `lore.auth_url` を変更して `lore-auth-server` を再起動した場合は、`loreserver` も再起動してください。
+
 ## 確認点
 
 `loreserver` 起動時に bridge gRPC endpoint へ接続できない場合は、次を確認します。
@@ -141,11 +145,12 @@ loreserver
 - `auth_url` が `https://localhost:8081` などの TLS endpoint になっている。
 - bridge が `server.grpc_listen` で起動している。
 - `SSL_CERT_FILE` が `loreserver` から読める証明書または CA を指している。
-  - mkcert の場合は `.quickstart/grpc/tls.crt` ではなく root CA（例: `$(mkcert -CAROOT)/rootCA.pem`）を指す。
-  - `SSL_CERT_FILE` を変更したら `loreserver` を再起動する。
+- mkcert の場合は `.quickstart/grpc/tls.crt` ではなく root CA（例: `$(mkcert -CAROOT)/rootCA.pem`）を指している。
+- `SSL_CERT_FILE` を変更したら `loreserver` を再起動している。
 - `jwt_issuer` と bridge の `jwt.issuer` が一致している。
 - `jwt_audience` に remote host が含まれている。
 - `endpoint` が bridge HTTP server の JWKS endpoint を指している。
+- bridge の JWT、JWKS、auth endpoint 関連の設定を変えた後に `loreserver` を再起動している。
 
 `lore auth login --token` は成功するのに `lore repository create` が `"Failed to connect to rebac service"` で失敗する場合、`loreserver` の ReBAC gRPC 接続が TLS 検証で落ちている可能性が高いです。
 

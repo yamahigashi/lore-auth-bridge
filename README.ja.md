@@ -26,6 +26,7 @@ Lore CLI と `loreserver` に対して、ログイン、repository 単位の tok
 
 - [Configuration](doc/setup/configuration.ja.md)
 - [TLS](doc/setup/tls.ja.md)
+- [Tailscale](doc/setup/tailscale.ja.md)
 - [Signing Keys](doc/setup/signing-keys.ja.md)
 - [Loreserver](doc/setup/loreserver.ja.md)
 - [Authctl](doc/setup/authctl.ja.md)

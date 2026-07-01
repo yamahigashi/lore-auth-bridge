@@ -136,6 +136,10 @@ For a self-signed certificate, use the generated certificate.
 
 When running the `lore` CLI in another terminal, set the same `LORE_CONFIG_PATH`, `LORE_ENV`, `HOME`, and `SSL_CERT_FILE`.
 
+`loreserver` fetches public keys from the bridge JWKS endpoint at startup and initializes JWT verification with the configured `jwt_issuer` and `jwt_audience`.
+
+If you change the bridge `jwt.issuer`, `jwt.audience`, signing key, JWKS endpoint, or `lore.auth_url` and restart `lore-auth-server`, restart `loreserver` as well.
+
 ## Checks
 
 If `loreserver` cannot connect to the bridge gRPC endpoint, check the following:
@@ -148,6 +152,7 @@ If `loreserver` cannot connect to the bridge gRPC endpoint, check the following:
 - `jwt_issuer` matches the bridge `jwt.issuer`.
 - `jwt_audience` includes the remote host.
 - `endpoint` points to the bridge HTTP server JWKS endpoint.
+- `loreserver` was restarted after bridge JWT, JWKS, or auth endpoint settings changed.
 
 If `lore auth login --token` succeeds but `lore repository create` fails with `"Failed to connect to rebac service"`, the `loreserver` ReBAC gRPC connection is probably failing TLS verification.
 

@@ -25,6 +25,8 @@ IdP 連携を使う場合は、次も読みます。
 1. [Identity Providers](setup/identity-providers.ja.md)
 2. [Google OIDC](setup/google-oidc.ja.md)（Google を使う場合の例）
 
+Tailscale 越しに bridge と Lore remote を公開する場合は、[Tailscale](setup/tailscale.ja.md) も読みます。
+
 個別手順を確認したら、最後に [Hands-on Quickstart](setup/hands-on-quickstart.ja.md) で全体フローを確認します。
 
 ## 構成要素

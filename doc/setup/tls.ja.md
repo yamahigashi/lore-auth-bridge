@@ -62,6 +62,21 @@ server:
 
 証明書を reverse proxy や load balancer で終端する場合も、Lore が見る `auth_url` は TLS endpoint として到達できる必要があります。
 
+証明書の Subject Alternative Name には、`lore.auth_url` と `[environment.endpoint].auth_url` で使う host を含めます。
+
+たとえば Lore が `https://auth.example.com:8081` に接続するなら、証明書には `auth.example.com` を含めます。
+
+```bash
+mkcert \
+  -cert-file /etc/lore-auth/grpc/tls.crt \
+  -key-file /etc/lore-auth/grpc/tls.key \
+  auth.example.com \
+  localhost \
+  127.0.0.1
+```
+
+IP address で接続する client がある場合は、その IP address も IP SAN として含めます。
+
 ## loreserver と lore CLI の信頼設定
 
 この構成では、`loreserver` と `lore` CLI の両方に同じ `SSL_CERT_FILE` を渡します。
@@ -121,3 +136,27 @@ openssl verify -CAfile "$SSL_CERT_FILE" .quickstart/grpc/tls.crt
 `unable to get local issuer certificate` が返る場合は、`SSL_CERT_FILE` が leaf を指しています。
 
 native-roots 方式をやめて OS ストアに統一したい場合は、`SSL_CERT_FILE` を設定せず `mkcert -install` で root CA を OS ストアに入れる方法もあります。
+
+service manager から明示的な CA bundle を渡す必要がある場合は、root CA を OS store に入れたうえで、`SSL_CERT_FILE` に system CA bundle を指定します。
+
+Debian または Ubuntu では、次のように登録できます。
+
+```bash
+sudo cp "$(mkcert -CAROOT)/rootCA.pem" /usr/local/share/ca-certificates/lore-auth-mkcert.crt
+sudo chmod 0644 /usr/local/share/ca-certificates/lore-auth-mkcert.crt
+sudo update-ca-certificates
+```
+
+必要に応じて `loreserver` の systemd unit に bundle path を指定します。
+
+```ini
+[Service]
+Environment=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+```
+
+unit を変更したら systemd を reload し、`loreserver` を再起動します。
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart loreserver
+```

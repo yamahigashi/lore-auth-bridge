@@ -26,6 +26,7 @@ Main procedure pages:
 
 - [Configuration](doc/setup/configuration.md)
 - [TLS](doc/setup/tls.md)
+- [Tailscale](doc/setup/tailscale.md)
 - [Signing Keys](doc/setup/signing-keys.md)
 - [Loreserver](doc/setup/loreserver.md)
 - [Authctl](doc/setup/authctl.md)

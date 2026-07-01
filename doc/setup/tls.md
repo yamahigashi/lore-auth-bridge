@@ -62,6 +62,21 @@ server:
 
 Even when TLS terminates at a reverse proxy or load balancer, the `auth_url` seen by Lore must be reachable as a TLS endpoint.
 
+The certificate Subject Alternative Name must include the host used in `lore.auth_url` and `[environment.endpoint].auth_url`.
+
+For example, if Lore connects to `https://auth.example.com:8081`, include `auth.example.com` in the certificate.
+
+```bash
+mkcert \
+  -cert-file /etc/lore-auth/grpc/tls.crt \
+  -key-file /etc/lore-auth/grpc/tls.key \
+  auth.example.com \
+  localhost \
+  127.0.0.1
+```
+
+If clients connect by IP address, include the IP address as an IP SAN as well.
+
 ## Trust Settings For loreserver And lore CLI
 
 In that setup, pass the same `SSL_CERT_FILE` to both `loreserver` and the `lore` CLI.
@@ -123,3 +138,27 @@ If the command returns `OK`, the file can be used as a trust anchor.
 If it returns `unable to get local issuer certificate`, `SSL_CERT_FILE` points to the leaf.
 
 If you prefer OS store trust instead of native-roots through `SSL_CERT_FILE`, unset `SSL_CERT_FILE` and install the root CA into the OS store with `mkcert -install`.
+
+If a service manager must pass an explicit CA bundle, point `SSL_CERT_FILE` to the system CA bundle after installing the root CA.
+
+On Debian or Ubuntu systems, one option is:
+
+```bash
+sudo cp "$(mkcert -CAROOT)/rootCA.pem" /usr/local/share/ca-certificates/lore-auth-mkcert.crt
+sudo chmod 0644 /usr/local/share/ca-certificates/lore-auth-mkcert.crt
+sudo update-ca-certificates
+```
+
+Then set the bundle path in the `loreserver` systemd unit if needed.
+
+```ini
+[Service]
+Environment=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+```
+
+Reload systemd and restart `loreserver` after changing the unit.
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart loreserver
+```
