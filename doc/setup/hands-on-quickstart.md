@@ -113,11 +113,7 @@ go run ./cmd/lore-authctl key generate \
 
 go run ./cmd/lore-authctl user add \
   --config "$CONFIG" \
-  --provider manual \
-  --issuer local \
-  --subject manual-subject \
   --email manual@example.com \
-  --email-verified \
   --name "Manual User"
 ```
 

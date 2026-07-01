@@ -46,15 +46,13 @@ The user identity behind the authn token comes either from the configured IdP or
 
 When IdP login is enabled, the user signs in through a browser.
 
-The bridge matches the `issuer` and `subject` returned by the IdP against registered users in the bridge DB.
+The bridge binds the verified external identity returned by the IdP to a reserved bridge user.
 
 The bridge does not issue tokens to unregistered users.
 
 With IdP login, an administrator can preregister a user email with `lore-authctl user invite --idp <provider-id>`.
 
 When that user logs in for the first time and the IdP returns the same verified email, the login becomes usable.
-
-If the subject is already known, an administrator can also register the user with `lore-authctl user add`.
 
 When IdP login is not used, an administrator can issue an authn token with the CLI.
 

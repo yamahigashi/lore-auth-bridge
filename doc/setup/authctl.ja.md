@@ -65,21 +65,15 @@ go run ./cmd/lore-authctl user invite \
 ```bash
 go run ./cmd/lore-authctl user add \
   --config "$CONFIG" \
-  --provider manual \
-  --issuer local \
-  --subject manual-subject \
   --email manual@example.com \
-  --email-verified \
   --name "Manual User"
 ```
 
-この例の `provider`、`issuer`、`subject` は IdP を使わない確認用です。
+`user add` は active な bridge principal を作成します。
 
-`--provider` と `--issuer` を直接指定するのは、`identity_providers` を定義しない token-only config の場合だけです。
+external IdP binding は作成しません。
 
-IdP login で subject を明示登録する場合は、`--idp <provider-id> --subject <subject>` を優先します。
-
-`identity_providers` を設定している場合、`user add` には `--idp` が必要です。
+IdP login には `user invite` を使います。
 
 ## user list
 

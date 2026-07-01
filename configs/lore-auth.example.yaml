@@ -21,7 +21,8 @@ identity_providers:
   default: google
   providers:
     google:
-      type: google_oidc
+      type: oidc
+      profile: google
       display_name: "Google"
       issuer: "https://accounts.google.com"
       client_id: "xxx.apps.googleusercontent.com"
@@ -33,15 +34,21 @@ identity_providers:
         - openid
         - email
         - profile
-      # Restrict accepted Google accounts by the ID token hd claim.
-      # Leave allowed_hosted_domains empty and allow_personal_accounts true
-      # to allow both Workspace and personal Google accounts after bridge user registration.
-      allowed_hosted_domains: []
-      allow_personal_accounts: true
+      subject:
+        strategy: oidc_sub
+      # Restrict accepted Google Workspace accounts by the ID token hd claim.
+      trust:
+        email_binding: verified_email_invitation
+        hosted_domain:
+          allowed: []
+        personal_accounts: allow
 
-    # Example for a generic OIDC provider such as Keycloak or Auth0.
+    # Example for a generic OIDC provider such as Keycloak.
+    # allowed_email_domains applies when a verified-email invitation is bound;
+    # it is not a global login allowlist for existing external identities.
     # keycloak-prod:
     #   type: oidc
+    #   profile: keycloak
     #   display_name: "Company SSO"
     #   issuer: "https://sso.example.com/realms/prod"
     #   client_id: "lore-auth-bridge"
@@ -51,8 +58,13 @@ identity_providers:
     #     - openid
     #     - email
     #     - profile
-    #   allowed_email_domains:
-    #     - "example.com"
+    #   pkce: required
+    #   subject:
+    #     strategy: oidc_sub
+    #   trust:
+    #     email_binding: verified_email_invitation
+    #     allowed_email_domains:
+    #       - "example.com"
 
 database:
   path: "/var/lib/lore-auth/lore-auth.sqlite3"

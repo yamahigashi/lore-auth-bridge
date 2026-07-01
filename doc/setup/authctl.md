@@ -65,21 +65,15 @@ When `identity_providers` is configured, `user invite` requires `--idp`.
 ```bash
 go run ./cmd/lore-authctl user add \
   --config "$CONFIG" \
-  --provider manual \
-  --issuer local \
-  --subject manual-subject \
   --email manual@example.com \
-  --email-verified \
   --name "Manual User"
 ```
 
-The `provider`, `issuer`, and `subject` values in this example are for the no-IdP check.
+`user add` creates an active bridge principal.
 
-Use direct `--provider` and `--issuer` only for token-only configs that do not define `identity_providers`.
+It does not create an external IdP binding.
 
-When explicitly registering a subject for IdP login, prefer `--idp <provider-id> --subject <subject>`.
-
-When `identity_providers` is configured, `user add` requires `--idp`.
+Use `user invite` for IdP login.
 
 ## user list
 

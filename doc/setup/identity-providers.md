@@ -20,7 +20,7 @@ Use stable keys such as `google`, `keycloak-prod`, or `auth0-main`, not only the
 
 With IdP login, the user signs in through the IdP in a browser.
 
-The bridge matches the returned `issuer` and `subject` against registered users.
+The bridge resolves the returned external identity against existing bindings or pending invitations.
 
 If the user is registered, the browser session or CLI auth session completes.
 
@@ -28,11 +28,11 @@ If the user is not registered, no token is issued and the whoami page displays t
 
 When the IdP returns verified email addresses, an administrator can preregister a user with `lore-authctl user invite --idp <provider-id> --email <address>`.
 
-If the registered user's first login returns a matching verified email from the IdP, that login completes.
+If the provider has `trust.email_binding: verified_email_invitation` and the invited user's first login returns a matching verified email from the IdP, the bridge creates the external identity binding and completes that login.
 
-If the subject is already known, an administrator can also register the user with `lore-authctl user add --idp <provider> --subject <subject>`.
+If `trust.allowed_email_domains` is set, the email domain must also match that list before the invitation is consumed.
 
-When `identity_providers` is configured, `user invite` and `user add` require `--idp`.
+When `identity_providers` is configured, `user invite` requires `--idp`.
 
 See [Google OIDC](google-oidc.md) for concrete Google OIDC settings.
 
@@ -42,20 +42,10 @@ If IdP login is not used, an administrator can issue authn tokens with the admin
 
 Register a user with the CLI, then issue an authn token with `lore-authctl token mint-authn`.
 
-The `--provider manual`, `--issuer local`, and `--subject manual-subject` values below are identifiers for the no-IdP example.
-
-Direct `--provider` and `--issuer` registration is only for configs that do not define `identity_providers`.
-
-When explicitly registering a subject for IdP login, register the `issuer` and `subject` returned by that IdP.
-
 ```bash
 go run ./cmd/lore-authctl user add \
   --config .quickstart/lore-auth.yaml \
-  --provider manual \
-  --issuer local \
-  --subject manual-subject \
   --email manual@example.com \
-  --email-verified \
   --name "Manual User"
 
 go run ./cmd/lore-authctl token mint-authn \

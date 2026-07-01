@@ -135,7 +135,7 @@ In that topology, also restrict `/ucs.auth.RebacApi/*` at the reverse proxy to t
 
 Configure rate limiting for public endpoints at the reverse proxy or load balancer.
 
-The relevant endpoints are `/api/device/start`, `/api/device/token`, `/auth/{provider}/start`, `/oauth/google/start`, and the gRPC `/epic_urc.UrcAuthApi/StartAuthSession`.
+The relevant endpoints are `/api/device/start`, `/api/device/token`, `/auth/{provider}/start`, and the gRPC `/epic_urc.UrcAuthApi/StartAuthSession`.
 
 Device flow and OAuth start endpoints are reachable by anonymous callers, so limit them by IP, forwarded client IP, or edge identity.
 
@@ -158,7 +158,8 @@ identity_providers:
   default: google
   providers:
     google:
-      type: google_oidc
+      type: oidc
+      profile: google
       display_name: "Google"
       issuer: "https://accounts.google.com"
       client_id: "xxx.apps.googleusercontent.com"
@@ -168,11 +169,17 @@ identity_providers:
         - openid
         - email
         - profile
-      allowed_hosted_domains: []
-      allow_personal_accounts: true
+      subject:
+        strategy: oidc_sub
+      trust:
+        email_binding: verified_email_invitation
+        hosted_domain:
+          allowed: []
+        personal_accounts: allow
 
     keycloak-prod:
       type: oidc
+      profile: keycloak
       display_name: "Company SSO"
       issuer: "https://sso.example.com/realms/prod"
       client_id: "lore-auth-bridge"
@@ -182,8 +189,13 @@ identity_providers:
         - openid
         - email
         - profile
-      allowed_email_domains:
-        - "example.com"
+      pkce: required
+      subject:
+        strategy: oidc_sub
+      trust:
+        email_binding: verified_email_invitation
+        allowed_email_domains:
+          - "example.com"
 ```
 
 `identity_providers` configures one or more login identity provider instances.
@@ -196,24 +208,30 @@ Do not use a generic value like `oidc` as the provider key if multiple issuers o
 
 For OIDC providers, `redirect_url` must use `/auth/{provider}/callback`.
 
-The old top-level `google:` section is still read for compatibility and is normalized internally to `identity_providers.providers.google`.
-
-New configuration should use `identity_providers`.
-
 See [Google OIDC](google-oidc.md) for concrete Google settings.
 
-`allowed_hosted_domains` is the set of Workspace domains allowed through the Google ID token `hd` claim.
+`profile: google` enables Google trust policy checks.
+
+`trust.hosted_domain.allowed` is the set of Workspace domains allowed through the Google ID token `hd` claim.
 
 When set, logins whose `hd` claim is not in the list are rejected.
 
-`allow_personal_accounts` controls whether personal Google accounts without an `hd` claim are allowed.
+`trust.personal_accounts: deny` rejects personal Google accounts without an `hd` claim.
 
-If `allowed_hosted_domains` is empty and `allow_personal_accounts: true`, the bridge allows both registered Workspace accounts and registered personal Google accounts.
+If `trust.hosted_domain.allowed` is empty and `trust.personal_accounts` is not `deny`, the bridge allows both registered Workspace accounts and registered personal Google accounts.
 
-`allowed_email_domains` restricts generic OIDC logins by the verified email domain after ID token validation.
+`trust.allowed_email_domains` is an additional condition for consuming a verified-email invitation.
 
-When `allowed_email_domains` is set, the ID token must include `email_verified: true`.
+It is checked only when `trust.email_binding: verified_email_invitation` is about to bind a pending invitation.
 
-The generic OIDC adapter always uses the ID token `sub` claim as the persistent subject.
+It is not a global login allowlist.
+
+If `trust.email_binding` is `disabled`, `lore-authctl user invite` still creates pending invitations, but login will not consume them.
+
+An existing external identity binding continues to resolve by `provider_id`, `issuer`, and `subject`.
+
+When `trust.allowed_email_domains` is set for invitation binding, the ID token email must be verified and its domain must be in the configured list.
+
+`subject.strategy: oidc_sub` uses the ID token `sub` claim as the persistent subject.
 
 Do not use email, preferred username, or UPN claims as the persistent identity subject.

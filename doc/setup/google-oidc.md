@@ -91,15 +91,21 @@ identity_providers:
   default: google
   providers:
     google:
-      type: google_oidc
+      type: oidc
+      profile: google
       display_name: "Google"
       issuer: "https://accounts.google.com"
       client_id: "<Google OAuth Client ID>"
       client_secret_file: ".quickstart/google_client_secret"
       redirect_url: "http://localhost:8080/auth/google/callback"
       scopes: [openid, email, profile]
-      allowed_hosted_domains: []
-      allow_personal_accounts: true
+      subject:
+        strategy: oidc_sub
+      trust:
+        email_binding: verified_email_invitation
+        hosted_domain:
+          allowed: []
+        personal_accounts: allow
 ```
 
 Do not write the Client secret directly into YAML.
@@ -121,31 +127,39 @@ identity_providers:
   default: google
   providers:
     google:
-      type: google_oidc
+      type: oidc
+      profile: google
       display_name: "Google"
       issuer: "https://accounts.google.com"
       client_id: "<Google OAuth Client ID>"
       client_secret_file: "/etc/lore-auth/google_client_secret"
       redirect_url: "https://auth.example.com/auth/google/callback"
       scopes: [openid, email, profile]
-      allowed_hosted_domains:
-        - "example.com"
-      allow_personal_accounts: false
+      subject:
+        strategy: oidc_sub
+      trust:
+        email_binding: verified_email_invitation
+        hosted_domain:
+          allowed:
+            - "example.com"
+        personal_accounts: deny
 ```
 
-`allowed_hosted_domains` is the set of Workspace domains allowed through the Google ID token `hd` claim.
+`trust.hosted_domain.allowed` is the set of Workspace domains allowed through the Google ID token `hd` claim.
 
 When set, logins whose `hd` claim does not match are rejected.
 
-`allow_personal_accounts: false` rejects personal Google accounts that do not have an `hd` claim.
+`trust.personal_accounts: deny` rejects personal Google accounts that do not have an `hd` claim.
 
-For production restricted to Google Workspace, set `allowed_hosted_domains` and use `allow_personal_accounts: false`.
+For production restricted to Google Workspace, set `trust.hosted_domain.allowed` and use `trust.personal_accounts: deny`.
 
 ## User Registration
 
 Even after Google login succeeds, the bridge does not issue a token unless the corresponding user is registered in the bridge DB.
 
 Usually, an administrator registers the target user's email.
+
+The examples above set `trust.email_binding: verified_email_invitation`, so the first verified-email login can consume that invitation and create the external identity binding.
 
 ```bash
 go run ./cmd/lore-authctl user invite \
@@ -159,27 +173,11 @@ At this point, linkage with the Google account is not complete, so no token is i
 
 When the user opens `/login` and Google returns the same `email_verified=true` email, that login completes the browser session or CLI auth session.
 
-## Explicit Subject Registration
+If the user is not invited, no token is issued.
 
-If email registration is not used, an unregistered user can open `/login` and see `issuer`, `subject`, `email`, and `email_verified` on the whoami page.
+Invite the verified Google email, then retry login.
 
-An administrator can register the user with that `issuer` and `subject`.
-
-```bash
-go run ./cmd/lore-authctl user add \
-  --config .quickstart/lore-auth.yaml \
-  --idp google \
-  --subject '<subject from whoami>' \
-  --email '<Google email>' \
-  --email-verified \
-  --name '<display name>'
-```
-
-Google's issuer is normally `https://accounts.google.com`.
-
-If the whoami page shows a different issuer, fix `identity_providers.providers.google.issuer` before registering the user.
-
-After registration, open `/login` again to create the bridge browser session.
+After the invitation is created, open `/login` again to create the bridge browser session.
 
 ```text
 http://localhost:8080/login
@@ -189,13 +187,13 @@ http://localhost:8080/login
 
 The bridge verifies the Google ID token in the callback.
 
-After verification, it matches the ID token `iss` and `sub` against users in the bridge DB.
+After verification, it resolves the provider ID, issuer, and subject against `external_identities`.
 
-If the user is registered, the browser session or CLI auth session completes.
+If an active binding exists, the browser session or CLI auth session completes.
 
-If the subject is not registered but an `email_verified=true` email matches a registered pending user, the bridge completes the login.
+If no binding exists but an `email_verified=true` email matches a pending invitation for the same provider and issuer, the bridge creates the binding and completes the login.
 
-If no registered user matches, the bridge does not issue a token and displays the whoami page.
+If no binding or invitation matches, the bridge does not issue a token and displays the whoami page.
 
 ## Common Failures
 
@@ -203,7 +201,7 @@ If `redirect_uri_mismatch` appears, check that the Authorized redirect URI in Go
 
 If the login flow reports `No Lore token was issued`, Google login succeeded but the bridge did not find a matching registered user.
 
-Register the user with `lore-authctl user invite` or `lore-authctl user add`, then retry login.
+Invite the verified email with `lore-authctl user invite`, then retry login.
 
 If login is rejected while an External app is in testing mode, check that the Google account used for login is listed in test users.
 
