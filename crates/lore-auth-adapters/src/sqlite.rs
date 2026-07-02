@@ -1,7 +1,7 @@
 //! SQLite persistence and direct-SQL authorization adapter.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs, io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -13,9 +13,10 @@ use lore_auth_core::{
     CoreError,
     model::{
         self, AddInvitationInput, AddUserInput, AdminAuditEntry, AuthSession, BrowserSession,
-        ExternalIdentity, Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult,
-        LoginResolutionRequest, LoginState, LoginStateInput, LoginTrustPolicy, Resource,
-        ResourceFilter, ResourcePermission, SigningKeyMeta, TokenPrincipal, User, UserListFilter,
+        ExternalIdentity, Grant, GrantEvidence, Group, IdentityInvitation, IssuedToken,
+        LoginBindingResult, LoginResolutionRequest, LoginState, LoginStateInput, LoginTrustPolicy,
+        Resource, ResourceFilter, ResourcePermission, SigningKeyMeta, TokenPrincipal, User,
+        UserListFilter,
     },
     ports::{
         AccountDirectory, AccountQuery, AdminAuditLog, AdminWritePortFactory, AdminWritePorts,
@@ -1557,6 +1558,17 @@ impl GrantQuery for AuditedStore {
     async fn list_grants(&self, repo: &str) -> CoreResult<Vec<Grant>> {
         self.inner.list_grants(repo).await
     }
+
+    async fn grants_for_user_on_repository(
+        &self,
+        user_id: &str,
+        resource_id: &str,
+        include_nested_groups: bool,
+    ) -> CoreResult<Vec<GrantEvidence>> {
+        self.inner
+            .grants_for_user_on_repository(user_id, resource_id, include_nested_groups)
+            .await
+    }
 }
 
 #[async_trait]
@@ -2254,6 +2266,22 @@ impl GrantQuery for Store {
             .await
             .map_err(core_from_driver)
     }
+
+    async fn grants_for_user_on_repository(
+        &self,
+        user_id: &str,
+        resource_id: &str,
+        include_nested_groups: bool,
+    ) -> CoreResult<Vec<GrantEvidence>> {
+        let user_id = user_id.to_owned();
+        let resource_id = resource_id.to_owned();
+        self.conn
+            .call(move |conn| {
+                grant_evidence_conn(conn, &user_id, &resource_id, include_nested_groups)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
 }
 
 #[async_trait]
@@ -2776,6 +2804,265 @@ fn list_grants_conn(conn: &rusqlite::Connection, repo: &str) -> CoreResult<Vec<G
         .query_map(params![repository_id], grant_from_row)
         .map_err(core_from_sql)?;
     collect_rows(rows)
+}
+
+fn grant_evidence_conn(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+    resource_id: &str,
+    include_nested_groups: bool,
+) -> CoreResult<Vec<GrantEvidence>> {
+    let repository_id = repository_id_by_resource_conn(conn, resource_id)?;
+    let user_label = user_label_conn(conn, user_id)?;
+    let mut out = Vec::new();
+
+    let mut direct = conn
+        .prepare(
+            "SELECT g.subject_type, g.subject_id, COALESCE(u.primary_email, u.id), g.role
+             FROM grants g
+             LEFT JOIN users u ON u.id = g.subject_id
+             WHERE g.repository_id = ?1
+               AND g.subject_type = 'user'
+               AND g.subject_id = ?2
+             ORDER BY g.role",
+        )
+        .map_err(core_from_sql)?;
+    let direct_rows = direct
+        .query_map(params![repository_id, user_id], |row| {
+            Ok(GrantEvidence {
+                subject_type: row.get(0)?,
+                subject_id: row.get(1)?,
+                subject_name: row.get(2)?,
+                role: row.get(3)?,
+                path: String::new(),
+            })
+        })
+        .map_err(core_from_sql)?;
+    for row in direct_rows {
+        let mut evidence = row.map_err(core_from_sql)?;
+        evidence.path = format!("user:{user_label} -> grant");
+        out.push(evidence);
+    }
+
+    let group_ids = reachable_group_ids_conn(conn, user_id, include_nested_groups)?;
+    if !group_ids.is_empty() {
+        let group_paths = group_paths_conn(conn, user_id, include_nested_groups, &group_ids)?;
+        let mut group_stmt = conn
+            .prepare(
+                "SELECT g.subject_type,
+                        g.subject_id,
+                        COALESCE(gr.name, g.subject_id) AS subject_name,
+                        g.role
+                 FROM grants g
+                 LEFT JOIN groups gr ON gr.id = g.subject_id
+                 WHERE g.repository_id = ?1
+                   AND g.subject_type = 'group'
+                   AND g.subject_id = ?2
+                 ORDER BY subject_name, g.role",
+            )
+            .map_err(core_from_sql)?;
+        let mut sorted_group_ids = group_ids.into_iter().collect::<Vec<_>>();
+        sorted_group_ids.sort();
+        for group_id in sorted_group_ids {
+            let group_rows = group_stmt
+                .query_map(params![repository_id, group_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(core_from_sql)?;
+            for row in group_rows {
+                let (subject_type, subject_id, subject_name, role) = row.map_err(core_from_sql)?;
+                let group_path = group_paths
+                    .get(&subject_id)
+                    .cloned()
+                    .unwrap_or_else(|| subject_name.clone());
+                out.push(GrantEvidence {
+                    subject_type,
+                    subject_id,
+                    subject_name,
+                    role,
+                    path: format!("user:{user_label} -> {group_path} -> grant"),
+                });
+            }
+        }
+    }
+
+    out.sort_by(|left, right| {
+        (
+            left.path.as_str(),
+            left.subject_type.as_str(),
+            left.subject_id.as_str(),
+            left.role.as_str(),
+        )
+            .cmp(&(
+                right.path.as_str(),
+                right.subject_type.as_str(),
+                right.subject_id.as_str(),
+                right.role.as_str(),
+            ))
+    });
+    Ok(out)
+}
+
+fn repository_id_by_resource_conn(
+    conn: &rusqlite::Connection,
+    resource_id: &str,
+) -> CoreResult<String> {
+    let lore_repository_id = model::ResourceID::repository_id_from_resource_id(resource_id.trim());
+    if lore_repository_id.is_empty() {
+        return Err(CoreError::InvalidArgument(
+            "resource_id must not be empty".to_owned(),
+        ));
+    }
+    conn.query_row(
+        "SELECT id
+         FROM repositories
+         WHERE status = 'active'
+           AND lore_repository_id = ?1",
+        params![lore_repository_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(core_from_sql)?
+    .ok_or(CoreError::NotFound)
+}
+
+fn reachable_group_ids_conn(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+    include_nested_groups: bool,
+) -> CoreResult<HashSet<String>> {
+    let sql = if include_nested_groups {
+        "WITH RECURSIVE user_groups(group_id) AS (
+           SELECT group_id FROM group_members WHERE user_id = ?1
+           UNION
+           SELECT gg.group_id
+           FROM group_groups gg
+           JOIN user_groups ug ON gg.member_group_id = ug.group_id
+         )
+         SELECT group_id FROM user_groups"
+    } else {
+        "SELECT group_id FROM group_members WHERE user_id = ?1"
+    };
+    let mut stmt = conn.prepare(sql).map_err(core_from_sql)?;
+    let rows = stmt
+        .query_map(params![user_id], |row| row.get::<_, String>(0))
+        .map_err(core_from_sql)?;
+    let mut out = HashSet::new();
+    for row in rows {
+        out.insert(row.map_err(core_from_sql)?);
+    }
+    Ok(out)
+}
+
+fn group_paths_conn(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+    include_nested_groups: bool,
+    reachable_group_ids: &HashSet<String>,
+) -> CoreResult<HashMap<String, String>> {
+    let mut labels = HashMap::new();
+    let mut label_stmt = conn
+        .prepare("SELECT id, name FROM groups ORDER BY name")
+        .map_err(core_from_sql)?;
+    let label_rows = label_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(core_from_sql)?;
+    for row in label_rows {
+        let (id, name) = row.map_err(core_from_sql)?;
+        labels.insert(id, name);
+    }
+
+    let mut paths = HashMap::<String, String>::new();
+    let mut queue = VecDeque::new();
+    let mut direct_stmt = conn
+        .prepare(
+            "SELECT gm.group_id, COALESCE(g.name, gm.group_id)
+             FROM group_members gm
+             LEFT JOIN groups g ON g.id = gm.group_id
+             WHERE gm.user_id = ?1
+             ORDER BY COALESCE(g.name, gm.group_id)",
+        )
+        .map_err(core_from_sql)?;
+    let direct_rows = direct_stmt
+        .query_map(params![user_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(core_from_sql)?;
+    for row in direct_rows {
+        let (group_id, label) = row.map_err(core_from_sql)?;
+        if reachable_group_ids.contains(&group_id)
+            && paths.insert(group_id.clone(), label).is_none()
+        {
+            queue.push_back(group_id);
+        }
+    }
+
+    if !include_nested_groups {
+        return Ok(paths);
+    }
+
+    let mut parents_by_member = HashMap::<String, Vec<String>>::new();
+    let mut edge_stmt = conn
+        .prepare(
+            "SELECT member_group_id, group_id
+             FROM group_groups
+             ORDER BY member_group_id, group_id",
+        )
+        .map_err(core_from_sql)?;
+    let edge_rows = edge_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(core_from_sql)?;
+    for row in edge_rows {
+        let (member_group_id, parent_group_id) = row.map_err(core_from_sql)?;
+        parents_by_member
+            .entry(member_group_id)
+            .or_default()
+            .push(parent_group_id);
+    }
+
+    while let Some(child_group_id) = queue.pop_front() {
+        let Some(child_path) = paths.get(&child_group_id).cloned() else {
+            continue;
+        };
+        let Some(parent_group_ids) = parents_by_member.get(&child_group_id) else {
+            continue;
+        };
+        for parent_group_id in parent_group_ids {
+            if !reachable_group_ids.contains(parent_group_id) || paths.contains_key(parent_group_id)
+            {
+                continue;
+            }
+            let label = labels
+                .get(parent_group_id)
+                .cloned()
+                .unwrap_or_else(|| parent_group_id.clone());
+            paths.insert(parent_group_id.clone(), format!("{child_path} -> {label}"));
+            queue.push_back(parent_group_id.clone());
+        }
+    }
+    Ok(paths)
+}
+
+fn user_label_conn(conn: &rusqlite::Connection, user_id: &str) -> CoreResult<String> {
+    conn.query_row(
+        "SELECT COALESCE(primary_email, id)
+         FROM users
+         WHERE id = ?1 AND status <> 'deleted'",
+        params![user_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(core_from_sql)?
+    .ok_or(CoreError::NotFound)
 }
 
 fn add_signing_key_meta_conn(

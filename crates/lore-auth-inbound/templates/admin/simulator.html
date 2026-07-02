@@ -1,0 +1,66 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ self.t("admin.simulator.title") }}{% endblock %}
+{% block content %}
+<section>
+  <h1>{{ self.t("admin.simulator.title") }}</h1>
+  <p>{{ self.t("admin.simulator.note") }}</p>
+  <form method="post" action="/admin/simulator">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="user" value="{{ input_user }}" placeholder='{{ self.t("admin.simulator.user") }}' aria-label='{{ self.t("admin.simulator.user") }}'>
+    <input type="text" name="resource" value="{{ input_resource }}" placeholder='{{ self.t("admin.simulator.resource") }}' aria-label='{{ self.t("admin.simulator.resource") }}'>
+    <input type="text" name="action" value="{{ input_action }}" list="admin-simulator-actions" placeholder='{{ self.t("admin.simulator.action") }}' aria-label='{{ self.t("admin.simulator.action") }}'>
+    <datalist id="admin-simulator-actions">
+      <option value="read"></option>
+      <option value="write"></option>
+    </datalist>
+    <button type="submit">{{ self.t("admin.simulator.run") }}</button>
+  </form>
+</section>
+{% if result.present %}
+<section>
+  <h2>{{ self.t("admin.simulator.result") }}</h2>
+  <dl>
+    <dt>{{ self.t("admin.simulator.decision") }}</dt>
+    <dd>{{ result.status }}</dd>
+    <dt>{{ self.t("admin.simulator.user") }}</dt>
+    <dd>{{ result.user }}</dd>
+    <dt>{{ self.t("admin.simulator.resource_id") }}</dt>
+    <dd>{{ result.resource_id }}</dd>
+    <dt>{{ self.t("admin.simulator.action") }}</dt>
+    <dd>{{ result.action }}</dd>
+  </dl>
+  {% if !result.detail.is_empty() %}
+  <p>{{ result.detail }}</p>
+  {% endif %}
+  {% if !result.repository_note.is_empty() %}
+  <p>{{ result.repository_note }}</p>
+  {% endif %}
+</section>
+<section>
+  <h2>{{ self.t("admin.simulator.evidence") }}</h2>
+  <p>{{ self.t("admin.simulator.evidence_note") }}</p>
+  {% if result.evidence.is_empty() %}
+  <p>{{ self.t("admin.simulator.no_evidence") }}</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">{{ self.t("admin.simulator.subject") }}</th>
+        <th scope="col">{{ self.t("admin.grants.role") }}</th>
+        <th scope="col">{{ self.t("admin.simulator.path") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for grant in result.evidence %}
+      <tr>
+        <td>{{ grant.subject }}</td>
+        <td>{{ grant.role }}</td>
+        <td>{{ grant.path }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

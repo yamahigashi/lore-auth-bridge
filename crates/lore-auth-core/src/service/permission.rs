@@ -58,4 +58,13 @@ impl PermissionService {
     ) -> Result<Vec<model::ResourcePermission>, CoreError> {
         self.authz.list_accessible(user_id, filter).await
     }
+
+    pub async fn can_access(
+        &self,
+        user_id: &str,
+        resource_id: &str,
+        action: &str,
+    ) -> Result<bool, CoreError> {
+        self.authz.can_access(user_id, resource_id, action).await
+    }
 }

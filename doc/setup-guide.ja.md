@@ -2,7 +2,7 @@
 
 [English](setup-guide.md)
 
-`lore-auth-bridge` の設定項目、TLS/JWKS、`loreserver` 連携、管理 CLI の使い方をまとめます。
+`lore-auth-bridge` の設定項目、TLS/JWKS、`loreserver` 連携、管理 CLI、管理 Web UI の使い方をまとめます。
 
 `lore-auth-bridge` は Lore の `UrcAuthApi` と `RebacApi` を実装する bridge です。
 
@@ -19,6 +19,7 @@ Google OIDC は、この文書セットで扱う具体例の一つです。
 3. [Signing Keys](setup/signing-keys.ja.md)
 4. [Loreserver](setup/loreserver.ja.md)
 5. [Authctl](setup/authctl.ja.md)
+6. [管理 Web UI](setup/admin-ui.ja.md)
 
 IdP 連携を使う場合は、次も読みます。
 

@@ -40,6 +40,7 @@ const USERS_TEMPLATE_RAW: &str = include_str!("../templates/admin/users.html");
 const USERS_TABLE_TEMPLATE_RAW: &str = include_str!("../templates/admin/users_table.html");
 const USER_ACCESS_TEMPLATE_RAW: &str = include_str!("../templates/admin/user_access.html");
 const GROUPS_TEMPLATE_RAW: &str = include_str!("../templates/admin/groups.html");
+const SIMULATOR_TEMPLATE_RAW: &str = include_str!("../templates/admin/simulator.html");
 const HTMX_JS: &[u8] = include_bytes!("admin/static/htmx.min.js");
 const PICO_CSS: &[u8] = include_bytes!("admin/static/pico.min.css");
 const ADMIN_LIST_LIMIT: usize = 100;
@@ -106,6 +107,8 @@ pub(crate) fn routes() -> Router<AppState> {
         )
         .route("/admin/groups/nests/add", post(handle_group_nest_add))
         .route("/admin/groups/nests/remove", post(handle_group_nest_remove))
+        .route("/admin/simulator", get(handle_simulator))
+        .route("/admin/simulator", post(handle_simulator_check))
         .route("/admin/static/htmx.min.js", get(handle_htmx))
         .route("/admin/static/pico.min.css", get(handle_pico))
 }
@@ -218,6 +221,18 @@ struct GroupNestForm {
     parent_group: String,
     #[serde(default)]
     member_group: String,
+}
+
+#[derive(Deserialize)]
+struct SimulatorForm {
+    #[serde(default)]
+    csrf_token: String,
+    #[serde(default)]
+    user: String,
+    #[serde(default)]
+    resource: String,
+    #[serde(default)]
+    action: String,
 }
 
 async fn handle_dashboard(
@@ -408,6 +423,64 @@ async fn handle_groups(
         csrf_token: &csrf_token,
         flash: "",
         allow_group_nesting: state.cfg.admin.allow_group_nesting,
+    })
+}
+
+async fn handle_simulator(
+    State(state): State<AppState>,
+    Query(query): Query<LangQuery>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let lang = resolve_lang(&headers, query.lang.as_deref());
+    let csrf_token = match create_admin_csrf(&state, &session).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    render_template(SimulatorTemplate {
+        active: "simulator",
+        lang: lang.as_str(),
+        csrf_token: &csrf_token,
+        input_user: "",
+        input_resource: "",
+        input_action: "read",
+        result: SimulatorResultView::default(),
+        flash: "",
+    })
+}
+
+async fn handle_simulator_check(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<SimulatorForm>,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    let lang = resolve_lang(&headers, None);
+    let csrf_token = match create_admin_csrf(&state, &session).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let result = simulator_result(&state, &form, lang.as_str()).await;
+    render_template(SimulatorTemplate {
+        active: "simulator",
+        lang: lang.as_str(),
+        csrf_token: &csrf_token,
+        input_user: form.user.trim(),
+        input_resource: form.resource.trim(),
+        input_action: form.action.trim(),
+        result,
+        flash: "",
     })
 }
 
@@ -943,6 +1016,25 @@ struct GroupLinkRow {
     description: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SimulatorResultView {
+    present: bool,
+    status: String,
+    detail: String,
+    user: String,
+    resource_id: String,
+    action: String,
+    repository_note: String,
+    evidence: Vec<GrantEvidenceRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GrantEvidenceRow {
+    subject: String,
+    role: String,
+    path: String,
+}
+
 impl From<model::User> for UserRow {
     fn from(user: model::User) -> Self {
         let id_path = encode_path_segment(&user.id);
@@ -1038,6 +1130,183 @@ async fn render_groups_page(
         flash,
         allow_group_nesting: state.cfg.admin.allow_group_nesting,
     })
+}
+
+async fn simulator_result(
+    state: &AppState,
+    form: &SimulatorForm,
+    lang: &str,
+) -> SimulatorResultView {
+    let action = form.action.trim();
+    if action.is_empty() {
+        return simulator_error(
+            lang,
+            CoreError::InvalidArgument("action must not be empty".to_owned()),
+            "admin.simulator.error_invalid_input",
+        );
+    }
+    let user = match resolve_simulator_user(state, &form.user).await {
+        Ok(user) => user,
+        Err(CoreError::NotFound) => {
+            return simulator_error(
+                lang,
+                CoreError::NotFound,
+                "admin.simulator.error_user_not_found",
+            );
+        }
+        Err(err) => return simulator_error(lang, err, "admin.simulator.error_user"),
+    };
+    let resource_id = match resolve_simulator_resource_id(state, &form.resource).await {
+        Ok(resource_id) => resource_id,
+        Err(err) => return simulator_error(lang, err, "admin.simulator.error_resource"),
+    };
+    let decision = state
+        .services
+        .permissions
+        .can_access(&user.id, &resource_id, action)
+        .await;
+    let mut evidence = Vec::new();
+    let mut repository_note = String::new();
+    match state
+        .services
+        .grants
+        .grants_for_user_on_repository(&user.id, &resource_id, state.cfg.admin.allow_group_nesting)
+        .await
+    {
+        Ok(rows) => {
+            evidence = rows
+                .into_iter()
+                .map(|grant| GrantEvidenceRow {
+                    subject: format!("{}:{}", grant.subject_type, grant.subject_name),
+                    role: grant.role,
+                    path: grant.path,
+                })
+                .collect();
+        }
+        Err(CoreError::NotFound) => {
+            repository_note = translate(lang, "admin.simulator.repository_not_found");
+        }
+        Err(err) => {
+            repository_note = format!(
+                "{}: {}",
+                translate(lang, "admin.simulator.error_evidence"),
+                core_error_display(&err)
+            );
+        }
+    }
+
+    let (status, detail) = match decision {
+        Ok(true) => (
+            translate(lang, "admin.simulator.status_allow"),
+            String::new(),
+        ),
+        Ok(false) => (
+            translate(lang, "admin.simulator.status_deny"),
+            String::new(),
+        ),
+        Err(err) => (
+            translate(lang, "admin.simulator.status_error"),
+            format!(
+                "{}: {}",
+                translate(lang, "admin.simulator.error_policy"),
+                core_error_display(&err)
+            ),
+        ),
+    };
+    SimulatorResultView {
+        present: true,
+        status,
+        detail,
+        user: user.email,
+        resource_id,
+        action: action.to_owned(),
+        repository_note,
+        evidence,
+    }
+}
+
+async fn resolve_simulator_user(state: &AppState, value: &str) -> Result<model::User, CoreError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(CoreError::InvalidArgument(
+            "user must not be empty".to_owned(),
+        ));
+    }
+    if let Ok(user) = state.services.accounts.user_by_id(value).await {
+        return Ok(user);
+    }
+    let normalized = model::normalize_email(value);
+    let candidates = state
+        .services
+        .accounts
+        .list_users(model::UserListFilter {
+            query: value.to_owned(),
+            limit: ADMIN_LIST_LIMIT,
+        })
+        .await?;
+    candidates
+        .into_iter()
+        .find(|user| user.id == value || model::normalize_email(&user.email) == normalized)
+        .ok_or(CoreError::NotFound)
+}
+
+async fn resolve_simulator_resource_id(state: &AppState, value: &str) -> Result<String, CoreError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(CoreError::InvalidArgument(
+            "resource must not be empty".to_owned(),
+        ));
+    }
+    if let Ok(resource) = state.services.resources.get_by_name(value).await {
+        return Ok(resource.resource_id);
+    }
+    let resource_id = if value.starts_with("urc-") {
+        value.to_owned()
+    } else {
+        format!("urc-{value}")
+    };
+    match state
+        .services
+        .resources
+        .get_by_resource_id(&resource_id)
+        .await
+    {
+        Ok(resource) => Ok(resource.resource_id),
+        Err(CoreError::NotFound) => Ok(resource_id),
+        Err(err) => Err(err),
+    }
+}
+
+fn simulator_error(lang: &str, err: CoreError, message_key: &str) -> SimulatorResultView {
+    SimulatorResultView {
+        present: true,
+        status: translate(lang, "admin.simulator.status_error"),
+        detail: format!(
+            "{}: {}",
+            translate(lang, message_key),
+            core_error_display(&err)
+        ),
+        ..SimulatorResultView::default()
+    }
+}
+
+fn core_error_display(err: &CoreError) -> String {
+    let kind = match err {
+        CoreError::NotFound => "NotFound",
+        CoreError::AuthSessionNotFound => "AuthSessionNotFound",
+        CoreError::InvalidArgument(_) => "InvalidArgument",
+        CoreError::Unauthenticated => "Unauthenticated",
+        CoreError::PermissionDenied => "PermissionDenied",
+        CoreError::Unsupported => "Unsupported",
+        CoreError::SigningKeyUnavailable => "SigningKeyUnavailable",
+        CoreError::TokenIssueFailed => "TokenIssueFailed",
+        CoreError::DeviceInvalidCode => "DeviceInvalidCode",
+        CoreError::DeviceExpiredCode => "DeviceExpiredCode",
+        CoreError::DeviceAuthorizationNotPending => "DeviceAuthorizationNotPending",
+        CoreError::DeviceIncompleteAuthorization => "DeviceIncompleteAuthorization",
+        CoreError::AdminAuditFailed(_) => "AdminAuditFailed",
+    };
+    format!("{kind}: {err}")
 }
 
 async fn validate_admin_disable_target(
@@ -1383,6 +1652,25 @@ impl GroupsTemplate<'_> {
     }
 }
 
+#[derive(Template)]
+#[template(path = "admin/simulator.html")]
+struct SimulatorTemplate<'a> {
+    active: &'a str,
+    lang: &'a str,
+    csrf_token: &'a str,
+    input_user: &'a str,
+    input_resource: &'a str,
+    input_action: &'a str,
+    result: SimulatorResultView,
+    flash: &'a str,
+}
+
+impl SimulatorTemplate<'_> {
+    fn t(&self, key: &str) -> String {
+        translate(self.lang, key)
+    }
+}
+
 fn translate(lang: &str, key: &str) -> String {
     dictionary(lang)
         .get(key)
@@ -1442,6 +1730,7 @@ fn template_i18n_keys() -> BTreeSet<String> {
         USERS_TABLE_TEMPLATE_RAW,
         USER_ACCESS_TEMPLATE_RAW,
         GROUPS_TEMPLATE_RAW,
+        SIMULATOR_TEMPLATE_RAW,
     ] {
         let mut rest = source;
         while let Some((_, tail)) = rest.split_once("t(\"") {

@@ -1,7 +1,7 @@
 //! In-memory adapter used by Rust core and adapter tests.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -12,10 +12,10 @@ use lore_auth_core::{
     model::{
         AddInvitationInput, AddUserInput, AdminAuditEntry, AuthSession, AuthnTokenInput,
         AuthzTokenInput, BrowserSession, CreateDeviceAuthorizationInput, DeviceAuthorization,
-        ExternalIdentity, Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult,
-        LoginResolutionRequest, LoginState, LoginStateInput, LoginTrustPolicy, Resource,
-        ResourceFilter, ResourcePermission, SignedToken, TokenPrincipal, User, UserListFilter,
-        VerifiedToken, VerifyOptions,
+        ExternalIdentity, Grant, GrantEvidence, Group, IdentityInvitation, IssuedToken,
+        LoginBindingResult, LoginResolutionRequest, LoginState, LoginStateInput, LoginTrustPolicy,
+        Resource, ResourceFilter, ResourcePermission, SignedToken, TokenPrincipal, User,
+        UserListFilter, VerifiedToken, VerifyOptions,
     },
     ports::{
         AccountDirectory, AccountQuery, AdminAuditLog, AdminWritePortFactory, AdminWritePorts,
@@ -1164,6 +1164,17 @@ impl GrantQuery for AuditedStore {
     async fn list_grants(&self, repo: &str) -> Result<Vec<Grant>, CoreError> {
         self.inner.list_grants(repo).await
     }
+
+    async fn grants_for_user_on_repository(
+        &self,
+        user_id: &str,
+        resource_id: &str,
+        include_nested_groups: bool,
+    ) -> Result<Vec<GrantEvidence>, CoreError> {
+        self.inner
+            .grants_for_user_on_repository(user_id, resource_id, include_nested_groups)
+            .await
+    }
 }
 
 #[async_trait]
@@ -1611,6 +1622,72 @@ impl GrantQuery for Store {
         });
         Ok(out)
     }
+
+    async fn grants_for_user_on_repository(
+        &self,
+        user_id: &str,
+        resource_id: &str,
+        include_nested_groups: bool,
+    ) -> Result<Vec<GrantEvidence>, CoreError> {
+        let state = self.lock();
+        let resource_id = resolve_exact_resource_id(&state, resource_id)?;
+        let user = state
+            .users
+            .get(user_id)
+            .filter(|user| user.status != "deleted")
+            .ok_or(CoreError::NotFound)?;
+        let user_label = if user.email.trim().is_empty() {
+            user.id.clone()
+        } else {
+            user.email.clone()
+        };
+        let mut out = Vec::new();
+        if let Some(resources) = state.grants.get(&("user".to_owned(), user_id.to_owned()))
+            && let Some(role) = resources.get(&resource_id)
+        {
+            out.push(GrantEvidence {
+                subject_type: "user".to_owned(),
+                subject_id: user_id.to_owned(),
+                subject_name: user_label.clone(),
+                role: role.clone(),
+                path: format!("user:{user_label} -> grant"),
+            });
+        }
+        for (group_id, group_path) in group_paths_for_user(&state, user_id, include_nested_groups) {
+            if let Some(resources) = state.grants.get(&("group".to_owned(), group_id.clone()))
+                && let Some(role) = resources.get(&resource_id)
+            {
+                let subject_name = state
+                    .groups
+                    .values()
+                    .find(|group| group.id == group_id)
+                    .map(|group| group.name.clone())
+                    .unwrap_or_else(|| group_id.clone());
+                out.push(GrantEvidence {
+                    subject_type: "group".to_owned(),
+                    subject_id: group_id,
+                    subject_name,
+                    role: role.clone(),
+                    path: format!("user:{user_label} -> {group_path} -> grant"),
+                });
+            }
+        }
+        out.sort_by(|left, right| {
+            (
+                left.path.as_str(),
+                left.subject_type.as_str(),
+                left.subject_id.as_str(),
+                left.role.as_str(),
+            )
+                .cmp(&(
+                    right.path.as_str(),
+                    right.subject_type.as_str(),
+                    right.subject_id.as_str(),
+                    right.role.as_str(),
+                ))
+        });
+        Ok(out)
+    }
 }
 
 #[async_trait]
@@ -1688,6 +1765,19 @@ fn resolve_resource_id_for_repo(state: &State, repo: &str) -> Result<String, Cor
         .ok_or(CoreError::NotFound)
 }
 
+fn resolve_exact_resource_id(state: &State, resource_id: &str) -> Result<String, CoreError> {
+    let repository_id =
+        lore_auth_core::model::ResourceID::repository_id_from_resource_id(resource_id.trim());
+    let resource_id = lore_auth_core::model::ResourceID::for_repository_id(&repository_id)
+        .ok_or_else(|| CoreError::InvalidArgument("resource_id must not be empty".to_owned()))?;
+    state
+        .resources
+        .get(&resource_id)
+        .filter(|resource| resource.status != "deleted")
+        .map(|resource| resource.resource_id.clone())
+        .ok_or(CoreError::NotFound)
+}
+
 fn repository_pk_for_resource_id(state: &State, resource_id: &str) -> Option<String> {
     state
         .resources
@@ -1750,6 +1840,47 @@ fn grant_subject_keys_for_user(state: &State, user_id: &str) -> Vec<(String, Str
             .map(|group_id| ("group".to_owned(), group_id)),
     );
     out
+}
+
+fn group_paths_for_user(
+    state: &State,
+    user_id: &str,
+    include_nested_groups: bool,
+) -> HashMap<String, String> {
+    let mut paths = HashMap::<String, String>::new();
+    let mut queue = VecDeque::new();
+    for group_id in direct_group_ids_for_user(state, user_id) {
+        let label = group_label(state, &group_id);
+        if paths.insert(group_id.clone(), label).is_none() {
+            queue.push_back(group_id);
+        }
+    }
+    if !include_nested_groups {
+        return paths;
+    }
+    while let Some(child_group_id) = queue.pop_front() {
+        let Some(child_path) = paths.get(&child_group_id).cloned() else {
+            continue;
+        };
+        for (parent_group_id, member_group_ids) in &state.group_groups {
+            if !member_group_ids.contains(&child_group_id) || paths.contains_key(parent_group_id) {
+                continue;
+            }
+            let path = format!("{child_path} -> {}", group_label(state, parent_group_id));
+            paths.insert(parent_group_id.clone(), path);
+            queue.push_back(parent_group_id.clone());
+        }
+    }
+    paths
+}
+
+fn group_label(state: &State, group_id: &str) -> String {
+    state
+        .groups
+        .values()
+        .find(|group| group.id == group_id)
+        .map(|group| group.name.clone())
+        .unwrap_or_else(|| group_id.to_owned())
 }
 
 fn direct_group_ids_for_user(state: &State, user_id: &str) -> HashSet<String> {

@@ -195,6 +195,15 @@ pub struct Grant {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GrantEvidence {
+    pub subject_type: String,
+    pub subject_id: String,
+    pub subject_name: String,
+    pub role: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AdminAuditEntry {
     pub id: String,
     pub actor: String,

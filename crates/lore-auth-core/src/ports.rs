@@ -283,6 +283,20 @@ pub trait GroupAdmin: Send + Sync {
 #[async_trait]
 pub trait GrantQuery: Send + Sync {
     async fn list_grants(&self, repo: &str) -> Result<Vec<model::Grant>, CoreError>;
+
+    /// Lists grants that can affect `user_id` on an active resolved resource ID.
+    ///
+    /// `resource_id` must be the already resolved `urc-*` ID used for
+    /// `AuthorizationPolicy::can_access`; implementations must not reinterpret
+    /// ambiguous user input here. When `include_nested_groups` is false, only
+    /// direct `group_members` memberships are considered, matching the SQL
+    /// authorization backend.
+    async fn grants_for_user_on_repository(
+        &self,
+        user_id: &str,
+        resource_id: &str,
+        include_nested_groups: bool,
+    ) -> Result<Vec<model::GrantEvidence>, CoreError>;
 }
 
 #[async_trait]

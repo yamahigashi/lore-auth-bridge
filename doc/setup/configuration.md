@@ -2,7 +2,7 @@
 
 [日本語](configuration.ja.md)
 
-`lore-auth.yaml` configures the bridge HTTP server, gRPC server, DB, JWT settings, Lore integration, and login method.
+`lore-auth.yaml` configures the bridge HTTP server, gRPC server, DB, JWT settings, Lore integration, login method, and admin UI.
 
 This page explains each setting.
 
@@ -44,11 +44,9 @@ database:
 
 `path` is the SQLite database path.
 
-The database stores users, groups, repositories, grants, auth sessions, issued tokens, and signing key metadata.
+The database stores users, groups, repositories, grants, auth sessions, issued tokens, signing key metadata, and admin audit entries.
 
-The schema also contains an `audit_events` table, but the current implementation does not record administrative actions or token issuance as audit events.
-
-If an operation requires auditing, provide separate records through a reverse proxy, systemd journal, SQLite backups, CLI execution logs, or another operational log.
+Admin UI and `lore-authctl` mutations are recorded in `admin_audit`.
 
 ## authz
 
@@ -118,6 +116,24 @@ In the Hands-on Quickstart setup, use `https://localhost:8081`.
 
 Do not use `ucs-auth://...` in this field.
 
+## admin
+
+```yaml
+admin:
+  admin_emails:
+    - "admin@example.com"
+```
+
+`admin_emails` enables the `/admin` Web UI and defines the allowed admin email addresses.
+
+When this list is omitted or empty, `/admin` is not mounted and returns 404.
+
+Admins sign in through the configured OIDC login flow first, then open `/admin`.
+
+The addresses are normalized before comparison.
+
+See [Admin Web UI](admin-ui.md) for the operational flow and security notes.
+
 ## security
 
 ```yaml
@@ -125,6 +141,8 @@ security:
   device_code_ttl_seconds: 600
   device_poll_interval_seconds: 3
   session_ttl_seconds: 3600
+  admin_allowed_peer_cidrs:
+    - "127.0.0.1/32"
   rebac_allowed_peer_cidrs:
     - "127.0.0.1/32"
     - "::1/128"
@@ -153,6 +171,14 @@ This check uses the TCP peer as seen directly by the bridge.
 If a public reverse proxy forwards traffic to a loopback bridge listener, the peer seen by the bridge is the proxy.
 
 In that topology, also restrict `/ucs.auth.RebacApi/*` at the reverse proxy to traffic from `loreserver`.
+
+`admin_allowed_peer_cidrs` is an optional second-layer peer allowlist for `/admin`.
+
+When it is set, admin routes return 404 unless the immediate TCP peer is inside the list.
+
+Behind a reverse proxy, allow the proxy address and enforce the public admin source policy at the proxy.
+
+The bridge does not trust `X-Forwarded-For` for this check.
 
 Configure rate limiting for public endpoints at the reverse proxy or load balancer.
 

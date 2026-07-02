@@ -568,6 +568,7 @@ async fn admin_read_pages_share_guard_and_render_for_admin() {
         "/admin/repositories",
         "/admin/users",
         "/admin/groups",
+        "/admin/simulator",
         &format!("/admin/users/{}/access", user.id),
     ] {
         let unauthenticated = app
@@ -588,6 +589,280 @@ async fn admin_read_pages_share_guard_and_render_for_admin() {
             .expect("admin page response");
         assert_eq!(admin.status(), StatusCode::OK, "{path}");
     }
+}
+
+#[tokio::test]
+async fn admin_simulator_posts_real_policy_result_and_sql_evidence() {
+    let fixture = new_sqlite_rebac_admin_app().await;
+    let store = fixture.store.clone();
+    let artists = store
+        .add_group("artists", "Art team")
+        .await
+        .expect("add artists");
+    let riggers = store.add_group("riggers", "").await.expect("add riggers");
+    store
+        .add_group_member("riggers", &fixture.user_id)
+        .await
+        .expect("add user to child group");
+    store
+        .add_group_group(&artists.id, &riggers.id)
+        .await
+        .expect("nest riggers under artists");
+    store
+        .add_grant("group", &artists.id, "game-assets", "reader")
+        .await
+        .expect("add group grant");
+
+    let csrf = admin_csrf(
+        fixture.app.clone(),
+        &fixture.admin_cookie,
+        "/admin/simulator",
+    )
+    .await;
+    let allow = fixture
+        .app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            Some(fixture.admin_cookie.clone()),
+            &format!("csrf_token={csrf}&user=alice@example.com&resource=game-assets&action=read"),
+        ))
+        .await
+        .expect("simulator allow response");
+    assert_eq!(allow.status(), StatusCode::OK);
+    let body = response_text(allow).await;
+    assert!(body.contains("Allow"), "{body}");
+    assert!(body.contains("alice@example.com"), "{body}");
+    assert!(body.contains("urc-repo-id"), "{body}");
+    assert!(body.contains("writer"), "{body}");
+    assert!(body.contains("reader"), "{body}");
+    assert!(body.contains("riggers"), "{body}");
+    assert!(body.contains("artists"), "{body}");
+
+    let csrf = admin_csrf(
+        fixture.app.clone(),
+        &fixture.admin_cookie,
+        "/admin/simulator",
+    )
+    .await;
+    let deny = fixture
+        .app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            Some(fixture.admin_cookie.clone()),
+            &format!("csrf_token={csrf}&user=alice@example.com&resource=game-assets&action=admin"),
+        ))
+        .await
+        .expect("simulator deny response");
+    assert_eq!(deny.status(), StatusCode::OK);
+    let body = response_text(deny).await;
+    assert!(body.contains("Deny"), "{body}");
+
+    let csrf = admin_csrf(
+        fixture.app.clone(),
+        &fixture.admin_cookie,
+        "/admin/simulator",
+    )
+    .await;
+    let missing = fixture
+        .app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            Some(fixture.admin_cookie.clone()),
+            &format!("csrf_token={csrf}&user=alice@example.com&resource=missing&action=read"),
+        ))
+        .await
+        .expect("simulator missing response");
+    assert_eq!(missing.status(), StatusCode::OK);
+    let body = response_text(missing).await;
+    assert!(body.contains("NotFound"), "{body}");
+    assert!(body.contains("not found or inactive"), "{body}");
+    assert!(
+        store
+            .list_admin_audit()
+            .await
+            .expect("list admin audit")
+            .is_empty(),
+        "simulator must not write admin_audit"
+    );
+
+    let (_unused_app, invalid_store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            ..AdminConfig::default()
+        },
+    );
+    let invalid_cookie = admin_session_cookie(&invalid_store).await;
+    let invalid_user = invalid_store.add_test_user(User {
+        email: "alice@example.com".to_owned(),
+        display_name: "Alice".to_owned(),
+        ..User::default()
+    });
+    invalid_store.add_test_resource(Resource {
+        name: "game-assets".to_owned(),
+        lore_repository_id: "repo-id".to_owned(),
+        resource_id: ResourceID::for_repository_id("repo-id").expect("resource id"),
+        status: "active".to_owned(),
+        ..Resource::default()
+    });
+    let invalid_app = admin_app_with_custom_ports(
+        invalid_store.clone(),
+        invalid_store.clone(),
+        Arc::new(PermissionService::new(
+            invalid_store.clone(),
+            Arc::new(FailingInvalidRoleAuthz),
+        )),
+    );
+    let csrf = admin_csrf(invalid_app.clone(), &invalid_cookie, "/admin/simulator").await;
+    let invalid = invalid_app
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            Some(invalid_cookie),
+            &format!(
+                "csrf_token={csrf}&user={}&resource=game-assets&action=read",
+                invalid_user.id
+            ),
+        ))
+        .await
+        .expect("simulator invalid role response");
+    assert_eq!(invalid.status(), StatusCode::OK);
+    let body = response_text(invalid).await;
+    assert!(body.contains("InvalidArgument"), "{body}");
+    assert!(body.contains("typo-role"), "{body}");
+}
+
+#[tokio::test]
+async fn admin_simulator_evidence_matches_configured_backend_nesting() {
+    let sql_fixture = new_sqlite_sql_admin_app().await;
+    add_nested_only_fixture(&sql_fixture).await;
+    let csrf = admin_csrf(
+        sql_fixture.app.clone(),
+        &sql_fixture.admin_cookie,
+        "/admin/simulator",
+    )
+    .await;
+    let sql_response = sql_fixture
+        .app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            Some(sql_fixture.admin_cookie.clone()),
+            &format!("csrf_token={csrf}&user=alice@example.com&resource=nested-only&action=read"),
+        ))
+        .await
+        .expect("sql simulator response");
+    assert_eq!(sql_response.status(), StatusCode::OK);
+    let body = response_text(sql_response).await;
+    assert!(body.contains("Deny"), "{body}");
+    assert!(!body.contains("artists"), "{body}");
+    assert!(!body.contains("riggers"), "{body}");
+
+    let rebac_fixture = new_sqlite_rebac_admin_app().await;
+    add_nested_only_fixture(&rebac_fixture).await;
+    let csrf = admin_csrf(
+        rebac_fixture.app.clone(),
+        &rebac_fixture.admin_cookie,
+        "/admin/simulator",
+    )
+    .await;
+    let rebac_response = rebac_fixture
+        .app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            Some(rebac_fixture.admin_cookie.clone()),
+            &format!("csrf_token={csrf}&user=alice@example.com&resource=nested-only&action=read"),
+        ))
+        .await
+        .expect("rebac simulator response");
+    assert_eq!(rebac_response.status(), StatusCode::OK);
+    let body = response_text(rebac_response).await;
+    assert!(body.contains("Allow"), "{body}");
+    assert!(body.contains("reader"), "{body}");
+    assert!(body.contains("artists"), "{body}");
+    assert!(body.contains("riggers"), "{body}");
+}
+
+#[tokio::test]
+async fn admin_simulator_uses_resolved_resource_for_evidence_when_names_collide() {
+    let fixture = new_sqlite_sql_admin_app().await;
+    let store = fixture.store.clone();
+    store
+        .upsert(Resource {
+            name: "shared".to_owned(),
+            remote_url: "lore://repo-a".to_owned(),
+            lore_repository_id: "repo-a".to_owned(),
+            resource_id: ResourceID::for_repository_id("repo-a").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo a");
+    store
+        .upsert(Resource {
+            name: "repo-b".to_owned(),
+            remote_url: "lore://repo-b".to_owned(),
+            lore_repository_id: "shared".to_owned(),
+            resource_id: ResourceID::for_repository_id("shared").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo b");
+    store
+        .add_grant("user", &fixture.user_id, "shared", "reader")
+        .await
+        .expect("add repo a reader");
+    store
+        .add_grant("user", &fixture.user_id, "repo-b", "writer")
+        .await
+        .expect("add repo b writer");
+
+    let csrf = admin_csrf(
+        fixture.app.clone(),
+        &fixture.admin_cookie,
+        "/admin/simulator",
+    )
+    .await;
+    let response = fixture
+        .app
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            Some(fixture.admin_cookie),
+            &format!("csrf_token={csrf}&user=alice@example.com&resource=shared&action=write"),
+        ))
+        .await
+        .expect("simulator collision response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await;
+    assert!(body.contains("Deny"), "{body}");
+    assert!(body.contains("urc-repo-a"), "{body}");
+    assert!(body.contains("reader"), "{body}");
+    assert!(!body.contains("writer"), "{body}");
+}
+
+#[tokio::test]
+async fn admin_simulator_localizes_missing_user_error() {
+    let fixture = new_sqlite_sql_admin_app().await;
+    let cookie = format!("{}; admin_lang=ja", fixture.admin_cookie);
+    let csrf = admin_csrf(fixture.app.clone(), &cookie, "/admin/simulator").await;
+    let response = fixture
+        .app
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            Some(cookie),
+            &format!("csrf_token={csrf}&user=missing@example.com&resource=game-assets&action=read"),
+        ))
+        .await
+        .expect("simulator missing user response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await;
+    assert!(body.contains("エラー"), "{body}");
+    assert!(body.contains("ユーザーが見つかりません"), "{body}");
+    assert!(body.contains("NotFound"), "{body}");
 }
 
 #[tokio::test]
@@ -957,6 +1232,28 @@ async fn admin_post_routes_hide_unauthenticated_requests_and_require_csrf() {
         .expect("repo add invalid csrf response");
     assert_eq!(repo_add_invalid.status(), StatusCode::FORBIDDEN);
 
+    let simulator_missing = app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            Some(admin_cookie.clone()),
+            "user=alice@example.com&resource=game-assets&action=read",
+        ))
+        .await
+        .expect("simulator missing csrf response");
+    assert_eq!(simulator_missing.status(), StatusCode::FORBIDDEN);
+
+    let simulator_unauthenticated = app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/simulator",
+            None,
+            "%not-form-urlencoded",
+        ))
+        .await
+        .expect("simulator unauthenticated response");
+    assert_eq!(simulator_unauthenticated.status(), StatusCode::NOT_FOUND);
+
     let csrf = admin_csrf(app.clone(), &admin_cookie, "/admin/groups").await;
     let valid = app
         .oneshot(post_form_request(
@@ -1308,6 +1605,7 @@ async fn admin_session_cookie(store: &memory::Store) -> String {
 
 struct SqliteAdminApp {
     app: Router,
+    store: Arc<sqlite::Store>,
     admin_cookie: String,
     user_id: String,
     _dir: TestDir,
@@ -1335,6 +1633,14 @@ impl Drop for TestDir {
 }
 
 async fn new_sqlite_rebac_admin_app() -> SqliteAdminApp {
+    new_sqlite_admin_app(true).await
+}
+
+async fn new_sqlite_sql_admin_app() -> SqliteAdminApp {
+    new_sqlite_admin_app(false).await
+}
+
+async fn new_sqlite_admin_app(use_rebac: bool) -> SqliteAdminApp {
     let dir = TestDir::new();
     let path = dir.path.join("auth.sqlite3");
     let store = Arc::new(sqlite::Store::open(&path).await.expect("open sqlite"));
@@ -1373,8 +1679,11 @@ async fn new_sqlite_rebac_admin_app() -> SqliteAdminApp {
         .expect("add grant");
 
     let resource_store: Arc<dyn ResourceStore> = store.clone();
-    let authz_policy: Arc<dyn AuthorizationPolicy> =
-        Arc::new(authz::RebacAuthorizationPolicy::from_store(store.as_ref()).expect("rebac authz"));
+    let authz_policy: Arc<dyn AuthorizationPolicy> = if use_rebac {
+        Arc::new(authz::RebacAuthorizationPolicy::from_store(store.as_ref()).expect("rebac authz"))
+    } else {
+        store.clone()
+    };
     let signer_store = Arc::new(memory::Store::new());
     let tokens = Arc::new(TokenService::new(
         TokenConfig {
@@ -1401,6 +1710,7 @@ async fn new_sqlite_rebac_admin_app() -> SqliteAdminApp {
             session_ttl: Duration::from_secs(60 * 60),
             admin: AdminConfig {
                 admin_emails: vec!["admin@example.com".to_owned()],
+                allow_group_nesting: use_rebac,
                 ..AdminConfig::default()
             },
         },
@@ -1421,10 +1731,42 @@ async fn new_sqlite_rebac_admin_app() -> SqliteAdminApp {
 
     SqliteAdminApp {
         app,
+        store,
         admin_cookie: format!("{SESSION_COOKIE_NAME}={}", admin_session.id),
         user_id: alice.id,
         _dir: dir,
     }
+}
+
+async fn add_nested_only_fixture(fixture: &SqliteAdminApp) {
+    let store = fixture.store.clone();
+    let artists = store
+        .add_group("artists", "Art team")
+        .await
+        .expect("add artists");
+    let riggers = store.add_group("riggers", "").await.expect("add riggers");
+    store
+        .add_group_member("riggers", &fixture.user_id)
+        .await
+        .expect("add user to riggers");
+    store
+        .add_group_group(&artists.id, &riggers.id)
+        .await
+        .expect("nest riggers under artists");
+    store
+        .upsert(Resource {
+            name: "nested-only".to_owned(),
+            remote_url: "lore://nested".to_owned(),
+            lore_repository_id: "nested-only".to_owned(),
+            resource_id: ResourceID::for_repository_id("nested-only").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert nested repo");
+    store
+        .add_grant("group", &artists.id, "nested-only", "reader")
+        .await
+        .expect("add nested-only group grant");
 }
 
 fn admin_app_with_custom_ports(
@@ -1560,6 +1902,30 @@ impl AuthorizationPolicy for FailingAuthz {
         _filter: model::ResourceFilter,
     ) -> Result<Vec<model::ResourcePermission>, CoreError> {
         Err(CoreError::Unsupported)
+    }
+}
+
+struct FailingInvalidRoleAuthz;
+
+#[async_trait]
+impl AuthorizationPolicy for FailingInvalidRoleAuthz {
+    async fn can_access(
+        &self,
+        _user_id: &str,
+        _resource_id: &str,
+        _action: &str,
+    ) -> Result<bool, CoreError> {
+        Err(CoreError::InvalidArgument(
+            "unknown grant role \"typo-role\"".to_owned(),
+        ))
+    }
+
+    async fn list_accessible(
+        &self,
+        _user_id: &str,
+        _filter: model::ResourceFilter,
+    ) -> Result<Vec<model::ResourcePermission>, CoreError> {
+        Ok(Vec::new())
     }
 }
 

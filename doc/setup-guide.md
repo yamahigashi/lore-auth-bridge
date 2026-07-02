@@ -2,7 +2,7 @@
 
 [日本語](setup-guide.ja.md)
 
-This guide covers `lore-auth-bridge` configuration, TLS/JWKS setup, `loreserver` integration, and administrative CLI usage.
+This guide covers `lore-auth-bridge` configuration, TLS/JWKS setup, `loreserver` integration, administrative CLI usage, and the admin Web UI.
 
 `lore-auth-bridge` is a bridge that implements Lore's `UrcAuthApi` and `RebacApi`.
 
@@ -19,6 +19,7 @@ Read these pages first to understand the full setup:
 3. [Signing Keys](setup/signing-keys.md)
 4. [Loreserver](setup/loreserver.md)
 5. [Authctl](setup/authctl.md)
+6. [Admin Web UI](setup/admin-ui.md)
 
 If you use IdP integration, also read:
 

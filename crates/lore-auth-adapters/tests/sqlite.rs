@@ -609,6 +609,199 @@ async fn group_and_grant_crud_updates_authorization() {
 }
 
 #[tokio::test]
+async fn sqlite_grant_query_lists_direct_and_nested_group_evidence() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    let artists = store
+        .add_group("artists", "Art team")
+        .await
+        .expect("add artists");
+    let riggers = store.add_group("riggers", "").await.expect("add riggers");
+    store
+        .add_group_member("riggers", &user.id)
+        .await
+        .expect("add user to child group");
+    store
+        .add_group_group(&artists.id, &riggers.id)
+        .await
+        .expect("nest riggers under artists");
+    store
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: ResourceID::for_repository_id("repo-id").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo");
+    store
+        .add_grant("user", &user.id, "game-assets", "writer")
+        .await
+        .expect("add direct grant");
+    store
+        .add_grant("group", &artists.id, "game-assets", "reader")
+        .await
+        .expect("add group grant");
+
+    let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
+    let evidence = store
+        .grants_for_user_on_repository(&user.id, &resource_id, true)
+        .await
+        .expect("list grant evidence");
+
+    assert_eq!(evidence.len(), 2);
+    assert!(
+        evidence.iter().any(|grant| grant.subject_type == "user"
+            && grant.role == "writer"
+            && grant.path.contains("alice@example.com")),
+        "{evidence:?}"
+    );
+    assert!(
+        evidence.iter().any(|grant| grant.subject_type == "group"
+            && grant.role == "reader"
+            && grant.subject_name == "artists"
+            && grant.path.contains("riggers")
+            && grant.path.contains("artists")),
+        "{evidence:?}"
+    );
+    assert!(matches!(
+        store
+            .grants_for_user_on_repository(&user.id, "urc-missing", true)
+            .await,
+        Err(CoreError::NotFound)
+    ));
+
+    let sql_evidence = store
+        .grants_for_user_on_repository(&user.id, &resource_id, false)
+        .await
+        .expect("list sql-compatible grant evidence");
+    assert_eq!(sql_evidence.len(), 1);
+    assert!(
+        sql_evidence
+            .iter()
+            .all(|grant| grant.subject_type != "group"),
+        "{sql_evidence:?}"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_grant_evidence_uses_exact_resolved_resource_id() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    store
+        .upsert(Resource {
+            name: "shared".to_owned(),
+            remote_url: "lore://repo-a".to_owned(),
+            lore_repository_id: "repo-a".to_owned(),
+            resource_id: ResourceID::for_repository_id("repo-a").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo a");
+    store
+        .upsert(Resource {
+            name: "repo-b".to_owned(),
+            remote_url: "lore://repo-b".to_owned(),
+            lore_repository_id: "shared".to_owned(),
+            resource_id: ResourceID::for_repository_id("shared").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo b");
+    store
+        .add_grant("user", &user.id, "shared", "reader")
+        .await
+        .expect("add repo a grant by name");
+    store
+        .add_grant("user", &user.id, "repo-b", "writer")
+        .await
+        .expect("add repo b grant by name");
+
+    let evidence = store
+        .grants_for_user_on_repository(&user.id, "urc-repo-a", true)
+        .await
+        .expect("list repo a evidence");
+
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence[0].role, "reader");
+}
+
+#[tokio::test]
+async fn sqlite_grant_evidence_bounds_diamond_group_paths_to_groups() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    let leaf = store.add_group("leaf", "").await.expect("add leaf");
+    let left = store.add_group("left", "").await.expect("add left");
+    let right = store.add_group("right", "").await.expect("add right");
+    let root = store.add_group("root", "").await.expect("add root");
+    store
+        .add_group_member(&leaf.name, &user.id)
+        .await
+        .expect("add user to leaf");
+    store
+        .add_group_group(&left.id, &leaf.id)
+        .await
+        .expect("left contains leaf");
+    store
+        .add_group_group(&right.id, &leaf.id)
+        .await
+        .expect("right contains leaf");
+    store
+        .add_group_group(&root.id, &left.id)
+        .await
+        .expect("root contains left");
+    store
+        .add_group_group(&root.id, &right.id)
+        .await
+        .expect("root contains right");
+    store
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: ResourceID::for_repository_id("repo-id").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo");
+    for group in [&leaf, &left, &right, &root] {
+        store
+            .add_grant("group", &group.id, "game-assets", "reader")
+            .await
+            .expect("add group grant");
+    }
+
+    let evidence = store
+        .grants_for_user_on_repository(&user.id, "urc-repo-id", true)
+        .await
+        .expect("list diamond evidence");
+
+    assert_eq!(evidence.len(), 4, "{evidence:?}");
+}
+
+#[tokio::test]
 async fn sqlite_grant_resolves_group_name_to_internal_id_before_authorization() {
     let fixture = migrated_store().await;
     let store = &fixture.store;

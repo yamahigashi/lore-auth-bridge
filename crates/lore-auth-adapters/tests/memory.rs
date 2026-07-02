@@ -275,6 +275,86 @@ async fn memory_grant_resolves_user_and_group_subjects_like_sqlite() {
 }
 
 #[tokio::test]
+async fn memory_grant_query_lists_direct_and_nested_group_evidence() {
+    let store = Store::new();
+    let user = store.add_test_user(User {
+        id: "user-1".to_owned(),
+        email: "alice@example.com".to_owned(),
+        status: "active".to_owned(),
+        ..User::default()
+    });
+    let artists = store
+        .add_group("artists", "Art team")
+        .await
+        .expect("add artists");
+    let riggers = store.add_group("riggers", "").await.expect("add riggers");
+    store
+        .add_group_member("riggers", &user.id)
+        .await
+        .expect("add user to child group");
+    store
+        .add_group_group(&artists.id, &riggers.id)
+        .await
+        .expect("nest riggers under artists");
+    let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
+    store.add_test_resource(Resource {
+        name: "game-assets".to_owned(),
+        lore_repository_id: "repo-id".to_owned(),
+        resource_id,
+        status: "active".to_owned(),
+        ..Resource::default()
+    });
+    store
+        .add_grant("user", &user.id, "game-assets", "writer")
+        .await
+        .expect("add direct grant");
+    store
+        .add_grant("group", &artists.id, "game-assets", "reader")
+        .await
+        .expect("add group grant");
+
+    let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
+    let evidence = store
+        .grants_for_user_on_repository(&user.id, &resource_id, true)
+        .await
+        .expect("list grant evidence");
+
+    assert_eq!(evidence.len(), 2);
+    assert!(
+        evidence.iter().any(|grant| grant.subject_type == "user"
+            && grant.role == "writer"
+            && grant.path.contains("alice@example.com")),
+        "{evidence:?}"
+    );
+    assert!(
+        evidence.iter().any(|grant| grant.subject_type == "group"
+            && grant.role == "reader"
+            && grant.subject_name == "artists"
+            && grant.path.contains("riggers")
+            && grant.path.contains("artists")),
+        "{evidence:?}"
+    );
+    assert!(matches!(
+        store
+            .grants_for_user_on_repository(&user.id, "urc-missing", true)
+            .await,
+        Err(CoreError::NotFound)
+    ));
+
+    let sql_evidence = store
+        .grants_for_user_on_repository(&user.id, &resource_id, false)
+        .await
+        .expect("list sql-compatible grant evidence");
+    assert_eq!(sql_evidence.len(), 1);
+    assert!(
+        sql_evidence
+            .iter()
+            .all(|grant| grant.subject_type != "group"),
+        "{sql_evidence:?}"
+    );
+}
+
+#[tokio::test]
 async fn memory_store_resolves_existing_identity_and_email_invitation() {
     let store = Store::new();
     let user = store.add_test_user(User {
