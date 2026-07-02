@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+askama.workspace = true
 axum = "0.7"
 lore-auth-core = { path = "../lore-auth-core" }
 lore-auth-proto = { path = "../lore-auth-proto" }
@@ -15,6 +16,7 @@ percent-encoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_urlencoded.workspace = true
+serde_yaml_ng.workspace = true
 tonic.workspace = true
 tower = { version = "0.5", features = ["util"] }
 url.workspace = true
@@ -22,7 +24,9 @@ uuid.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+hex.workspace = true
 lore-auth-adapters = { path = "../lore-auth-adapters" }
+sha2.workspace = true
 tokio.workspace = true
 
 [lints]

@@ -4,6 +4,9 @@ use std::{
     process::{Command, Output},
 };
 
+use lore_auth_adapters::{config, sqlite::Store};
+use lore_auth_core::ports::GrantAdmin;
+
 fn authctl() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_lore-authctl"))
 }
@@ -84,6 +87,35 @@ fn assert_failure(output: Output) -> (String, String) {
     )
 }
 
+fn list_admin_audit(config: &Path) -> Vec<lore_auth_core::model::AdminAuditEntry> {
+    let cfg = config::load(config).expect("config loads");
+    tokio::runtime::Runtime::new()
+        .expect("tokio runtime")
+        .block_on(async {
+            let store = Store::open(&cfg.database.path).await.expect("open sqlite");
+            store
+                .migrate()
+                .await
+                .expect("migrate sqlite for audit read");
+            store.list_admin_audit().await.expect("list admin audit")
+        })
+}
+
+fn install_admin_audit_failure_trigger(config: &Path) {
+    let cfg = config::load(config).expect("config loads");
+    let conn = rusqlite::Connection::open(&cfg.database.path).expect("open sqlite");
+    conn.execute_batch(
+        r#"
+        CREATE TRIGGER fail_admin_audit
+        BEFORE INSERT ON admin_audit
+        BEGIN
+          SELECT RAISE(FAIL, 'audit offline');
+        END;
+        "#,
+    )
+    .expect("install failing audit trigger");
+}
+
 #[test]
 fn init_invite_repo_grant_and_list_flow() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -142,6 +174,147 @@ fn init_invite_repo_grant_and_list_flow() {
 
     let grants = assert_success(run(&config, &["grant", "list"]));
     assert!(grants.contains("writer"), "{grants}");
+}
+
+#[test]
+fn authctl_grant_add_records_admin_audit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config(dir.path());
+
+    assert_success(run(&config, &["init-db"]));
+    assert_success(run(
+        &config,
+        &["user", "add", "--email", "alice@example.com"],
+    ));
+    assert_success(run(
+        &config,
+        &[
+            "repo",
+            "add",
+            "game-assets",
+            "--remote",
+            "lore://127.0.0.1:41337",
+            "--lore-repository-id",
+            "0194b726b34e72b0b45550b88a967076",
+        ],
+    ));
+
+    assert_success(run(
+        &config,
+        &[
+            "grant",
+            "add",
+            "user:alice@example.com",
+            "game-assets",
+            "writer",
+        ],
+    ));
+
+    let entries = list_admin_audit(&config);
+
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].actor.starts_with("authctl:"), "{entries:?}");
+    assert_eq!(entries[0].action, "grant.add");
+    assert_eq!(entries[0].object_type, "grant");
+    assert!(entries[0].detail.contains("repo=game-assets"));
+}
+
+#[test]
+fn authctl_group_commands_record_admin_audit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config_with_authz(dir.path(), "rebac");
+
+    assert_success(run(&config, &["init-db"]));
+    assert_success(run(
+        &config,
+        &["user", "add", "--email", "alice@example.com"],
+    ));
+    assert_success(run(
+        &config,
+        &["group", "add", "artists", "--description", "Art team"],
+    ));
+    assert_success(run(
+        &config,
+        &["group", "member", "add", "artists", "alice@example.com"],
+    ));
+    assert_success(run(&config, &["group", "add", "leads"]));
+    assert_success(run(&config, &["group", "nest", "add", "leads", "artists"]));
+
+    let entries = list_admin_audit(&config);
+    let actions: Vec<_> = entries.iter().map(|entry| entry.action.as_str()).collect();
+
+    assert_eq!(
+        actions,
+        [
+            "group.add",
+            "group.member.add",
+            "group.add",
+            "group.nest.add"
+        ]
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.actor.starts_with("authctl:"))
+    );
+    assert!(entries.iter().all(|entry| entry.object_type == "group"));
+}
+
+#[test]
+fn authctl_reports_mutation_completed_when_audit_logging_fails() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config(dir.path());
+
+    assert_success(run(&config, &["init-db"]));
+    assert_success(run(
+        &config,
+        &["user", "add", "--email", "alice@example.com"],
+    ));
+    assert_success(run(
+        &config,
+        &[
+            "repo",
+            "add",
+            "game-assets",
+            "--remote",
+            "lore://127.0.0.1:41337",
+            "--lore-repository-id",
+            "0194b726b34e72b0b45550b88a967076",
+        ],
+    ));
+    install_admin_audit_failure_trigger(&config);
+
+    let (_stdout, stderr) = assert_failure(run(
+        &config,
+        &[
+            "grant",
+            "add",
+            "user:alice@example.com",
+            "game-assets",
+            "writer",
+        ],
+    ));
+
+    assert!(
+        stderr.contains("operation succeeded but audit logging failed"),
+        "{stderr}",
+    );
+    assert!(stderr.contains("audit offline"), "{stderr}");
+
+    let cfg = config::load(&config).expect("config loads");
+    tokio::runtime::Runtime::new()
+        .expect("tokio runtime")
+        .block_on(async {
+            let store = Store::open(&cfg.database.path).await.expect("open sqlite");
+            store.migrate().await.expect("migrate sqlite");
+            let user = store
+                .resolve_user("alice@example.com")
+                .await
+                .expect("resolve user");
+            let grants = store.list_grants("game-assets").await.expect("list grants");
+            assert_eq!(grants.len(), 1);
+            assert_eq!(grants[0].subject_id, user.id);
+        });
 }
 
 #[test]

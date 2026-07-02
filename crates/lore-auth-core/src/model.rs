@@ -145,6 +145,11 @@ pub fn token_permissions_for_role(role: &str) -> Option<Vec<Permission>> {
     Role::from_name(role).and_then(Role::token_permissions)
 }
 
+#[must_use]
+pub fn normalize_email(email: &str) -> String {
+    email.trim().to_ascii_lowercase()
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Group {
     pub id: String,
@@ -159,6 +164,17 @@ pub struct Grant {
     pub subject_id: String,
     pub repository_id: String,
     pub role: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdminAuditEntry {
+    pub id: String,
+    pub actor: String,
+    pub action: String,
+    pub object_type: String,
+    pub object_id: String,
+    pub detail: String,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -91,6 +91,13 @@ lore:
   # Use an HTTPS gRPC endpoint here.
   auth_url: "https://auth.example.com"
 
+# Admin Web UI is disabled when admin.admin_emails is omitted or empty.
+# Production deployments should still put /admin behind nginx/caddy and
+# Cloudflare access controls; this in-process guard is not a public edge ACL.
+# admin:
+#   admin_emails:
+#     - "admin@example.com"
+
 security:
   device_code_ttl_seconds: 600
   device_poll_interval_seconds: 3
@@ -102,3 +109,8 @@ security:
   rebac_allowed_peer_cidrs:
     - "127.0.0.1/32"
     - "::1/128"
+  # Optional extra existence-hiding peer allowlist for /admin.
+  # This sees the immediate TCP peer only; do not rely on X-Forwarded-For.
+  # Behind a reverse proxy, enforce the public admin ACL at that proxy too.
+  # admin_allowed_peer_cidrs:
+  #   - "127.0.0.1/32"

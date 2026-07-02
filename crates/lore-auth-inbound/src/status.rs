@@ -16,6 +16,7 @@ pub fn core_error_to_status(err: CoreError) -> Status {
         CoreError::SigningKeyUnavailable | CoreError::TokenIssueFailed => {
             Status::new(Code::Internal, "token issue failed")
         }
+        CoreError::AdminAuditFailed(_) => Status::new(Code::Internal, "admin audit failed"),
         CoreError::DeviceInvalidCode
         | CoreError::DeviceExpiredCode
         | CoreError::DeviceAuthorizationNotPending

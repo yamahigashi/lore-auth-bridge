@@ -18,6 +18,7 @@ use lore_auth_core::{
     },
 };
 use lore_auth_inbound::{
+    admin::AdminConfig as InboundAdminConfig,
     grpcauth::{Services as GrpcAuthServices, UrcAuthServer},
     grpcrebac::{
         RebacPeerAllowlistLayer, RebacServer, default_allowed_peer_cidrs, parse_allowed_peer_cidrs,
@@ -213,6 +214,7 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
             cfg.security.session_ttl_seconds,
             "security.session_ttl_seconds",
         )?,
+        admin: admin_config(cfg)?,
     };
     let http_services = HttpServices {
         login: Some(login.clone()),
@@ -231,6 +233,21 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
         permissions,
         http_config,
         http_services,
+    })
+}
+
+fn admin_config(cfg: &config::Config) -> Result<InboundAdminConfig> {
+    let values = cfg
+        .security
+        .admin_allowed_peer_cidrs
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let allowed_peer_cidrs = parse_allowed_peer_cidrs(&values)
+        .map_err(|err| anyhow!("startup: parse security.admin_allowed_peer_cidrs: {err}"))?;
+    Ok(InboundAdminConfig {
+        admin_emails: cfg.admin.admin_emails.clone(),
+        allowed_peer_cidrs,
     })
 }
 

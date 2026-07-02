@@ -211,6 +211,11 @@ pub trait IssuedTokenLog: Send + Sync {
 }
 
 #[async_trait]
+pub trait AdminAuditLog: Send + Sync {
+    async fn record(&self, entry: model::AdminAuditEntry) -> Result<(), CoreError>;
+}
+
+#[async_trait]
 pub trait GroupAdmin: Send + Sync {
     async fn add_group(&self, name: &str, description: &str) -> Result<model::Group, CoreError>;
     async fn list_groups(&self) -> Result<Vec<model::Group>, CoreError>;

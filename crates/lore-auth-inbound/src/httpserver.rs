@@ -33,6 +33,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
 
+use crate::admin;
+
 pub const SESSION_COOKIE_NAME: &str = "lore_auth_session";
 pub const STATE_COOKIE_NAME: &str = "lore_oauth_state";
 pub const LOGIN_SESSION_COOKIE_NAME: &str = "lore_login_session";
@@ -62,6 +64,7 @@ pub struct HttpConfig {
     pub lore_auth_url: String,
     pub default_remote_url: String,
     pub session_ttl: Duration,
+    pub admin: admin::AdminConfig,
 }
 
 #[derive(Clone)]
@@ -76,9 +79,9 @@ pub struct Services {
 }
 
 #[derive(Clone)]
-struct AppState {
-    cfg: Arc<HttpConfig>,
-    services: Services,
+pub(crate) struct AppState {
+    pub(crate) cfg: Arc<HttpConfig>,
+    pub(crate) services: Services,
     limiter: Arc<HttpLimiter>,
 }
 
@@ -88,7 +91,7 @@ pub fn build_router(cfg: HttpConfig, services: Services) -> Router {
         services,
         limiter: Arc::new(HttpLimiter::new(RATE_LIMIT, RATE_LIMIT_WINDOW)),
     };
-    Router::new()
+    let mut router = Router::new()
         .route("/.well-known/jwks.json", get(handle_jwks))
         .route("/healthz", get(handle_healthz))
         .route("/", get(handle_index))
@@ -105,13 +108,18 @@ pub fn build_router(cfg: HttpConfig, services: Services) -> Router {
         .route("/device", get(handle_device_page))
         .route("/device/approve", post(handle_device_approve))
         .route("/api/device/start", post(handle_device_start))
-        .route("/api/device/token", post(handle_device_token))
+        .route("/api/device/token", post(handle_device_token));
+    if state.cfg.admin.enabled() {
+        router = router.merge(admin::routes());
+    }
+    router
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, rate_limit_public))
         .layer(middleware::from_fn(security_headers))
 }
 
 async fn security_headers(request: Request, next: Next) -> Response {
+    let is_admin = request.uri().path().starts_with("/admin");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -121,9 +129,15 @@ async fn security_headers(request: Request, next: Next) -> Response {
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     headers.insert(
         "content-security-policy",
-        HeaderValue::from_static(
-            "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'none'",
-        ),
+        if is_admin {
+            HeaderValue::from_static(
+                "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'",
+            )
+        } else {
+            HeaderValue::from_static(
+                "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'none'",
+            )
+        },
     );
     response
 }
@@ -452,7 +466,7 @@ async fn handle_me(State(state): State<AppState>, headers: HeaderMap) -> Respons
 }
 
 async fn handle_session_csrf(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let session = match current_browser_session(&state, &headers).await {
+    let session = match current_browser_session(state.services.state.as_ref(), &headers).await {
         Ok(Some(session)) => session,
         Ok(None) => return text_response(StatusCode::UNAUTHORIZED, "not logged in"),
         Err(_) => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "session unavailable"),
@@ -479,7 +493,7 @@ async fn handle_session_csrf(State(state): State<AppState>, headers: HeaderMap) 
 async fn handle_logout(State(state): State<AppState>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
-    let session = match current_browser_session(&state, &headers).await {
+    let session = match current_browser_session(state.services.state.as_ref(), &headers).await {
         Ok(value) => value,
         Err(_) => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "session unavailable"),
     };
@@ -519,7 +533,7 @@ async fn handle_logout(State(state): State<AppState>, request: Request) -> Respo
 }
 
 async fn handle_token_page(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let session = match current_browser_session(&state, &headers).await {
+    let session = match current_browser_session(state.services.state.as_ref(), &headers).await {
         Ok(Some(session)) => session,
         Ok(None) => return redirect_found("/login"),
         Err(_) => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "session unavailable"),
@@ -576,7 +590,7 @@ async fn handle_token_page(State(state): State<AppState>, headers: HeaderMap) ->
 async fn handle_token_mint(State(state): State<AppState>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
-    let session = match current_browser_session(&state, &headers).await {
+    let session = match current_browser_session(state.services.state.as_ref(), &headers).await {
         Ok(Some(session)) => session,
         Ok(None) => return redirect_found("/login"),
         Err(_) => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "session unavailable"),
@@ -646,7 +660,7 @@ async fn handle_device_page(
             r#"<h1>Authorize device</h1><form method="get" action="/device"><input name="user_code" placeholder="AB12-CD34"><button type="submit">Continue</button></form>"#,
         );
     }
-    let session = match current_browser_session(&state, &headers).await {
+    let session = match current_browser_session(state.services.state.as_ref(), &headers).await {
         Ok(Some(session)) => session,
         Ok(None) => return redirect_found("/login"),
         Err(_) => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "session unavailable"),
@@ -684,7 +698,7 @@ async fn handle_device_approve(State(state): State<AppState>, request: Request) 
     };
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
-    let session = match current_browser_session(&state, &headers).await {
+    let session = match current_browser_session(state.services.state.as_ref(), &headers).await {
         Ok(Some(session)) => session,
         Ok(None) => return redirect_found("/login"),
         Err(_) => return text_response(StatusCode::INTERNAL_SERVER_ERROR, "session unavailable"),
@@ -780,13 +794,13 @@ async fn handle_device_token(State(state): State<AppState>, request: Request) ->
 }
 
 async fn current_user(state: &AppState, headers: &HeaderMap) -> Result<Option<User>, CoreError> {
-    current_browser_session(state, headers)
+    current_browser_session(state.services.state.as_ref(), headers)
         .await
         .map(|session| session.map(|session| session.user))
 }
 
-async fn current_browser_session(
-    state: &AppState,
+pub(crate) async fn current_browser_session(
+    state: &dyn StateStore,
     headers: &HeaderMap,
 ) -> Result<Option<BrowserSession>, CoreError> {
     let Some(session_id) =
@@ -794,21 +808,16 @@ async fn current_browser_session(
     else {
         return Ok(None);
     };
-    match state
-        .services
-        .state
-        .user_by_browser_session(&session_id)
-        .await
-    {
+    match state.user_by_browser_session(&session_id).await {
         Ok(user) => Ok(Some(BrowserSession { user, session_id })),
         Err(CoreError::NotFound) => Ok(None),
         Err(err) => Err(err),
     }
 }
 
-struct BrowserSession {
-    user: User,
-    session_id: String,
+pub(crate) struct BrowserSession {
+    pub(crate) user: User,
+    pub(crate) session_id: String,
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {

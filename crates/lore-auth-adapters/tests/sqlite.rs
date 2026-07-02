@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use lore_auth_adapters::sqlite::{CreateDeviceAuthorizationParams, Store};
 use lore_auth_core::{
@@ -8,9 +8,10 @@ use lore_auth_core::{
         LoginStateInput, LoginTrustPolicy, Resource, ResourceID, SigningKeyMeta,
     },
     ports::{
-        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GroupAdmin,
-        IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore,
+        AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
+        GroupAdmin, IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore,
     },
+    service::admin::AuditedGrantAdmin,
 };
 
 struct TestStore {
@@ -34,6 +35,7 @@ where
         + DeviceAuthorizationStore
         + StateStore
         + IssuedTokenLog
+        + AdminAuditLog
         + GroupAdmin
         + GrantAdmin
         + SigningKeyAdmin
@@ -45,6 +47,43 @@ where
 #[test]
 fn sqlite_store_implements_requested_core_ports() {
     assert_core_ports::<Store>();
+}
+
+#[tokio::test]
+async fn audited_sqlite_grant_write_records_admin_audit() {
+    let fixture = migrated_store().await;
+    let store = Arc::new(fixture.store.clone());
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    store
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: ResourceID::for_repository_id("repo-id").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo");
+    let grants = AuditedGrantAdmin::new(store.clone(), store.clone(), "authctl:test-user");
+
+    let grant = grants
+        .add_grant("user", &user.id, "game-assets", "writer")
+        .await
+        .expect("audited grant add");
+
+    let entries = store.list_admin_audit().await.expect("list admin audit");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].actor, "authctl:test-user");
+    assert_eq!(entries[0].action, "grant.add");
+    assert_eq!(entries[0].object_type, "grant");
+    assert_eq!(entries[0].object_id, grant.id);
+    assert!(entries[0].detail.contains("repo=game-assets"));
 }
 
 #[tokio::test]
@@ -173,6 +212,33 @@ async fn auth_session_and_csrf_tokens_are_one_time_and_expire() {
         .expect("create expired csrf");
     assert!(matches!(
         store.consume_csrf_token(&browser.id, &expired_csrf).await,
+        Err(CoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn browser_session_returns_not_found_after_user_is_disabled() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let user = store
+        .add_user(AddUserInput {
+            email: "disabled@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    let browser = store
+        .create_browser_session(&user.id, Duration::from_secs(60))
+        .await
+        .expect("create browser session");
+
+    store
+        .disable_user(&user.id)
+        .await
+        .expect("disable user after browser session");
+
+    assert!(matches!(
+        store.user_by_browser_session(&browser.id).await,
         Err(CoreError::NotFound)
     ));
 }
@@ -469,8 +535,9 @@ async fn issued_authn_token_lookup_rejects_expired_and_revoked_tokens() {
         .await
         .expect("add user");
     let now = Store::unix_now();
-    store
-        .record(IssuedToken {
+    IssuedTokenLog::record(
+        store,
+        IssuedToken {
             jti: "active-jti".to_owned(),
             kind: "authn".to_owned(),
             user_id: user.id.clone(),
@@ -479,11 +546,13 @@ async fn issued_authn_token_lookup_rejects_expired_and_revoked_tokens() {
             expires_at: now + 60,
             audience: vec!["auth.example.com".to_owned()],
             ..IssuedToken::default()
-        })
-        .await
-        .expect("record active token");
-    store
-        .record(IssuedToken {
+        },
+    )
+    .await
+    .expect("record active token");
+    IssuedTokenLog::record(
+        store,
+        IssuedToken {
             jti: "expired-jti".to_owned(),
             kind: "authn".to_owned(),
             user_id: user.id.clone(),
@@ -492,11 +561,13 @@ async fn issued_authn_token_lookup_rejects_expired_and_revoked_tokens() {
             expires_at: now - 60,
             audience: vec!["auth.example.com".to_owned()],
             ..IssuedToken::default()
-        })
-        .await
-        .expect("record expired token");
-    store
-        .record(IssuedToken {
+        },
+    )
+    .await
+    .expect("record expired token");
+    IssuedTokenLog::record(
+        store,
+        IssuedToken {
             jti: "revoked-jti".to_owned(),
             kind: "authn".to_owned(),
             user_id: user.id.clone(),
@@ -505,9 +576,10 @@ async fn issued_authn_token_lookup_rejects_expired_and_revoked_tokens() {
             expires_at: now + 60,
             audience: vec!["auth.example.com".to_owned()],
             ..IssuedToken::default()
-        })
-        .await
-        .expect("record revoked token");
+        },
+    )
+    .await
+    .expect("record revoked token");
     store
         .revoke_issued_token("revoked-jti")
         .await

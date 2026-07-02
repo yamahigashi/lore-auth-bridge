@@ -7,6 +7,7 @@ pub mod device {
     //! Device-flow HTTP endpoint wiring.
 }
 
+pub mod admin;
 mod peer;
 pub mod status;
 

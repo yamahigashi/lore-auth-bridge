@@ -11,14 +11,14 @@ use async_trait::async_trait;
 use lore_auth_core::{
     CoreError,
     model::{
-        self, AddInvitationInput, AddUserInput, AuthSession, BrowserSession, ExternalIdentity,
-        Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult, LoginResolutionRequest,
-        LoginState, LoginStateInput, LoginTrustPolicy, Resource, ResourceFilter,
-        ResourcePermission, SigningKeyMeta, TokenPrincipal, User,
+        self, AddInvitationInput, AddUserInput, AdminAuditEntry, AuthSession, BrowserSession,
+        ExternalIdentity, Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult,
+        LoginResolutionRequest, LoginState, LoginStateInput, LoginTrustPolicy, Resource,
+        ResourceFilter, ResourcePermission, SigningKeyMeta, TokenPrincipal, User,
     },
     ports::{
-        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GroupAdmin,
-        IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore,
+        AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
+        GroupAdmin, IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore,
     },
 };
 use sha2::{Digest, Sha256};
@@ -31,6 +31,7 @@ use crate::permissions::PermissionSet;
 
 const BASELINE_VERSION: &str = "phase2b_baseline_20260702";
 const GROUP_GROUPS_VERSION: &str = "phase3_group_groups_20260702";
+const ADMIN_AUDIT_VERSION: &str = "phase4_admin_audit_20260702";
 const BRIDGE_PROVIDER_ID: &str = "bridge";
 const DEFAULT_SUBJECT_STRATEGY: &str = "oidc_sub";
 const VERIFIED_EMAIL_INVITATION: &str = "verified_email_invitation";
@@ -264,6 +265,20 @@ CREATE TABLE IF NOT EXISTS group_groups (
 CREATE INDEX IF NOT EXISTS idx_group_groups_member ON group_groups(member_group_id);
 "#;
 
+const ADMIN_AUDIT_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id TEXT PRIMARY KEY,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  object_type TEXT NOT NULL,
+  object_id TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_created ON admin_audit(created_at);
+"#;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("sqlite: create database directory {path}: {source}")]
@@ -339,6 +354,7 @@ impl Store {
             .call(|conn| {
                 conn.execute_batch(BASELINE_SCHEMA)?;
                 conn.execute_batch(GROUP_GROUPS_SCHEMA)?;
+                conn.execute_batch(ADMIN_AUDIT_SCHEMA)?;
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                     params![BASELINE_VERSION, unix_now()],
@@ -346,6 +362,10 @@ impl Store {
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                     params![GROUP_GROUPS_VERSION, unix_now()],
+                )?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                    params![ADMIN_AUDIT_VERSION, unix_now()],
                 )?;
                 Ok::<(), rusqlite::Error>(())
             })
@@ -356,7 +376,7 @@ impl Store {
     pub async fn validate_schema(&self) -> Result<()> {
         self.conn
             .call(|conn| {
-                for expected in [BASELINE_VERSION, GROUP_GROUPS_VERSION] {
+                for expected in [BASELINE_VERSION, GROUP_GROUPS_VERSION, ADMIN_AUDIT_VERSION] {
                     let version = conn
                         .query_row(
                             "SELECT version FROM schema_migrations WHERE version = ?1",
@@ -480,6 +500,25 @@ impl Store {
                     )
                     .map_err(core_from_sql)?;
                 let rows = stmt.query_map([], user_from_row).map_err(core_from_sql)?;
+                collect_rows(rows)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    pub async fn list_admin_audit(&self) -> CoreResult<Vec<AdminAuditEntry>> {
+        self.conn
+            .call(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, actor, action, object_type, object_id, detail, created_at
+                         FROM admin_audit
+                         ORDER BY created_at, id",
+                    )
+                    .map_err(core_from_sql)?;
+                let rows = stmt
+                    .query_map([], admin_audit_entry_from_row)
+                    .map_err(core_from_sql)?;
                 collect_rows(rows)
             })
             .await
@@ -1233,7 +1272,10 @@ impl StateStore for Store {
                     "SELECT u.id, u.primary_email, u.display_name, u.status
                      FROM sessions s
                      JOIN users u ON u.id = s.user_id
-                     WHERE s.id = ?1 AND s.revoked_at IS NULL AND s.expires_at > ?2",
+                     WHERE s.id = ?1
+                       AND s.revoked_at IS NULL
+                       AND s.expires_at > ?2
+                       AND u.status = 'active'",
                     params![session_id, unix_now()],
                     user_from_row,
                 )
@@ -1332,6 +1374,33 @@ impl IssuedTokenLog for Store {
                         audience_json,
                         token.issued_at,
                         token.expires_at
+                    ],
+                )
+                .map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+}
+
+#[async_trait]
+impl AdminAuditLog for Store {
+    async fn record(&self, entry: AdminAuditEntry) -> CoreResult<()> {
+        self.conn
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO admin_audit (
+                       id, actor, action, object_type, object_id, detail, created_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        entry.id,
+                        entry.actor,
+                        entry.action,
+                        entry.object_type,
+                        entry.object_id,
+                        entry.detail,
+                        entry.created_at
                     ],
                 )
                 .map_err(core_from_sql)?;
@@ -2430,6 +2499,18 @@ fn device_from_row(row: &Row<'_>) -> rusqlite::Result<DeviceAuthorization> {
     })
 }
 
+fn admin_audit_entry_from_row(row: &Row<'_>) -> rusqlite::Result<AdminAuditEntry> {
+    Ok(AdminAuditEntry {
+        id: row.get(0)?,
+        actor: row.get(1)?,
+        action: row.get(2)?,
+        object_type: row.get(3)?,
+        object_id: row.get(4)?,
+        detail: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
 fn resource_select_base() -> &'static str {
     "SELECT id, name, remote_url, lore_repository_id, status, created_by_source FROM repositories"
 }
@@ -2497,7 +2578,7 @@ fn email_domain(email: &str) -> Option<String> {
 }
 
 fn normalize_email(email: &str) -> String {
-    email.trim().to_ascii_lowercase()
+    model::normalize_email(email)
 }
 
 fn none_if_empty(value: &str) -> Option<String> {

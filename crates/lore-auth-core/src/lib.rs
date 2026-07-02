@@ -59,4 +59,8 @@ pub enum CoreError {
     /// A device flow authorization is missing the user or repository binding.
     #[error("device incomplete authorization")]
     DeviceIncompleteAuthorization,
+
+    /// A mutating admin operation succeeded, but audit recording failed.
+    #[error("operation succeeded but audit logging failed: {0}")]
+    AdminAuditFailed(String),
 }

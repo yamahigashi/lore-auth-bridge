@@ -1,0 +1,17 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ self.t("admin.dashboard.title") }}{% endblock %}
+{% block content %}
+<section>
+  <h1>{{ self.t("admin.dashboard.title") }}</h1>
+  <p>{{ self.t("admin.dashboard.signed_in") }}: <strong>{{ user_email }}</strong></p>
+  <p>{{ self.t("admin.dashboard.display_name") }}: {{ user_display }}</p>
+</section>
+<nav aria-label='{{ self.t("admin.nav.label") }}'>
+  <ul>
+    <li><span aria-disabled="true">{{ self.t("admin.nav.overview") }}</span></li>
+    <li><span aria-disabled="true">{{ self.t("admin.nav.grants") }}</span></li>
+    <li><span aria-disabled="true">{{ self.t("admin.nav.groups") }}</span></li>
+    <li><span aria-disabled="true">{{ self.t("admin.nav.simulator") }}</span></li>
+  </ul>
+</nav>
+{% endblock %}

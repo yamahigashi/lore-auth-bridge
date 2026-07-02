@@ -10,15 +10,16 @@ use async_trait::async_trait;
 use lore_auth_core::{
     CoreError,
     model::{
-        AddInvitationInput, AddUserInput, AuthSession, AuthnTokenInput, AuthzTokenInput,
-        BrowserSession, CreateDeviceAuthorizationInput, DeviceAuthorization, ExternalIdentity,
-        Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult, LoginResolutionRequest,
-        LoginState, LoginStateInput, LoginTrustPolicy, Resource, ResourceFilter,
-        ResourcePermission, SignedToken, TokenPrincipal, User, VerifiedToken, VerifyOptions,
+        AddInvitationInput, AddUserInput, AdminAuditEntry, AuthSession, AuthnTokenInput,
+        AuthzTokenInput, BrowserSession, CreateDeviceAuthorizationInput, DeviceAuthorization,
+        ExternalIdentity, Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult,
+        LoginResolutionRequest, LoginState, LoginStateInput, LoginTrustPolicy, Resource,
+        ResourceFilter, ResourcePermission, SignedToken, TokenPrincipal, User, VerifiedToken,
+        VerifyOptions,
     },
     ports::{
-        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GroupAdmin,
-        IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore, TokenSigner,
+        AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
+        GroupAdmin, IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore, TokenSigner,
     },
 };
 use sha2::{Digest, Sha256};
@@ -45,6 +46,7 @@ struct State {
     csrf_tokens: HashMap<String, CsrfToken>,
     tokens: HashMap<String, VerifiedToken>,
     issued_tokens: HashMap<String, IssuedToken>,
+    admin_audit: Vec<AdminAuditEntry>,
     device_authorizations: HashMap<String, DeviceAuthorization>,
     device_code_index: HashMap<String, String>,
     user_code_index: HashMap<String, String>,
@@ -73,6 +75,12 @@ impl Store {
 
         self.lock().users.insert(user.id.clone(), user.clone());
         user
+    }
+
+    pub fn disable_test_user(&self, user_id: &str) {
+        if let Some(user) = self.lock().users.get_mut(user_id) {
+            user.status = "disabled".to_owned();
+        }
     }
 
     pub fn add_test_resource(&self, mut resource: Resource) -> Resource {
@@ -127,6 +135,11 @@ impl Store {
             .entry(user_id.to_owned())
             .or_default()
             .insert(resource_id.to_owned(), role.to_owned());
+    }
+
+    #[must_use]
+    pub fn admin_audit_entries(&self) -> Vec<AdminAuditEntry> {
+        self.lock().admin_audit.clone()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -675,7 +688,12 @@ impl StateStore for Store {
             .browser_sessions
             .get(session_id)
             .ok_or(CoreError::NotFound)?;
-        active_user(&state, user_id).cloned()
+        state
+            .users
+            .get(user_id)
+            .filter(|user| user.status == "active")
+            .cloned()
+            .ok_or(CoreError::NotFound)
     }
 
     async fn revoke_browser_session(&self, session_id: &str) -> Result<(), CoreError> {
@@ -791,6 +809,14 @@ impl TokenSigner for Store {
 impl IssuedTokenLog for Store {
     async fn record(&self, token: IssuedToken) -> Result<(), CoreError> {
         self.lock().issued_tokens.insert(token.jti.clone(), token);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AdminAuditLog for Store {
+    async fn record(&self, entry: AdminAuditEntry) -> Result<(), CoreError> {
+        self.lock().admin_audit.push(entry);
         Ok(())
     }
 }

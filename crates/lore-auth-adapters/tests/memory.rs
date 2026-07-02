@@ -1,4 +1,7 @@
-use std::time::{Duration, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{Duration, UNIX_EPOCH},
+};
 
 use lore_auth_adapters::memory::Store;
 use lore_auth_core::{
@@ -9,9 +12,10 @@ use lore_auth_core::{
         User, VerifyOptions,
     },
     ports::{
-        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GroupAdmin,
-        IssuedTokenLog, ResourceStore, StateStore, TokenSigner,
+        AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
+        GroupAdmin, IssuedTokenLog, ResourceStore, StateStore, TokenSigner,
     },
+    service::admin::{AuditedGrantAdmin, AuditedGroupAdmin},
 };
 
 fn assert_core_ports<T>()
@@ -23,6 +27,7 @@ where
         + StateStore
         + TokenSigner
         + IssuedTokenLog
+        + AdminAuditLog
         + GroupAdmin
         + GrantAdmin
         + Send
@@ -36,6 +41,37 @@ fn memory_store_implements_core_test_double_ports() {
 }
 
 #[tokio::test]
+async fn audited_memory_group_and_grant_writes_record_admin_audit() {
+    let store = Arc::new(Store::new());
+    let user = store.add_test_user(User {
+        id: "user-1".to_owned(),
+        email: "alice@example.com".to_owned(),
+        status: "active".to_owned(),
+        ..User::default()
+    });
+    let groups = AuditedGroupAdmin::new(store.clone(), store.clone(), "authctl:test-user");
+    let grants = AuditedGrantAdmin::new(store.clone(), store.clone(), "authctl:test-user");
+
+    groups
+        .add_group("artists", "Art team")
+        .await
+        .expect("audited group add");
+    grants
+        .add_grant("user", &user.id, "game-assets", "writer")
+        .await
+        .expect("audited grant add");
+
+    let entries = store.admin_audit_entries();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].actor, "authctl:test-user");
+    assert_eq!(entries[0].action, "group.add");
+    assert_eq!(entries[0].object_type, "group");
+    assert_eq!(entries[1].action, "grant.add");
+    assert_eq!(entries[1].object_type, "grant");
+    assert!(!entries[1].detail.contains("token"));
+}
+
+#[tokio::test]
 async fn memory_authn_token_lookup_returns_not_found_for_disabled_user() {
     let store = Store::new();
     let user = store.add_test_user(User {
@@ -44,8 +80,9 @@ async fn memory_authn_token_lookup_returns_not_found_for_disabled_user() {
         display_name: "Disabled User".to_owned(),
         status: "disabled".to_owned(),
     });
-    store
-        .record(IssuedToken {
+    IssuedTokenLog::record(
+        &store,
+        IssuedToken {
             jti: "disabled-jti".to_owned(),
             kind: "authn".to_owned(),
             user_id: user.id,
@@ -54,12 +91,34 @@ async fn memory_authn_token_lookup_returns_not_found_for_disabled_user() {
             expires_at: i64::MAX,
             audience: vec!["auth.example.com".to_owned()],
             ..IssuedToken::default()
-        })
-        .await
-        .expect("record token");
+        },
+    )
+    .await
+    .expect("record token");
 
     assert!(matches!(
         store.principal_by_authn_token_jti("disabled-jti").await,
+        Err(CoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn memory_browser_session_returns_not_found_for_disabled_user() {
+    let store = Store::new();
+    let user = store.add_test_user(User {
+        id: "user-1".to_owned(),
+        email: "disabled@example.com".to_owned(),
+        display_name: "Disabled User".to_owned(),
+        status: "active".to_owned(),
+    });
+    let session = store
+        .create_browser_session(&user.id, Duration::from_secs(60))
+        .await
+        .expect("create browser session");
+    store.disable_test_user(&user.id);
+
+    assert!(matches!(
+        store.user_by_browser_session(&session.id).await,
         Err(CoreError::NotFound)
     ));
 }

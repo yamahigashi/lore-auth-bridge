@@ -1,9 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
     Router,
     body::{Body, to_bytes},
+    extract::connect_info::ConnectInfo,
     http::{Request, StatusCode, header},
 };
 use lore_auth_adapters::{idpregistry, memory};
@@ -22,8 +23,12 @@ use lore_auth_core::{
         token::{TokenConfig, TokenService},
     },
 };
-use lore_auth_inbound::httpserver::{HttpConfig, SESSION_COOKIE_NAME, Services, build_router};
+use lore_auth_inbound::{
+    admin::AdminConfig,
+    httpserver::{HttpConfig, SESSION_COOKIE_NAME, Services, build_router},
+};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -306,7 +311,264 @@ async fn login_session_start_binds_existing_nonce_to_provider_state() {
     assert_eq!(login_state.login_url_nonce, auth_session.login_url_nonce);
 }
 
+#[tokio::test]
+async fn admin_routes_are_not_mounted_when_admin_emails_are_empty() {
+    let (app, _store, _) = new_test_app(fake_idp());
+
+    let response = app
+        .oneshot(peer_request("/admin", None, [127, 0, 0, 1]))
+        .await
+        .expect("admin response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_route_hides_unauthenticated_admin_probe() {
+    let (app, _store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            ..AdminConfig::default()
+        },
+    );
+
+    let response = app
+        .oneshot(peer_request("/admin", None, [127, 0, 0, 1]))
+        .await
+        .expect("admin response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(response.headers().get(header::LOCATION).is_none());
+}
+
+#[tokio::test]
+async fn admin_route_hides_from_non_admin_browser_sessions() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            ..AdminConfig::default()
+        },
+    );
+    let user = add_alice(&store);
+    let session = store
+        .create_browser_session(&user.id, Duration::from_secs(60))
+        .await
+        .expect("session creates");
+
+    let response = app
+        .oneshot(peer_request(
+            "/admin",
+            Some(format!("{SESSION_COOKIE_NAME}={}", session.id)),
+            [127, 0, 0, 1],
+        ))
+        .await
+        .expect("admin response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_route_hides_disabled_admin_browser_sessions() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            ..AdminConfig::default()
+        },
+    );
+    let user = store.add_test_user(User {
+        email: "admin@example.com".to_owned(),
+        display_name: "Admin".to_owned(),
+        ..User::default()
+    });
+    let session = store
+        .create_browser_session(&user.id, Duration::from_secs(60))
+        .await
+        .expect("session creates");
+    store.disable_test_user(&user.id);
+
+    let response = app
+        .oneshot(peer_request(
+            "/admin",
+            Some(format!("{SESSION_COOKIE_NAME}={}", session.id)),
+            [127, 0, 0, 1],
+        ))
+        .await
+        .expect("admin response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_route_hides_from_disallowed_peers_before_session_check() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            allowed_peer_cidrs: vec!["127.0.0.1/32".parse().expect("cidr")],
+        },
+    );
+    let user = store.add_test_user(User {
+        email: "admin@example.com".to_owned(),
+        display_name: "Admin".to_owned(),
+        ..User::default()
+    });
+    let session = store
+        .create_browser_session(&user.id, Duration::from_secs(60))
+        .await
+        .expect("session creates");
+
+    let response = app
+        .oneshot(peer_request(
+            "/admin",
+            Some(format!("{SESSION_COOKIE_NAME}={}", session.id)),
+            [192, 0, 2, 10],
+        ))
+        .await
+        .expect("admin response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_route_renders_dashboard_for_admin_session_and_language_cookie() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            allowed_peer_cidrs: vec!["127.0.0.1/32".parse().expect("cidr")],
+        },
+    );
+    let user = store.add_test_user(User {
+        email: "Admin@Example.com".to_owned(),
+        display_name: "Admin <Root> & Co".to_owned(),
+        ..User::default()
+    });
+    let session = store
+        .create_browser_session(&user.id, Duration::from_secs(60))
+        .await
+        .expect("session creates");
+
+    let mut request = peer_request(
+        "/admin?lang=ja",
+        Some(format!("{SESSION_COOKIE_NAME}={}", session.id)),
+        [127, 0, 0, 1],
+    );
+    request
+        .headers_mut()
+        .insert("x-forwarded-proto", "https".parse().unwrap());
+    let response = app.oneshot(request).await.expect("admin response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("admin lang cookie")
+        .to_str()
+        .unwrap();
+    assert!(cookie.starts_with("admin_lang=ja"), "{cookie}");
+    assert!(cookie.contains("Secure"), "{cookie}");
+    let body = response_text(response).await;
+    assert!(body.contains("管理ダッシュボード"), "{body}");
+    assert!(body.contains("Admin@Example.com"), "{body}");
+    assert!(body.contains("Admin &#60;Root&#62; &#38; Co"), "{body}");
+    assert!(!body.contains("&amp;#60;Root&amp;#62;"), "{body}");
+}
+
+#[tokio::test]
+async fn admin_static_assets_share_admin_guard_and_content_types() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            ..AdminConfig::default()
+        },
+    );
+    let user = store.add_test_user(User {
+        email: "admin@example.com".to_owned(),
+        display_name: "Admin".to_owned(),
+        ..User::default()
+    });
+    let session = store
+        .create_browser_session(&user.id, Duration::from_secs(60))
+        .await
+        .expect("session creates");
+
+    let unauthenticated = app
+        .clone()
+        .oneshot(peer_request(
+            "/admin/static/htmx.min.js",
+            None,
+            [127, 0, 0, 1],
+        ))
+        .await
+        .expect("static response");
+    assert_eq!(unauthenticated.status(), StatusCode::NOT_FOUND);
+
+    let htmx = app
+        .clone()
+        .oneshot(peer_request(
+            "/admin/static/htmx.min.js",
+            Some(format!("{SESSION_COOKIE_NAME}={}", session.id)),
+            [127, 0, 0, 1],
+        ))
+        .await
+        .expect("htmx response");
+    assert_eq!(htmx.status(), StatusCode::OK);
+    assert_eq!(
+        htmx.headers().get(header::CONTENT_TYPE).unwrap(),
+        "application/javascript; charset=utf-8"
+    );
+
+    let pico = app
+        .oneshot(peer_request(
+            "/admin/static/pico.min.css",
+            Some(format!("{SESSION_COOKIE_NAME}={}", session.id)),
+            [127, 0, 0, 1],
+        ))
+        .await
+        .expect("pico response");
+    assert_eq!(pico.status(), StatusCode::OK);
+    assert_eq!(
+        pico.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/css; charset=utf-8"
+    );
+}
+
+#[test]
+fn admin_static_asset_hashes_match_notice() {
+    assert_eq!(
+        sha256_hex(include_bytes!("../src/admin/static/htmx.min.js")),
+        "e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447"
+    );
+    assert_eq!(
+        sha256_hex(include_bytes!("../src/admin/static/pico.min.css")),
+        "dd5fd5591afd81ee21dcc117ad85c014dc3f1f19dc2d7b7d101ea0acc29274c2"
+    );
+    let notice = include_str!("../src/admin/static/NOTICE.md");
+    assert!(notice.contains("e209dda5c8235479f3166defc7750e1dbcd5a5c1808b7792fc2e6733768fb447"));
+    assert!(notice.contains("dd5fd5591afd81ee21dcc117ad85c014dc3f1f19dc2d7b7d101ea0acc29274c2"));
+}
+
+#[tokio::test]
+async fn admin_i18n_dictionaries_and_template_keys_match() {
+    lore_auth_inbound::admin::assert_i18n_integrity();
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
 fn new_test_app(provider: FakeIdp) -> (Router, Arc<memory::Store>, Arc<TokenService>) {
+    new_test_app_with_admin(provider, AdminConfig::default())
+}
+
+fn new_test_app_with_admin(
+    provider: FakeIdp,
+    admin: AdminConfig,
+) -> (Router, Arc<memory::Store>, Arc<TokenService>) {
     let store = Arc::new(memory::Store::new());
     let mut registry = idpregistry::Registry::new("google");
     registry
@@ -361,6 +623,7 @@ fn new_test_app(provider: FakeIdp) -> (Router, Arc<memory::Store>, Arc<TokenServ
                 lore_auth_url: "ucs-auth://auth.example.com".to_owned(),
                 default_remote_url: "lore://lore.example.com:41337".to_owned(),
                 session_ttl: Duration::from_secs(60 * 60),
+                admin,
             },
             Services {
                 login: Some(login),
@@ -445,11 +708,30 @@ fn json_request(path: &str, body: &str) -> Request<Body> {
         .unwrap()
 }
 
+fn peer_request(path: &str, cookie: Option<String>, ip: [u8; 4]) -> Request<Body> {
+    let mut builder = Request::builder().uri(path);
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    let mut request = builder.body(Body::empty()).unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from((ip, 43_210))));
+    request
+}
+
 async fn decode_json<T: for<'de> Deserialize<'de>>(response: axum::response::Response) -> T {
     let body = to_bytes(response.into_body(), 64 * 1024)
         .await
         .expect("body bytes");
     serde_json::from_slice(&body).expect("json body")
+}
+
+async fn response_text(response: axum::response::Response) -> String {
+    let body = to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body bytes");
+    String::from_utf8(body.to_vec()).expect("utf8 body")
 }
 
 fn assert_security_headers(headers: &axum::http::HeaderMap) {

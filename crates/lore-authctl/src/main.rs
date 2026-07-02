@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     io::Write,
     path::{Path, PathBuf},
     sync::Arc,
@@ -16,7 +16,10 @@ use lore_auth_core::{
         AccountDirectory, AuthorizationPolicy, GrantAdmin, GroupAdmin, IssuedTokenLog,
         ResourceStore, SigningKeyAdmin, TokenSigner,
     },
-    service::token::{TokenConfig, TokenService},
+    service::{
+        admin::{AuditedGrantAdmin, AuditedGroupAdmin},
+        token::{TokenConfig, TokenService},
+    },
 };
 
 const DEFAULT_CONFIG: &str = "configs/lore-auth.example.yaml";
@@ -383,30 +386,30 @@ async fn run_user(config_path: &Path, db: Option<&Path>, command: UserCommand) -
 
 async fn run_group(config_path: &Path, db: Option<&Path>, command: GroupCommand) -> Result<()> {
     let env = open_env(config_path, db).await?;
+    let groups = AuditedGroupAdmin::new(env.store.clone(), env.store.clone(), authctl_actor());
     match command {
         GroupCommand::Add(args) => {
-            let group = env
-                .store
+            let group = groups
                 .add_group(&args.name, &args.description)
                 .await
                 .map_err(core_error)?;
             println!("{}\t{}", group.id, group.name);
         }
         GroupCommand::List => {
-            for group in env.store.list_groups().await.map_err(core_error)? {
+            for group in groups.list_groups().await.map_err(core_error)? {
                 println!("{}\t{}", group.id, group.name);
             }
         }
         GroupCommand::Member { command } => match command {
             GroupMemberCommand::Add(args) => {
-                env.store
+                groups
                     .add_group_member(&args.group, &args.user)
                     .await
                     .map_err(core_error)?;
                 println!("ok");
             }
             GroupMemberCommand::Remove(args) => {
-                env.store
+                groups
                     .remove_group_member(&args.group, &args.user)
                     .await
                     .map_err(core_error)?;
@@ -416,7 +419,7 @@ async fn run_group(config_path: &Path, db: Option<&Path>, command: GroupCommand)
         GroupCommand::Nest { command } => match command {
             GroupNestCommand::Add(args) => {
                 require_rebac_for_nested_group(&env.cfg)?;
-                env.store
+                groups
                     .add_group_group(&args.parent_group, &args.member_group)
                     .await
                     .map_err(core_error)?;
@@ -424,7 +427,7 @@ async fn run_group(config_path: &Path, db: Option<&Path>, command: GroupCommand)
             }
             GroupNestCommand::Remove(args) => {
                 require_rebac_for_nested_group(&env.cfg)?;
-                env.store
+                groups
                     .remove_group_group(&args.parent_group, &args.member_group)
                     .await
                     .map_err(core_error)?;
@@ -474,11 +477,11 @@ async fn run_repo(config_path: &Path, db: Option<&Path>, command: RepoCommand) -
 
 async fn run_grant(config_path: &Path, db: Option<&Path>, command: GrantCommand) -> Result<()> {
     let env = open_env(config_path, db).await?;
+    let grants = AuditedGrantAdmin::new(env.store.clone(), env.store.clone(), authctl_actor());
     match command {
         GrantCommand::Add(args) => {
             let (subject_type, subject_id) = resolve_grant_subject(&env, &args.subject).await?;
-            let grant = env
-                .store
+            let grant = grants
                 .add_grant(&subject_type, &subject_id, &args.repo, &args.role)
                 .await
                 .map_err(core_error)?;
@@ -489,7 +492,7 @@ async fn run_grant(config_path: &Path, db: Option<&Path>, command: GrantCommand)
         }
         GrantCommand::Remove(args) => {
             let (subject_type, subject_id) = resolve_grant_subject(&env, &args.subject).await?;
-            env.store
+            grants
                 .remove_grant(&subject_type, &subject_id, &args.repo, &args.role)
                 .await
                 .map_err(core_error)?;
@@ -497,7 +500,7 @@ async fn run_grant(config_path: &Path, db: Option<&Path>, command: GrantCommand)
         }
         GrantCommand::List(args) => {
             let repo = args.repo.unwrap_or_default();
-            for grant in env.store.list_grants(&repo).await.map_err(core_error)? {
+            for grant in grants.list_grants(&repo).await.map_err(core_error)? {
                 println!(
                     "{}\t{}:{}\t{}\t{}",
                     grant.id, grant.subject_type, grant.subject_id, grant.repository_id, grant.role
@@ -506,6 +509,16 @@ async fn run_grant(config_path: &Path, db: Option<&Path>, command: GrantCommand)
         }
     }
     Ok(())
+}
+
+fn authctl_actor() -> String {
+    let user = env::var("USER")
+        .or_else(|_| env::var("USERNAME"))
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!("authctl:{user}")
 }
 
 async fn run_check(config_path: &Path, db: Option<&Path>, args: CheckArgs) -> Result<()> {

@@ -1,7 +1,7 @@
 //! YAML configuration loading and validation for Rust adapters and binaries.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     net::IpAddr,
     path::{Path, PathBuf},
@@ -10,6 +10,7 @@ use std::{
 };
 
 use ipnet::IpNet;
+use lore_auth_core::model;
 use regex::Regex;
 use serde::Deserialize;
 use url::{Host, Url};
@@ -47,6 +48,7 @@ pub struct Config {
     pub jwt: JwtConfig,
     pub lore: LoreConfig,
     pub security: SecurityConfig,
+    pub admin: AdminConfig,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -137,12 +139,19 @@ pub struct LoreConfig {
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
+pub struct AdminConfig {
+    pub admin_emails: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
 pub struct SecurityConfig {
     pub device_code_ttl_seconds: i64,
     pub device_poll_interval_seconds: i64,
     pub session_ttl_seconds: i64,
     pub auth_session_ttl_seconds: i64,
     pub rebac_allowed_peer_cidrs: Vec<String>,
+    pub admin_allowed_peer_cidrs: Vec<String>,
 }
 
 pub fn load(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
@@ -207,6 +216,9 @@ impl Config {
         if self.lore.auth_url.is_empty() && !self.server.public_base_url.is_empty() {
             self.lore.auth_url =
                 format!("ucs-auth://{}", strip_scheme(&self.server.public_base_url));
+        }
+        for email in &mut self.admin.admin_emails {
+            *email = model::normalize_email(email);
         }
         for provider in self.identity_providers.providers.values_mut() {
             if provider.scopes.is_empty() {
@@ -325,6 +337,29 @@ impl Config {
             validate_cidr_or_ip("security.rebac_allowed_peer_cidrs", cidr).map_err(|err| {
                 validation(format!("security.rebac_allowed_peer_cidrs[{index}]: {err}"))
             })?;
+        }
+        for (index, cidr) in self.security.admin_allowed_peer_cidrs.iter().enumerate() {
+            validate_cidr_or_ip("security.admin_allowed_peer_cidrs", cidr).map_err(|err| {
+                validation(format!("security.admin_allowed_peer_cidrs[{index}]: {err}"))
+            })?;
+        }
+        let mut admin_emails = BTreeSet::new();
+        for (index, email) in self.admin.admin_emails.iter().enumerate() {
+            if email.trim().is_empty() {
+                return Err(validation(format!(
+                    "admin.admin_emails[{index}] must not be empty"
+                )));
+            }
+            if !email.contains('@') {
+                return Err(validation(format!(
+                    "admin.admin_emails[{index}] must contain @"
+                )));
+            }
+            if !admin_emails.insert(email) {
+                return Err(validation(format!(
+                    "admin.admin_emails[{index}] duplicates an earlier admin email"
+                )));
+            }
         }
         self.validate_identity_providers()
     }

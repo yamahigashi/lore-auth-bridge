@@ -61,6 +61,106 @@ fn configured_auth_session_ttl_can_differ_from_browser_session_ttl() {
 }
 
 #[test]
+fn admin_emails_default_to_disabled_and_are_normalized() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let default_path = write_config(dir.path(), default_config(dir.path()));
+
+    let default_cfg = config::load(&default_path).expect("default config loads");
+    assert!(default_cfg.admin.admin_emails.is_empty());
+
+    let raw = default_config(dir.path()).replace(
+        "server:",
+        "admin:\n  admin_emails: [\" Admin@Example.com \"]\nserver:",
+    );
+    let path = write_config(dir.path(), raw);
+
+    let cfg = config::load(&path).expect("admin config loads");
+
+    assert_eq!(cfg.admin.admin_emails, ["admin@example.com"]);
+}
+
+#[test]
+fn load_rejects_empty_admin_email() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let raw = default_config(dir.path()).replace(
+        "server:",
+        "admin:\n  admin_emails: [\"admin@example.com\", \"   \"]\nserver:",
+    );
+    let path = write_config(dir.path(), raw);
+
+    let err = config::load(&path).expect_err("empty admin email is rejected");
+
+    assert!(
+        err.to_string().contains("admin.admin_emails[1]"),
+        "unexpected error: {err:?}",
+    );
+}
+
+#[test]
+fn load_rejects_admin_email_without_at_sign() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let raw = default_config(dir.path()).replace(
+        "server:",
+        "admin:\n  admin_emails: [\"admin.example.com\"]\nserver:",
+    );
+    let path = write_config(dir.path(), raw);
+
+    let err = config::load(&path).expect_err("admin email without @ is rejected");
+
+    assert!(
+        err.to_string().contains("admin.admin_emails[0]"),
+        "unexpected error: {err:?}",
+    );
+}
+
+#[test]
+fn load_rejects_duplicate_admin_emails_after_normalization() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let raw = default_config(dir.path()).replace(
+        "server:",
+        "admin:\n  admin_emails: [\"Admin@Example.com\", \" admin@example.com \"]\nserver:",
+    );
+    let path = write_config(dir.path(), raw);
+
+    let err = config::load(&path).expect_err("duplicate admin email is rejected");
+
+    assert!(
+        err.to_string().contains("admin.admin_emails[1]"),
+        "unexpected error: {err:?}",
+    );
+}
+
+#[test]
+fn admin_allowed_peer_cidrs_accept_cidr_and_ip_and_reject_invalid_values() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let raw = default_config(dir.path()).replace(
+        "security: {}",
+        "security:\n  admin_allowed_peer_cidrs: [\"10.0.0.0/8\", \"127.0.0.1\"]",
+    );
+    let path = write_config(dir.path(), raw);
+
+    let cfg = config::load(&path).expect("admin peer cidrs load");
+
+    assert_eq!(
+        cfg.security.admin_allowed_peer_cidrs,
+        ["10.0.0.0/8", "127.0.0.1"]
+    );
+
+    let raw = default_config(dir.path()).replace(
+        "security: {}",
+        "security:\n  admin_allowed_peer_cidrs: [\"not-a-cidr\"]",
+    );
+    let path = write_config(dir.path(), raw);
+    let err = config::load(&path).expect_err("invalid admin peer cidr rejected");
+
+    assert!(
+        err.to_string()
+            .contains("security.admin_allowed_peer_cidrs[0]"),
+        "unexpected error: {err:?}",
+    );
+}
+
+#[test]
 fn public_host_extracts_dns_ipv4_and_ipv6_hosts() {
     assert_eq!(
         config::public_host("https://auth.example.com/path").expect("host"),

@@ -4,14 +4,15 @@ use async_trait::async_trait;
 use lore_auth_core::{
     CoreError,
     model::{
-        AddInvitationInput, AddUserInput, AuthSession, AuthnTokenInput, AuthzTokenInput,
-        BrowserSession, CreateDeviceAuthorizationInput, DeviceAuthorization, ExternalIdentity,
-        Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult, LoginResolutionRequest,
-        LoginState, LoginStateInput, Resource, ResourceFilter, ResourcePermission, SignedToken,
-        SigningKeyMeta, TokenPrincipal, User, VerifiedToken, VerifyOptions,
+        AddInvitationInput, AddUserInput, AdminAuditEntry, AuthSession, AuthnTokenInput,
+        AuthzTokenInput, BrowserSession, CreateDeviceAuthorizationInput, DeviceAuthorization,
+        ExternalIdentity, Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult,
+        LoginResolutionRequest, LoginState, LoginStateInput, Resource, ResourceFilter,
+        ResourcePermission, SignedToken, SigningKeyMeta, TokenPrincipal, User, VerifiedToken,
+        VerifyOptions,
     },
     ports::{
-        AccountDirectory, AuthorizationPolicy, BeginAuthRequest, BeginAuthResult,
+        AccountDirectory, AdminAuditLog, AuthorizationPolicy, BeginAuthRequest, BeginAuthResult,
         CompleteAuthRequest, DeviceAuthorizationStore, DeviceCodeGenerator, GrantAdmin, GroupAdmin,
         IdentityProvider, IdentityProviderDescriptor, IdentityProviderRegistry, IssuedTokenLog,
         ResourceStore, SigningKeyAdmin, StateStore, TokenSigner,
@@ -298,6 +299,13 @@ impl IssuedTokenLog for NullPorts {
 }
 
 #[async_trait]
+impl AdminAuditLog for NullPorts {
+    async fn record(&self, _entry: AdminAuditEntry) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
 impl GroupAdmin for NullPorts {
     async fn add_group(&self, _name: &str, _description: &str) -> Result<Group, CoreError> {
         Err(CoreError::InvalidArgument("missing group".to_owned()))
@@ -392,6 +400,7 @@ async fn all_ports_are_dyn_compatible() {
     let state: Arc<dyn StateStore> = ports.clone();
     let signer: Arc<dyn TokenSigner> = ports.clone();
     let issued: Arc<dyn IssuedTokenLog> = ports.clone();
+    let admin_audit: Arc<dyn AdminAuditLog> = ports.clone();
     let groups: Arc<dyn GroupAdmin> = ports.clone();
     let grants: Arc<dyn GrantAdmin> = ports.clone();
     let keys: Arc<dyn SigningKeyAdmin> = ports.clone();
@@ -415,9 +424,20 @@ async fn all_ports_are_dyn_compatible() {
     assert!(state.get_auth_session_by_code("c").await.is_err());
     assert!(signer.jwks().await.is_err());
     assert!(issued.record(IssuedToken::default()).await.is_ok());
+    assert!(admin_audit.record(AdminAuditEntry::default()).await.is_ok());
     assert!(groups.list_groups().await.expect("groups").is_empty());
     assert!(grants.list_grants("repo").await.expect("grants").is_empty());
     assert!(keys.list_keys().await.expect("keys").is_empty());
     assert!(devices.device_by_user_code("code").await.is_err());
     assert!(codes.device_code().is_err());
+}
+
+#[test]
+fn admin_audit_failure_display_says_mutation_already_succeeded() {
+    let err = CoreError::AdminAuditFailed("audit offline".to_owned());
+
+    assert_eq!(
+        err.to_string(),
+        "operation succeeded but audit logging failed: audit offline"
+    );
 }
