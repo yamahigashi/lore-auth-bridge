@@ -8,6 +8,15 @@ repository.workspace = true
 [dependencies]
 lore-auth-core = { path = "../lore-auth-core" }
 lore-auth-proto = { path = "../lore-auth-proto" }
+http = "1.3"
+ipnet.workspace = true
+tonic.workspace = true
+tower = { version = "0.5", features = ["util"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+lore-auth-adapters = { path = "../lore-auth-adapters" }
+tokio.workspace = true
 
 [lints]
 workspace = true

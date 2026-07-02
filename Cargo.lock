@@ -1136,8 +1136,15 @@ dependencies = [
 name = "lore-auth-inbound"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "http",
+ "ipnet",
+ "lore-auth-adapters",
  "lore-auth-core",
  "lore-auth-proto",
+ "tokio",
+ "tonic",
+ "tower 0.5.3",
 ]
 
 [[package]]

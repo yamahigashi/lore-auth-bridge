@@ -7,18 +7,14 @@ pub mod device {
     //! Device-flow HTTP endpoint wiring.
 }
 
-pub mod grpcauth {
-    //! `epic_urc.UrcAuthApi` tonic server wiring.
-}
+mod peer;
+pub mod status;
 
-pub mod grpcrebac {
-    //! `ucs.auth.RebacApi` tonic server wiring.
-}
+pub mod grpcauth;
+pub mod grpcrebac;
 
 pub mod httpserver {
     //! HTTP route wiring for login, JWKS, session, and operational endpoints.
 }
 
-pub mod ratelimit {
-    //! Inbound rate-limit middleware wiring.
-}
+pub mod ratelimit;
