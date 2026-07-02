@@ -146,7 +146,7 @@ async fn security_headers(request: Request, next: Next) -> Response {
         "content-security-policy",
         if is_admin {
             HeaderValue::from_static(
-                "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'",
+                "default-src 'none'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'",
             )
         } else {
             HeaderValue::from_static(

@@ -464,6 +464,16 @@ async fn admin_route_renders_dashboard_for_admin_session_and_language_cookie() {
     let response = app.oneshot(request).await.expect("admin response");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let csp = response
+        .headers()
+        .get("content-security-policy")
+        .expect("admin CSP header")
+        .to_str()
+        .expect("admin CSP header string");
+    assert!(
+        csp.contains("connect-src 'self'"),
+        "admin CSP {csp:?} missing connect-src 'self'"
+    );
     let cookie = response
         .headers()
         .get(header::SET_COOKIE)
@@ -474,6 +484,10 @@ async fn admin_route_renders_dashboard_for_admin_session_and_language_cookie() {
     assert!(cookie.contains("Secure"), "{cookie}");
     let body = response_text(response).await;
     assert!(body.contains("管理ダッシュボード"), "{body}");
+    assert!(
+        body.contains(r#"<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>"#),
+        "{body}"
+    );
     assert!(body.contains("Admin@Example.com"), "{body}");
     assert!(body.contains("Admin &#60;Root&#62; &#38; Co"), "{body}");
     assert!(!body.contains("&amp;#60;Root&amp;#62;"), "{body}");
