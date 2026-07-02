@@ -322,6 +322,22 @@ impl GroupAdmin for NullPorts {
     ) -> Result<(), CoreError> {
         Ok(())
     }
+
+    async fn add_group_group(
+        &self,
+        _parent_group: &str,
+        _member_group: &str,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn remove_group_group(
+        &self,
+        _parent_group: &str,
+        _member_group: &str,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
 }
 
 #[async_trait]

@@ -1,7 +1,7 @@
 //! In-memory adapter used by Rust core and adapter tests.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Mutex, MutexGuard},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -37,6 +37,7 @@ struct State {
     grants: HashMap<String, HashMap<String, String>>,
     groups: HashMap<String, Group>,
     group_members: HashMap<String, Vec<String>>,
+    group_groups: HashMap<String, Vec<String>>,
     auth_sessions: HashMap<String, AuthSession>,
     auth_session_codes: HashMap<String, String>,
     login_states: HashMap<String, LoginState>,
@@ -840,6 +841,58 @@ impl GroupAdmin for Store {
         }
         Ok(())
     }
+
+    async fn add_group_group(
+        &self,
+        parent_group: &str,
+        member_group: &str,
+    ) -> Result<(), CoreError> {
+        let mut state = self.lock();
+        let parent_group_id = resolve_group_id(&state, parent_group)?.to_owned();
+        let member_group_id = resolve_group_id(&state, member_group)?.to_owned();
+        if parent_group_id == member_group_id {
+            return Err(CoreError::InvalidArgument(
+                "group cannot contain itself".to_owned(),
+            ));
+        }
+        if state
+            .group_groups
+            .get(&parent_group_id)
+            .is_some_and(|members| members.contains(&member_group_id))
+        {
+            return Ok(());
+        }
+        if group_group_would_cycle(&state, &parent_group_id, &member_group_id) {
+            return Err(CoreError::InvalidArgument(
+                "group nesting would create a cycle".to_owned(),
+            ));
+        }
+        state
+            .group_groups
+            .entry(parent_group_id)
+            .or_default()
+            .push(member_group_id);
+        Ok(())
+    }
+
+    async fn remove_group_group(
+        &self,
+        parent_group: &str,
+        member_group: &str,
+    ) -> Result<(), CoreError> {
+        let mut state = self.lock();
+        let parent_group_id = resolve_group_id(&state, parent_group)?.to_owned();
+        let member_group_id = resolve_group_id(&state, member_group)?.to_owned();
+        let members = state
+            .group_groups
+            .get_mut(&parent_group_id)
+            .ok_or(CoreError::NotFound)?;
+        let Some(index) = members.iter().position(|id| id == &member_group_id) else {
+            return Err(CoreError::NotFound);
+        };
+        members.remove(index);
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -935,6 +988,41 @@ fn resolve_user_id<'a>(state: &'a State, email_or_id: &str) -> Result<&'a str, C
         .find(|user| user.id == email_or_id || user.email == email_or_id)
         .map(|user| user.id.as_str())
         .ok_or(CoreError::NotFound)
+}
+
+fn resolve_group_id<'a>(state: &'a State, group: &str) -> Result<&'a str, CoreError> {
+    if let Some(candidate) = state
+        .groups
+        .values()
+        .find(|candidate| candidate.id == group)
+    {
+        return Ok(candidate.id.as_str());
+    }
+    state
+        .groups
+        .values()
+        .find(|candidate| candidate.name == group)
+        .map(|group| group.id.as_str())
+        .ok_or(CoreError::NotFound)
+}
+
+fn group_group_would_cycle(state: &State, parent_group_id: &str, member_group_id: &str) -> bool {
+    let mut seen = HashSet::<String>::new();
+    let mut stack = vec![member_group_id.to_owned()];
+    while let Some(group_id) = stack.pop() {
+        if group_id == parent_group_id {
+            return true;
+        }
+        if !seen.insert(group_id.clone()) {
+            continue;
+        }
+        if let Some(members) = state.group_groups.get(&group_id) {
+            for member in members {
+                stack.push(member.clone());
+            }
+        }
+    }
+    false
 }
 
 fn external_identity_key(identity: &ExternalIdentity) -> String {

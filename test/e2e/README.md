@@ -80,5 +80,7 @@ broker は自己署名 CA を使った gRPC/TLS で起動し、CA を `SSL_CERT_
 
 - `loreserver` が base `default.toml` を必要とする場合は、環境変数
   `LORE_E2E_DEFAULT_TOML=/path/to/default.toml` を指定すると config dir にコピーします。
+- bridge 設定の `authz.backend`（`sql` | `rebac`）は環境変数
+  `LORE_E2E_AUTHZ_BACKEND` で切り替えられます（未設定時は `sql`）。
 - `lore` CLI の出力フォーマットが異なる場合は `e2e_test.go` の `repoIDRe`
   と `cloneOrPush` を実環境に合わせて調整してください。

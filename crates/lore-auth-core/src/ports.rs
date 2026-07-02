@@ -220,6 +220,16 @@ pub trait GroupAdmin: Send + Sync {
         group: &str,
         user_email_or_id: &str,
     ) -> Result<(), CoreError>;
+    async fn add_group_group(
+        &self,
+        parent_group: &str,
+        member_group: &str,
+    ) -> Result<(), CoreError>;
+    async fn remove_group_group(
+        &self,
+        parent_group: &str,
+        member_group: &str,
+    ) -> Result<(), CoreError>;
 }
 
 #[async_trait]

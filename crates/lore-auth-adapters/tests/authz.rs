@@ -462,6 +462,149 @@ async fn revoke_is_visible_to_next_check_for_all_backends() {
 }
 
 #[tokio::test]
+async fn rebac_nested_group_grant_allows_lists_and_revokes() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let policy = rebac(store);
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    let parent = store.add_group("artists", "").await.expect("add parent");
+    store.add_group("riggers", "").await.expect("add middle");
+    store.add_group("animators", "").await.expect("add child");
+    store
+        .add_group_member("animators", "alice@example.com")
+        .await
+        .expect("add direct child member");
+    store
+        .add_group_group("artists", "riggers")
+        .await
+        .expect("nest middle under parent");
+    store
+        .add_group_group("riggers", "animators")
+        .await
+        .expect("nest child under middle");
+    let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
+    store
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: resource_id.clone(),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo");
+    store
+        .add_grant("group", &parent.id, "game-assets", "writer")
+        .await
+        .expect("parent grant");
+
+    assert!(
+        policy
+            .can_access(&user.id, &resource_id, "write")
+            .await
+            .expect("nested group grant allows write")
+    );
+    assert_eq!(
+        policy
+            .list_accessible(&user.id, ResourceFilter::default())
+            .await
+            .expect("nested group grant is listed"),
+        vec![ResourcePermission {
+            resource_id: resource_id.clone(),
+            permission: vec![Permission::Read, Permission::Write],
+        }]
+    );
+
+    store
+        .remove_group_group("riggers", "animators")
+        .await
+        .expect("remove nested edge");
+    assert!(
+        !policy
+            .can_access(&user.id, &resource_id, "write")
+            .await
+            .expect("nested group revoke is visible")
+    );
+}
+
+#[tokio::test]
+async fn rebac_deep_nested_group_hits_authz_core_max_depth_as_error() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let policy = rebac(store);
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    for index in 0..=30 {
+        store
+            .add_group(&format!("group-{index:02}"), "")
+            .await
+            .expect("add group");
+    }
+    for index in 0..30 {
+        store
+            .add_group_group(
+                &format!("group-{index:02}"),
+                &format!("group-{:02}", index + 1),
+            )
+            .await
+            .expect("add nested edge");
+    }
+    store
+        .add_group_member("group-30", "alice@example.com")
+        .await
+        .expect("add deepest direct member");
+    let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
+    store
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: resource_id.clone(),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo");
+    let parent = store.add_group("granted", "").await.expect("add granted");
+    store
+        .add_group_group("granted", "group-00")
+        .await
+        .expect("granted contains deep chain");
+    store
+        .add_grant("group", &parent.id, "game-assets", "writer")
+        .await
+        .expect("parent grant");
+
+    for result in [
+        policy.can_access(&user.id, &resource_id, "write").await,
+        policy
+            .list_accessible(&user.id, ResourceFilter::default())
+            .await
+            .map(|permissions| !permissions.is_empty()),
+    ] {
+        match result {
+            Err(CoreError::InvalidArgument(message)) => {
+                assert!(
+                    message.contains("max recursion depth exceeded"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected max-depth error, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
 async fn rebac_relation_checks_propagate_tuple_read_errors() {
     let fixture = migrated_store().await;
     let store = &fixture.store;
@@ -546,10 +689,18 @@ async fn sqlite_tuple_reader_supports_direct_trait_method_filters() {
         .await
         .expect("add user");
     let group = store.add_group("artists", "").await.expect("add group");
+    let child_group = store
+        .add_group("riggers", "")
+        .await
+        .expect("add child group");
     store
         .add_group_member("artists", "alice@example.com")
         .await
         .expect("add group member");
+    store
+        .add_group_group("artists", "riggers")
+        .await
+        .expect("add nested group");
     let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
     store
         .upsert(Resource {
@@ -633,6 +784,24 @@ async fn sqlite_tuple_reader_supports_direct_trait_method_filters() {
         .expect("read group-filtered tuple");
     assert_eq!(group_filtered.len(), 1);
     assert_eq!(group_filtered[0].subject_id, format!("{}#member", group.id));
+
+    let nested_group_filtered = reader
+        .read_tuples(&TupleFilter {
+            object_type: Some("group".to_owned()),
+            object_id: Some(group.id.clone()),
+            relation: Some("member".to_owned()),
+            subject_type: Some("group".to_owned()),
+            subject_id: Some(format!("{}#member", child_group.id)),
+        })
+        .await
+        .expect("read nested group-filtered tuple");
+    assert_eq!(nested_group_filtered.len(), 1);
+    assert_eq!(nested_group_filtered[0].object_id, group.id);
+    assert_eq!(nested_group_filtered[0].subject_type, "group");
+    assert_eq!(
+        nested_group_filtered[0].subject_id,
+        format!("{}#member", child_group.id)
+    );
 
     let malformed_group_filter = reader
         .read_tuples(&TupleFilter {

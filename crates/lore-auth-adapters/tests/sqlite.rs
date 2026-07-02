@@ -261,6 +261,63 @@ async fn group_and_grant_crud_updates_authorization() {
 }
 
 #[tokio::test]
+async fn group_group_crud_rejects_self_cycles_and_missing_groups() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let artists = store
+        .add_group("artists", "Art team")
+        .await
+        .expect("add artists");
+    let riggers = store
+        .add_group("riggers", "Rigging team")
+        .await
+        .expect("add riggers");
+    store
+        .add_group("animators", "")
+        .await
+        .expect("add animators");
+
+    store
+        .add_group_group("artists", "riggers")
+        .await
+        .expect("nest riggers under artists");
+    store
+        .remove_group_group(&artists.id, &riggers.id)
+        .await
+        .expect("remove nested group by ids");
+    assert!(matches!(
+        store.remove_group_group("artists", "riggers").await,
+        Err(CoreError::NotFound)
+    ));
+
+    assert!(matches!(
+        store.add_group_group("artists", "artists").await,
+        Err(CoreError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        store.add_group_group("missing", "riggers").await,
+        Err(CoreError::NotFound)
+    ));
+    assert!(matches!(
+        store.add_group_group("artists", "missing").await,
+        Err(CoreError::NotFound)
+    ));
+
+    store
+        .add_group_group("artists", "riggers")
+        .await
+        .expect("artists contains riggers");
+    store
+        .add_group_group("riggers", "animators")
+        .await
+        .expect("riggers contains animators");
+    assert!(matches!(
+        store.add_group_group("animators", "artists").await,
+        Err(CoreError::InvalidArgument(_))
+    ));
+}
+
+#[tokio::test]
 async fn resolve_login_binds_verified_invitation_then_resolves_existing_identity() {
     let fixture = migrated_store().await;
     let store = &fixture.store;

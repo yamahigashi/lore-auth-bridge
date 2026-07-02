@@ -24,12 +24,13 @@ use lore_auth_core::{
 use sha2::{Digest, Sha256};
 use tokio_rusqlite::{
     Connection, params,
-    rusqlite::{self, OptionalExtension, Row},
+    rusqlite::{self, OptionalExtension, Row, TransactionBehavior},
 };
 
 use crate::permissions::PermissionSet;
 
 const BASELINE_VERSION: &str = "phase2b_baseline_20260702";
+const GROUP_GROUPS_VERSION: &str = "phase3_group_groups_20260702";
 const BRIDGE_PROVIDER_ID: &str = "bridge";
 const DEFAULT_SUBJECT_STRATEGY: &str = "oidc_sub";
 const VERIFIED_EMAIL_INVITATION: &str = "verified_email_invitation";
@@ -252,6 +253,17 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at);
 "#;
 
+const GROUP_GROUPS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS group_groups (
+  group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  member_group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (group_id, member_group_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_groups_member ON group_groups(member_group_id);
+"#;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("sqlite: create database directory {path}: {source}")]
@@ -326,9 +338,14 @@ impl Store {
         self.conn
             .call(|conn| {
                 conn.execute_batch(BASELINE_SCHEMA)?;
+                conn.execute_batch(GROUP_GROUPS_SCHEMA)?;
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                     params![BASELINE_VERSION, unix_now()],
+                )?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                    params![GROUP_GROUPS_VERSION, unix_now()],
                 )?;
                 Ok::<(), rusqlite::Error>(())
             })
@@ -339,15 +356,17 @@ impl Store {
     pub async fn validate_schema(&self) -> Result<()> {
         self.conn
             .call(|conn| {
-                let version = conn
-                    .query_row(
-                        "SELECT version FROM schema_migrations WHERE version = ?1",
-                        params![BASELINE_VERSION],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?;
-                if version.is_none() {
-                    return Err(rusqlite::Error::InvalidQuery);
+                for expected in [BASELINE_VERSION, GROUP_GROUPS_VERSION] {
+                    let version = conn
+                        .query_row(
+                            "SELECT version FROM schema_migrations WHERE version = ?1",
+                            params![expected],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?;
+                    if version.is_none() {
+                        return Err(rusqlite::Error::InvalidQuery);
+                    }
                 }
                 Ok::<(), rusqlite::Error>(())
             })
@@ -1409,6 +1428,63 @@ impl GroupAdmin for Store {
             .await
             .map_err(core_from_driver)
     }
+
+    async fn add_group_group(&self, parent_group: &str, member_group: &str) -> CoreResult<()> {
+        let parent_group = parent_group.to_owned();
+        let member_group = member_group.to_owned();
+        self.conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let parent_group_id = group_id_by_name_or_id_tx(&tx, &parent_group)?;
+                let member_group_id = group_id_by_name_or_id_tx(&tx, &member_group)?;
+                if parent_group_id == member_group_id {
+                    return Err(CoreError::InvalidArgument(
+                        "group cannot contain itself".to_owned(),
+                    ));
+                }
+                if group_group_edge_exists_tx(&tx, &parent_group_id, &member_group_id)? {
+                    tx.commit().map_err(core_from_sql)?;
+                    return Ok(());
+                }
+                if group_group_would_cycle_tx(&tx, &parent_group_id, &member_group_id)? {
+                    return Err(CoreError::InvalidArgument(
+                        "group nesting would create a cycle".to_owned(),
+                    ));
+                }
+                tx.execute(
+                    "INSERT INTO group_groups (group_id, member_group_id, created_at)
+                     VALUES (?1, ?2, ?3)",
+                    params![parent_group_id, member_group_id, unix_now()],
+                )
+                .map_err(core_from_sql)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn remove_group_group(&self, parent_group: &str, member_group: &str) -> CoreResult<()> {
+        let parent_group = parent_group.to_owned();
+        let member_group = member_group.to_owned();
+        self.conn
+            .call(move |conn| {
+                let parent_group_id = group_id_by_name_or_id_conn(conn, &parent_group)?;
+                let member_group_id = group_id_by_name_or_id_conn(conn, &member_group)?;
+                let changed = conn
+                    .execute(
+                        "DELETE FROM group_groups
+                         WHERE group_id = ?1 AND member_group_id = ?2",
+                        params![parent_group_id, member_group_id],
+                    )
+                    .map_err(core_from_sql)?;
+                require_affected(changed, CoreError::NotFound)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
 }
 
 #[async_trait]
@@ -2040,6 +2116,77 @@ fn group_id_by_name_conn(conn: &rusqlite::Connection, name: &str) -> CoreResult<
     .optional()
     .map_err(core_from_sql)?
     .ok_or(CoreError::NotFound)
+}
+
+fn group_id_by_name_or_id_conn(conn: &rusqlite::Connection, group: &str) -> CoreResult<String> {
+    conn.query_row(
+        "SELECT id
+         FROM groups
+         WHERE id = ?1 OR name = ?1
+         ORDER BY CASE WHEN id = ?1 THEN 0 ELSE 1 END
+         LIMIT 1",
+        params![group],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(core_from_sql)?
+    .ok_or(CoreError::NotFound)
+}
+
+fn group_id_by_name_or_id_tx(tx: &rusqlite::Transaction<'_>, group: &str) -> CoreResult<String> {
+    tx.query_row(
+        "SELECT id
+         FROM groups
+         WHERE id = ?1 OR name = ?1
+         ORDER BY CASE WHEN id = ?1 THEN 0 ELSE 1 END
+         LIMIT 1",
+        params![group],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(core_from_sql)?
+    .ok_or(CoreError::NotFound)
+}
+
+fn group_group_edge_exists_tx(
+    tx: &rusqlite::Transaction<'_>,
+    parent_group_id: &str,
+    member_group_id: &str,
+) -> CoreResult<bool> {
+    let found = tx
+        .query_row(
+            "SELECT 1
+             FROM group_groups
+             WHERE group_id = ?1 AND member_group_id = ?2",
+            params![parent_group_id, member_group_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(core_from_sql)?;
+    Ok(found.is_some())
+}
+
+fn group_group_would_cycle_tx(
+    tx: &rusqlite::Transaction<'_>,
+    parent_group_id: &str,
+    member_group_id: &str,
+) -> CoreResult<bool> {
+    let found = tx
+        .query_row(
+            "WITH RECURSIVE descendants(group_id) AS (
+               SELECT ?1
+               UNION
+               SELECT gg.member_group_id
+               FROM group_groups gg
+               JOIN descendants d ON gg.group_id = d.group_id
+             )
+             SELECT 1 FROM descendants WHERE group_id = ?2 LIMIT 1",
+            params![member_group_id, parent_group_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(core_from_sql)?;
+    Ok(found.is_some())
 }
 
 fn resolve_user_id_conn(conn: &rusqlite::Connection, email_or_id: &str) -> CoreResult<String> {

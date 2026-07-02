@@ -120,6 +120,38 @@ func TestLookupUserPermissions(t *testing.T) {
 	}
 }
 
+func TestNestedGroupGrantWithRebacBackend(t *testing.T) {
+	requireE2E(t)
+	if authzBackend() != "rebac" {
+		t.Skip("nested group authorization is evaluated only with LORE_E2E_AUTHZ_BACKEND=rebac")
+	}
+	h := newHarness(t)
+	registerUser(t, h)
+	repo := h.addRepository(t, "nested-group", "33333333333333333333333333333333")
+	h.runAuthctl("group", "add", "parent")
+	h.runAuthctl("group", "add", "child")
+	h.runAuthctl("group", "member", "add", "child", "e2e@example.com")
+	h.runAuthctl("group", "nest", "add", "parent", "child")
+	h.addGroupGrant(t, "parent", repo, "writer")
+
+	authn := h.mintAuthnToken("e2e@example.com")
+	resourceID := repoResourceID(repo.LoreRepositoryID)
+	if _, err := h.exchange(authn, resourceID); err != nil {
+		t.Fatalf("exchange should allow nested group writer grant: %v", err)
+	}
+	if permissions := h.lookupPermissions(t, authn, "urc"); !hasPermission(permissions, resourceID, "write") {
+		t.Fatalf("lookup should include nested group writer grant for %s: %#v", resourceID, permissions)
+	}
+
+	h.runAuthctl("group", "nest", "remove", "parent", "child")
+	if _, err := h.exchange(authn, resourceID); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("expected PermissionDenied after nested group removal, got %v", err)
+	}
+	if permissions := h.lookupPermissions(t, authn, "urc"); hasResource(permissions, resourceID) {
+		t.Fatalf("lookup should no longer include %s after nested group removal: %#v", resourceID, permissions)
+	}
+}
+
 func TestRebacCreateThenDelete(t *testing.T) {
 	requireE2E(t)
 	h := newHarness(t)
@@ -164,6 +196,46 @@ func (h *harness) addRepository(t *testing.T, name, loreRepositoryID string) *e2
 func (h *harness) addGrant(t *testing.T, user *e2eUser, repo *e2eRepository, role string) {
 	t.Helper()
 	h.runAuthctl("grant", "add", "user:"+user.Email, repo.Name, role)
+}
+
+func (h *harness) addGroupGrant(t *testing.T, group string, repo *e2eRepository, role string) {
+	t.Helper()
+	h.runAuthctl("grant", "add", "group:"+group, repo.Name, role)
+}
+
+func (h *harness) lookupPermissions(t *testing.T, authnToken, resourceFilter string) []*pbAuth.ResourcePermission {
+	t.Helper()
+	client, closeClient := h.authClient()
+	defer closeClient()
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("authorization", "Bearer "+authnToken))
+	resp, err := client.LookupUserPermissions(ctx, &pbAuth.LookupUserPermissionsRequest{ResourceFilter: resourceFilter})
+	if err != nil {
+		t.Fatalf("lookup permissions: %v", err)
+	}
+	return resp.GetResourcePermission()
+}
+
+func hasResource(permissions []*pbAuth.ResourcePermission, resourceID string) bool {
+	for _, permission := range permissions {
+		if permission.GetResourceId() == resourceID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasPermission(permissions []*pbAuth.ResourcePermission, resourceID, want string) bool {
+	for _, permission := range permissions {
+		if permission.GetResourceId() != resourceID {
+			continue
+		}
+		for _, got := range permission.GetPermission() {
+			if got == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *harness) singleRepository(t *testing.T) *e2eRepository {

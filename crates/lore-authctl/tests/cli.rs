@@ -71,6 +71,19 @@ fn assert_success(output: Output) -> String {
     String::from_utf8(output.stdout).expect("stdout utf8")
 }
 
+fn assert_failure(output: Output) -> (String, String) {
+    assert!(
+        !output.status.success(),
+        "expected failure, got success\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (
+        String::from_utf8(output.stdout).expect("stdout utf8"),
+        String::from_utf8(output.stderr).expect("stderr utf8"),
+    )
+}
+
 #[test]
 fn init_invite_repo_grant_and_list_flow() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -170,4 +183,63 @@ fn check_uses_configured_rebac_backend() {
     ));
 
     assert_eq!(out.trim(), "allow");
+}
+
+#[test]
+fn group_nest_add_and_remove_commands_update_group_edges() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config_with_authz(dir.path(), "rebac");
+
+    assert_success(run(&config, &["init-db"]));
+    assert_success(run(&config, &["group", "add", "artists"]));
+    assert_success(run(&config, &["group", "add", "riggers"]));
+
+    let out = assert_success(run(
+        &config,
+        &["group", "nest", "add", "artists", "riggers"],
+    ));
+    assert_eq!(out.trim(), "ok");
+
+    let out = assert_success(run(
+        &config,
+        &["group", "nest", "remove", "artists", "riggers"],
+    ));
+    assert_eq!(out.trim(), "ok");
+}
+
+#[test]
+fn group_nest_commands_are_rejected_with_sql_backend() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config(dir.path());
+
+    assert_success(run(&config, &["init-db"]));
+    assert_success(run(&config, &["group", "add", "artists"]));
+    assert_success(run(&config, &["group", "add", "riggers"]));
+
+    let (_stdout, stderr) = assert_failure(run(
+        &config,
+        &["group", "nest", "add", "artists", "riggers"],
+    ));
+    assert!(stderr.contains("authz.backend: rebac"), "{stderr}");
+    assert!(stderr.contains("nested group"), "{stderr}");
+}
+
+#[test]
+fn group_nest_cycle_rejection_is_reported_by_cli() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config_with_authz(dir.path(), "rebac");
+
+    assert_success(run(&config, &["init-db"]));
+    assert_success(run(&config, &["group", "add", "artists"]));
+    assert_success(run(&config, &["group", "add", "riggers"]));
+    assert_success(run(
+        &config,
+        &["group", "nest", "add", "artists", "riggers"],
+    ));
+
+    let (_stdout, stderr) = assert_failure(run(
+        &config,
+        &["group", "nest", "add", "riggers", "artists"],
+    ));
+    assert!(stderr.contains("cycle"), "{stderr}");
 }

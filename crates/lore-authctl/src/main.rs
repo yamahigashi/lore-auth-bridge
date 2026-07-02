@@ -124,6 +124,10 @@ enum GroupCommand {
         #[command(subcommand)]
         command: GroupMemberCommand,
     },
+    Nest {
+        #[command(subcommand)]
+        command: GroupNestCommand,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -143,6 +147,18 @@ enum GroupMemberCommand {
 struct GroupMember {
     group: String,
     user: String,
+}
+
+#[derive(Debug, Subcommand)]
+enum GroupNestCommand {
+    Add(GroupNest),
+    Remove(GroupNest),
+}
+
+#[derive(Debug, Args)]
+struct GroupNest {
+    parent_group: String,
+    member_group: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -397,8 +413,35 @@ async fn run_group(config_path: &Path, db: Option<&Path>, command: GroupCommand)
                 println!("ok");
             }
         },
+        GroupCommand::Nest { command } => match command {
+            GroupNestCommand::Add(args) => {
+                require_rebac_for_nested_group(&env.cfg)?;
+                env.store
+                    .add_group_group(&args.parent_group, &args.member_group)
+                    .await
+                    .map_err(core_error)?;
+                println!("ok");
+            }
+            GroupNestCommand::Remove(args) => {
+                require_rebac_for_nested_group(&env.cfg)?;
+                env.store
+                    .remove_group_group(&args.parent_group, &args.member_group)
+                    .await
+                    .map_err(core_error)?;
+                println!("ok");
+            }
+        },
     }
     Ok(())
+}
+
+fn require_rebac_for_nested_group(cfg: &config::Config) -> Result<()> {
+    if cfg.authz.backend == "rebac" {
+        return Ok(());
+    }
+    bail!(
+        "nested group is evaluated only when authz.backend: rebac is configured; set config authz.backend to rebac or do not perform this operation"
+    )
 }
 
 async fn run_repo(config_path: &Path, db: Option<&Path>, command: RepoCommand) -> Result<()> {

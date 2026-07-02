@@ -424,8 +424,20 @@ fn read_group_member_tuples_conn(
 ) -> Result<(), AuthzError> {
     if !matches_filter_value("group", &filter.object_type)
         || !matches_filter_value("member", &filter.relation)
-        || !matches_filter_value("user", &filter.subject_type)
     {
+        return Ok(());
+    }
+    read_user_group_member_tuples_conn(conn, filter, tuples)?;
+    read_group_group_member_tuples_conn(conn, filter, tuples)?;
+    Ok(())
+}
+
+fn read_user_group_member_tuples_conn(
+    conn: &rusqlite::Connection,
+    filter: &TupleFilter,
+    tuples: &mut Vec<Tuple>,
+) -> Result<(), AuthzError> {
+    if !matches_filter_value("user", &filter.subject_type) {
         return Ok(());
     }
     let mut clauses = Vec::<String>::new();
@@ -457,6 +469,57 @@ fn read_group_member_tuples_conn(
                 relation: "member".to_owned(),
                 subject_type: "user".to_owned(),
                 subject_id: row.get(1)?,
+                condition: None,
+            })
+        })
+        .map_err(authz_from_sql)?;
+    for row in rows {
+        tuples.push(row.map_err(authz_from_sql)?);
+    }
+    Ok(())
+}
+
+fn read_group_group_member_tuples_conn(
+    conn: &rusqlite::Connection,
+    filter: &TupleFilter,
+    tuples: &mut Vec<Tuple>,
+) -> Result<(), AuthzError> {
+    if !matches_filter_value("group", &filter.subject_type) {
+        return Ok(());
+    }
+    let mut clauses = Vec::<String>::new();
+    let mut values = Vec::<String>::new();
+    if let Some(object_id) = &filter.object_id {
+        clauses.push("group_id = ?".to_owned());
+        values.push(object_id.clone());
+    }
+    if let Some(subject_id) = &filter.subject_id {
+        let Some(member_group_id) = subject_id.strip_suffix("#member") else {
+            return Ok(());
+        };
+        clauses.push("member_group_id = ?".to_owned());
+        values.push(member_group_id.to_owned());
+    }
+    let where_sql = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", clauses.join(" AND "))
+    };
+    let sql = format!(
+        "SELECT group_id, member_group_id
+         FROM group_groups{where_sql}
+         ORDER BY group_id, member_group_id"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(authz_from_sql)?;
+    let rows = stmt
+        .query_map(params_from_iter(values.iter()), |row| {
+            let member_group_id: String = row.get(1)?;
+            Ok(Tuple {
+                object_type: "group".to_owned(),
+                object_id: row.get(0)?,
+                relation: "member".to_owned(),
+                subject_type: "group".to_owned(),
+                subject_id: format!("{member_group_id}#member"),
                 condition: None,
             })
         })
@@ -532,16 +595,21 @@ fn validate_can_access_roles_conn(
 ) -> Result<(), CoreError> {
     let mut stmt = conn
         .prepare(
-            "SELECT g.role
+            "WITH RECURSIVE user_groups(group_id) AS (
+               SELECT group_id FROM group_members WHERE user_id = ?2
+               UNION
+               SELECT gg.group_id
+               FROM group_groups gg
+               JOIN user_groups ug ON gg.member_group_id = ug.group_id
+             )
+             SELECT g.role
              FROM grants g
              WHERE g.repository_id = ?1
                AND (
                  (g.subject_type = 'user' AND g.subject_id = ?2)
                  OR (
                    g.subject_type = 'group'
-                   AND g.subject_id IN (
-                     SELECT group_id FROM group_members WHERE user_id = ?2
-                   )
+                   AND g.subject_id IN (SELECT group_id FROM user_groups)
                  )
                )
              ORDER BY g.role",
@@ -576,7 +644,14 @@ fn candidate_resource_ids_conn(
 ) -> Result<Vec<String>, CoreError> {
     let mut stmt = conn
         .prepare(
-            "SELECT r.lore_repository_id, g.role
+            "WITH RECURSIVE user_groups(group_id) AS (
+               SELECT group_id FROM group_members WHERE user_id = ?1
+               UNION
+               SELECT gg.group_id
+               FROM group_groups gg
+               JOIN user_groups ug ON gg.member_group_id = ug.group_id
+             )
+             SELECT r.lore_repository_id, g.role
              FROM repositories r
              JOIN grants g ON g.repository_id = r.id
              WHERE r.status = 'active'
@@ -584,9 +659,7 @@ fn candidate_resource_ids_conn(
                  (g.subject_type = 'user' AND g.subject_id = ?1)
                  OR (
                    g.subject_type = 'group'
-                   AND g.subject_id IN (
-                     SELECT group_id FROM group_members WHERE user_id = ?1
-                   )
+                   AND g.subject_id IN (SELECT group_id FROM user_groups)
                  )
                )
              ORDER BY r.name, g.role",
