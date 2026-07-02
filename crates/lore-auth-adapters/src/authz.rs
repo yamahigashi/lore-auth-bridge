@@ -1,6 +1,6 @@
 //! ReBAC authorization adapter backed by authz-core.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::{BTreeMap, HashSet};
 
 use async_trait::async_trait;
 use authz_core::{
@@ -19,7 +19,7 @@ use lore_auth_core::{
 };
 use tokio_rusqlite::{
     Connection,
-    rusqlite::{self, OptionalExtension, params, params_from_iter},
+    rusqlite::{self, params, params_from_iter},
 };
 
 use crate::{permissions::PermissionSet, sqlite};
@@ -52,10 +52,22 @@ pub struct SqliteTupleReader {
     conn: Connection,
 }
 
+/// Per-operation immutable tuple snapshot for ReBAC checks.
+///
+/// This is deliberately scoped to a single `AuthorizationPolicy` method call:
+/// every `can_access` and `list_accessible` invocation reloads tuples from
+/// SQLite before checking. It avoids repeated SQL round trips inside one
+/// resolver operation, but it is not a cross-operation tuple/result cache, so
+/// external authctl mutations are visible to the next authorization call.
+#[derive(Clone)]
+struct SnapshotTupleReader {
+    tuples: Vec<Tuple>,
+}
+
 #[derive(Clone)]
 pub struct RebacAuthorizationPolicy {
     reader: SqliteTupleReader,
-    resolver: Arc<CoreResolver<SqliteTupleReader, StaticPolicyProvider>>,
+    provider: StaticPolicyProvider,
 }
 
 impl SqliteTupleReader {
@@ -72,6 +84,20 @@ impl SqliteTupleReader {
     }
 }
 
+impl SnapshotTupleReader {
+    fn new(tuples: Vec<Tuple>) -> Self {
+        Self { tuples }
+    }
+
+    fn filtered_tuples(&self, filter: &TupleFilter) -> Vec<Tuple> {
+        self.tuples
+            .iter()
+            .filter(|tuple| tuple_matches_filter(tuple, filter))
+            .cloned()
+            .collect()
+    }
+}
+
 impl RebacAuthorizationPolicy {
     pub fn from_store(store: &sqlite::Store) -> Result<Self, CoreError> {
         Self::new(store.connection())
@@ -82,45 +108,44 @@ impl RebacAuthorizationPolicy {
         let model = parse_dsl(AUTHZ_DSL)
             .map_err(|err| CoreError::InvalidArgument(format!("authz: parse model: {err}")))?;
         let provider = StaticPolicyProvider::new(TypeSystem::new(model));
-        let resolver = Arc::new(CoreResolver::new(reader.clone(), provider));
-        Ok(Self { reader, resolver })
+        Ok(Self { reader, provider })
     }
 
-    async fn lookup_and_validate_can_access(
+    async fn can_access_snapshot(
         &self,
         resource_id: &str,
         user_id: &str,
         action: &str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<SnapshotTupleReader, CoreError> {
         let lore_repository_id = model::ResourceID::repository_id_from_resource_id(resource_id);
         let user_id = user_id.to_owned();
         let action = action.to_owned();
         self.reader
             .conn
             .call(move |conn| {
-                let repository_id = lookup_active_repository_conn(conn, &lore_repository_id)?;
-                validate_can_access_roles_conn(conn, &repository_id, &user_id, &action)
+                can_access_snapshot_conn(conn, &lore_repository_id, &user_id, &action)
             })
             .await
             .map_err(core_from_driver)
     }
 
-    async fn candidate_resource_ids(
+    async fn list_accessible_snapshot(
         &self,
         user_id: &str,
         filter: &ResourceFilter,
-    ) -> Result<Vec<String>, CoreError> {
+    ) -> Result<(Vec<String>, SnapshotTupleReader), CoreError> {
         let user_id = user_id.to_owned();
         let prefix = filter.prefix.clone();
         self.reader
             .conn
-            .call(move |conn| candidate_resource_ids_conn(conn, &user_id, &prefix))
+            .call(move |conn| list_accessible_snapshot_conn(conn, &user_id, &prefix))
             .await
             .map_err(core_from_driver)
     }
 
-    async fn check_allowed(
+    async fn check_allowed_with_resolver(
         &self,
+        resolver: &CoreResolver<SnapshotTupleReader, StaticPolicyProvider>,
         object_type: &str,
         object_id: &str,
         relation: &str,
@@ -134,8 +159,7 @@ impl RebacAuthorizationPolicy {
             subject_type.to_owned(),
             subject_id.to_owned(),
         );
-        match self
-            .resolver
+        match resolver
             .resolve_check(request)
             .await
             .map_err(core_from_authz)?
@@ -149,15 +173,23 @@ impl RebacAuthorizationPolicy {
         }
     }
 
-    async fn check_any_relation(
+    async fn check_any_relation_with_resolver(
         &self,
+        resolver: &CoreResolver<SnapshotTupleReader, StaticPolicyProvider>,
         resource_id: &str,
         user_id: &str,
         relations: &[&str],
     ) -> Result<bool, CoreError> {
         for relation in relations {
             if self
-                .check_allowed("resource", resource_id, relation, "user", user_id)
+                .check_allowed_with_resolver(
+                    resolver,
+                    "resource",
+                    resource_id,
+                    relation,
+                    "user",
+                    user_id,
+                )
                 .await?
             {
                 return Ok(true);
@@ -175,8 +207,10 @@ impl AuthorizationPolicy for RebacAuthorizationPolicy {
         resource_id: &str,
         action: &str,
     ) -> Result<bool, CoreError> {
-        self.lookup_and_validate_can_access(resource_id, user_id, action)
+        let snapshot = self
+            .can_access_snapshot(resource_id, user_id, action)
             .await?;
+        let resolver = CoreResolver::new(snapshot, self.provider.clone());
         let relations: &[&str] = match action {
             "read" => &["reader", "writer", "admin"],
             "write" => &["writer", "admin"],
@@ -187,7 +221,7 @@ impl AuthorizationPolicy for RebacAuthorizationPolicy {
                 &["admin"]
             }
         };
-        self.check_any_relation(resource_id, user_id, relations)
+        self.check_any_relation_with_resolver(&resolver, resource_id, user_id, relations)
             .await
     }
 
@@ -196,10 +230,13 @@ impl AuthorizationPolicy for RebacAuthorizationPolicy {
         user_id: &str,
         filter: ResourceFilter,
     ) -> Result<Vec<ResourcePermission>, CoreError> {
-        let resource_ids = self.candidate_resource_ids(user_id, &filter).await?;
+        let (resource_ids, snapshot) = self.list_accessible_snapshot(user_id, &filter).await?;
+        let resolver = CoreResolver::new(snapshot, self.provider.clone());
         let mut out = Vec::new();
         for resource_id in resource_ids {
-            let permissions = self.resource_permissions(user_id, &resource_id).await?;
+            let permissions = self
+                .resource_permissions_with_resolver(&resolver, user_id, &resource_id)
+                .await?;
             if !permissions.is_empty() {
                 out.push(ResourcePermission {
                     resource_id,
@@ -212,13 +249,21 @@ impl AuthorizationPolicy for RebacAuthorizationPolicy {
 }
 
 impl RebacAuthorizationPolicy {
-    async fn resource_permissions(
+    async fn resource_permissions_with_resolver(
         &self,
+        resolver: &CoreResolver<SnapshotTupleReader, StaticPolicyProvider>,
         user_id: &str,
         resource_id: &str,
     ) -> Result<Vec<Permission>, CoreError> {
         if self
-            .check_allowed("resource", resource_id, "admin", "user", user_id)
+            .check_allowed_with_resolver(
+                resolver,
+                "resource",
+                resource_id,
+                "admin",
+                "user",
+                user_id,
+            )
             .await?
         {
             return Ok(vec![Permission::Read, Permission::Write, Permission::Admin]);
@@ -226,10 +271,24 @@ impl RebacAuthorizationPolicy {
 
         let mut set = PermissionSet::default();
         let reader = self
-            .check_allowed("resource", resource_id, "reader", "user", user_id)
+            .check_allowed_with_resolver(
+                resolver,
+                "resource",
+                resource_id,
+                "reader",
+                "user",
+                user_id,
+            )
             .await?;
         let writer = self
-            .check_allowed("resource", resource_id, "writer", "user", user_id)
+            .check_allowed_with_resolver(
+                resolver,
+                "resource",
+                resource_id,
+                "writer",
+                "user",
+                user_id,
+            )
             .await?;
         if reader || writer {
             set.insert(Permission::Read);
@@ -308,6 +367,81 @@ impl TupleReader for SqliteTupleReader {
     /// authz-core 0.1.0's CoreResolver does not call this method; it reads via
     /// read_tuples with object/relation filters. This is implemented for the
     /// TupleReader contract and future engine versions.
+    async fn read_user_tuple_batch(
+        &self,
+        object_type: &str,
+        object_id: &str,
+        relations: &[String],
+        subject_type: &str,
+        subject_id: &str,
+    ) -> Result<Option<Tuple>, AuthzError> {
+        for relation in relations {
+            if let Some(tuple) = self
+                .read_user_tuple(object_type, object_id, relation, subject_type, subject_id)
+                .await?
+            {
+                return Ok(Some(tuple));
+            }
+        }
+        Ok(None)
+    }
+}
+
+#[async_trait]
+impl TupleReader for SnapshotTupleReader {
+    async fn read_tuples(&self, filter: &TupleFilter) -> Result<Vec<Tuple>, AuthzError> {
+        Ok(self.filtered_tuples(filter))
+    }
+
+    async fn read_user_tuple(
+        &self,
+        object_type: &str,
+        object_id: &str,
+        relation: &str,
+        subject_type: &str,
+        subject_id: &str,
+    ) -> Result<Option<Tuple>, AuthzError> {
+        let filter = TupleFilter {
+            object_type: Some(object_type.to_owned()),
+            object_id: Some(object_id.to_owned()),
+            relation: Some(relation.to_owned()),
+            subject_type: Some(subject_type.to_owned()),
+            subject_id: Some(subject_id.to_owned()),
+        };
+        Ok(self.filtered_tuples(&filter).into_iter().next())
+    }
+
+    async fn read_userset_tuples(
+        &self,
+        object_type: &str,
+        object_id: &str,
+        relation: &str,
+    ) -> Result<Vec<Tuple>, AuthzError> {
+        let filter = TupleFilter {
+            object_type: Some(object_type.to_owned()),
+            object_id: Some(object_id.to_owned()),
+            relation: Some(relation.to_owned()),
+            subject_type: Some("group".to_owned()),
+            subject_id: None,
+        };
+        Ok(self.filtered_tuples(&filter))
+    }
+
+    async fn read_starting_with_user(
+        &self,
+        subject_type: &str,
+        subject_id: &str,
+    ) -> Result<Vec<Tuple>, AuthzError> {
+        let filter = TupleFilter {
+            object_type: None,
+            object_id: None,
+            relation: None,
+            subject_type: Some(subject_type.to_owned()),
+            subject_id: Some(subject_id.to_owned()),
+        };
+        Ok(self.filtered_tuples(&filter))
+    }
+
     async fn read_user_tuple_batch(
         &self,
         object_type: &str,
@@ -567,72 +701,243 @@ fn matches_filter_value(value: &str, filter: &Option<String>) -> bool {
     filter.as_ref().is_none_or(|expected| expected == value)
 }
 
-fn lookup_active_repository_conn(
-    conn: &rusqlite::Connection,
-    lore_repository_id: &str,
-) -> Result<String, CoreError> {
-    let mut stmt = conn
-        .prepare_cached(
-            "SELECT id
-             FROM repositories
-             WHERE status = 'active'
-               AND lore_repository_id = ?1",
-        )
-        .map_err(core_from_sql)?;
-    stmt.query_row(params![lore_repository_id], |row| row.get::<_, String>(0))
-        .optional()
-        .map_err(core_from_sql)?
-        .ok_or(CoreError::NotFound)
+fn tuple_matches_filter(tuple: &Tuple, filter: &TupleFilter) -> bool {
+    matches_filter_value(&tuple.object_type, &filter.object_type)
+        && matches_filter_value(&tuple.object_id, &filter.object_id)
+        && matches_filter_value(&tuple.relation, &filter.relation)
+        && matches_filter_value(&tuple.subject_type, &filter.subject_type)
+        && matches_filter_value(&tuple.subject_id, &filter.subject_id)
 }
 
-fn validate_can_access_roles_conn(
+fn can_access_snapshot_conn(
     conn: &rusqlite::Connection,
-    repository_id: &str,
+    lore_repository_id: &str,
     user_id: &str,
     action: &str,
+) -> Result<SnapshotTupleReader, CoreError> {
+    let mut tuples = Vec::new();
+    read_active_repository_grant_tuples_conn(conn, lore_repository_id, &mut tuples)?;
+    read_all_group_member_tuples_conn(conn, &mut tuples)?;
+    validate_snapshot_can_access_roles(&tuples, user_id, action)?;
+    Ok(SnapshotTupleReader::new(tuples))
+}
+
+fn list_accessible_snapshot_conn(
+    conn: &rusqlite::Connection,
+    user_id: &str,
+    prefix: &str,
+) -> Result<(Vec<String>, SnapshotTupleReader), CoreError> {
+    let resource_ids = candidate_resource_ids_conn(conn, user_id, prefix)?;
+    if resource_ids.is_empty() {
+        return Ok((resource_ids, SnapshotTupleReader::new(Vec::new())));
+    }
+    let mut tuples = Vec::new();
+    read_candidate_grant_tuples_conn(conn, &resource_ids, &mut tuples)?;
+    read_all_group_member_tuples_conn(conn, &mut tuples)?;
+    Ok((resource_ids, SnapshotTupleReader::new(tuples)))
+}
+
+fn read_active_repository_grant_tuples_conn(
+    conn: &rusqlite::Connection,
+    lore_repository_id: &str,
+    tuples: &mut Vec<Tuple>,
 ) -> Result<(), CoreError> {
     let mut stmt = conn
         .prepare_cached(
-            "WITH RECURSIVE user_groups(group_id) AS (
-               SELECT group_id FROM group_members WHERE user_id = ?2
-               UNION
-               SELECT gg.group_id
-               FROM group_groups gg
-               JOIN user_groups ug ON gg.member_group_id = ug.group_id
-             )
-             SELECT g.role
-             FROM grants g
-             WHERE g.repository_id = ?1
-               AND (
-                 (g.subject_type = 'user' AND g.subject_id = ?2)
-                 OR (
-                   g.subject_type = 'group'
-                   AND g.subject_id IN (SELECT group_id FROM user_groups)
-                 )
-               )
-             ORDER BY g.role",
+            "SELECT r.lore_repository_id, g.role, g.subject_type, g.subject_id
+             FROM repositories r
+             LEFT JOIN grants g ON g.repository_id = r.id
+             WHERE r.status = 'active'
+               AND r.lore_repository_id = ?1
+             ORDER BY r.lore_repository_id, g.role, g.subject_type, g.subject_id",
         )
         .map_err(core_from_sql)?;
-    let roles = stmt
-        .query_map(params![repository_id, user_id], |row| {
-            row.get::<_, String>(0)
+    let rows = stmt
+        .query_map(params![lore_repository_id], grant_tuple_from_row)
+        .map_err(tuple_core_from_sql)?;
+    let mut found_repository = false;
+    for row in rows {
+        found_repository = true;
+        if let Some(tuple) = row.map_err(tuple_core_from_sql)? {
+            tuples.push(tuple);
+        }
+    }
+    if found_repository {
+        Ok(())
+    } else {
+        Err(CoreError::NotFound)
+    }
+}
+
+fn read_candidate_grant_tuples_conn(
+    conn: &rusqlite::Connection,
+    resource_ids: &[String],
+    tuples: &mut Vec<Tuple>,
+) -> Result<(), CoreError> {
+    let lore_repository_ids = resource_ids
+        .iter()
+        .map(|resource_id| model::ResourceID::repository_id_from_resource_id(resource_id))
+        .collect::<Vec<_>>();
+    if lore_repository_ids.is_empty() {
+        return Ok(());
+    }
+    let placeholders = (1..=lore_repository_ids.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT r.lore_repository_id, g.role, g.subject_type, g.subject_id
+         FROM repositories r
+         JOIN grants g ON g.repository_id = r.id
+         WHERE r.status = 'active'
+           AND r.lore_repository_id IN ({placeholders})
+         ORDER BY r.lore_repository_id, g.role, g.subject_type, g.subject_id"
+    );
+    let mut stmt = conn.prepare_cached(&sql).map_err(core_from_sql)?;
+    let rows = stmt
+        .query_map(params_from_iter(lore_repository_ids.iter()), |row| {
+            grant_tuple_from_row(row).and_then(|tuple| {
+                tuple.ok_or_else(|| {
+                    rusqlite::Error::InvalidColumnType(
+                        1,
+                        "role".to_owned(),
+                        rusqlite::types::Type::Null,
+                    )
+                })
+            })
         })
-        .map_err(core_from_sql)?;
+        .map_err(tuple_core_from_sql)?;
+    for row in rows {
+        tuples.push(row.map_err(tuple_core_from_sql)?);
+    }
+    Ok(())
+}
+
+fn grant_tuple_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<Tuple>> {
+    let lore_repository_id: String = row.get(0)?;
+    let Some(relation) = row.get::<_, Option<String>>(1)? else {
+        return Ok(None);
+    };
+    let Some(subject_type) = row.get::<_, Option<String>>(2)? else {
+        return Ok(None);
+    };
+    let Some(raw_subject_id) = row.get::<_, Option<String>>(3)? else {
+        return Ok(None);
+    };
+    Ok(Some(grant_tuple(
+        lore_repository_id,
+        relation,
+        subject_type,
+        raw_subject_id,
+    )))
+}
+
+fn grant_tuple(
+    lore_repository_id: String,
+    relation: String,
+    subject_type: String,
+    raw_subject_id: String,
+) -> Tuple {
+    let subject_id = if subject_type == "group" {
+        format!("{raw_subject_id}#member")
+    } else {
+        raw_subject_id
+    };
+    Tuple {
+        object_type: "resource".to_owned(),
+        object_id: model::ResourceID::for_repository_id(&lore_repository_id).unwrap_or_default(),
+        relation,
+        subject_type,
+        subject_id,
+        condition: None,
+    }
+}
+
+fn read_all_group_member_tuples_conn(
+    conn: &rusqlite::Connection,
+    tuples: &mut Vec<Tuple>,
+) -> Result<(), CoreError> {
+    read_group_member_tuples_conn(
+        conn,
+        &TupleFilter {
+            object_type: Some("group".to_owned()),
+            object_id: None,
+            relation: Some("member".to_owned()),
+            subject_type: None,
+            subject_id: None,
+        },
+        tuples,
+    )
+    .map_err(core_from_authz)
+}
+
+fn validate_snapshot_can_access_roles(
+    tuples: &[Tuple],
+    user_id: &str,
+    action: &str,
+) -> Result<(), CoreError> {
+    let group_ids = reachable_group_ids_from_tuples(tuples, user_id);
+    let mut roles = tuples
+        .iter()
+        .filter(|tuple| tuple.object_type == "resource")
+        .filter_map(|tuple| match tuple.subject_type.as_str() {
+            "user" if tuple.subject_id == user_id => Some(tuple.relation.as_str()),
+            "group" => {
+                let group_id = tuple.subject_id.strip_suffix("#member")?;
+                group_ids
+                    .contains(group_id)
+                    .then_some(tuple.relation.as_str())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    roles.sort_unstable();
     for role in roles {
-        let role = role.map_err(core_from_sql)?;
         if role == model::Role::Admin.as_str() {
             break;
         }
-        if model::Role::from_name(&role).is_none() {
+        if model::Role::from_name(role).is_none() {
             return Err(CoreError::InvalidArgument(format!(
                 "unknown grant role {role:?}"
             )));
         }
-        if model::role_allows(&role, action) {
+        if model::role_allows(role, action) {
             break;
         }
     }
     Ok(())
+}
+
+fn reachable_group_ids_from_tuples(tuples: &[Tuple], user_id: &str) -> HashSet<String> {
+    let mut group_ids = tuples
+        .iter()
+        .filter(|tuple| {
+            tuple.object_type == "group"
+                && tuple.relation == "member"
+                && tuple.subject_type == "user"
+                && tuple.subject_id == user_id
+        })
+        .map(|tuple| tuple.object_id.clone())
+        .collect::<HashSet<_>>();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for tuple in tuples {
+            if tuple.object_type != "group"
+                || tuple.relation != "member"
+                || tuple.subject_type != "group"
+            {
+                continue;
+            }
+            let Some(member_group_id) = tuple.subject_id.strip_suffix("#member") else {
+                continue;
+            };
+            if group_ids.contains(member_group_id) && group_ids.insert(tuple.object_id.clone()) {
+                changed = true;
+            }
+        }
+    }
+    group_ids
 }
 
 fn candidate_resource_ids_conn(
@@ -700,6 +1005,10 @@ fn core_from_sql(err: rusqlite::Error) -> CoreError {
     }
 }
 
+fn tuple_core_from_sql(err: rusqlite::Error) -> CoreError {
+    core_from_authz(authz_from_sql(err))
+}
+
 fn core_from_authz(err: AuthzError) -> CoreError {
     CoreError::InvalidArgument(format!("authz: {err}"))
 }
@@ -713,4 +1022,60 @@ fn authz_from_driver(err: tokio_rusqlite::Error<AuthzError>) -> AuthzError {
 
 fn authz_from_sql(err: rusqlite::Error) -> AuthzError {
     AuthzError::Datastore(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tuple(
+        object_type: &str,
+        object_id: &str,
+        relation: &str,
+        subject_type: &str,
+        subject_id: &str,
+    ) -> Tuple {
+        Tuple {
+            object_type: object_type.to_owned(),
+            object_id: object_id.to_owned(),
+            relation: relation.to_owned(),
+            subject_type: subject_type.to_owned(),
+            subject_id: subject_id.to_owned(),
+            condition: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_tuple_reader_filters_in_memory_tuples() {
+        let reader = SnapshotTupleReader::new(vec![
+            tuple("resource", "urc-repo", "reader", "user", "user-1"),
+            tuple("resource", "urc-repo", "writer", "group", "group-1#member"),
+            tuple("group", "group-1", "member", "user", "user-1"),
+        ]);
+
+        let got = reader
+            .read_tuples(&TupleFilter {
+                object_type: Some("resource".to_owned()),
+                object_id: Some("urc-repo".to_owned()),
+                relation: Some("writer".to_owned()),
+                subject_type: Some("group".to_owned()),
+                subject_id: Some("group-1#member".to_owned()),
+            })
+            .await
+            .expect("filter snapshot tuples");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].relation, "writer");
+
+        let malformed_group_filter = reader
+            .read_tuples(&TupleFilter {
+                object_type: Some("resource".to_owned()),
+                object_id: Some("urc-repo".to_owned()),
+                relation: Some("writer".to_owned()),
+                subject_type: Some("group".to_owned()),
+                subject_id: Some("group-1".to_owned()),
+            })
+            .await
+            .expect("filter malformed group subject");
+        assert!(malformed_group_filter.is_empty());
+    }
 }
