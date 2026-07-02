@@ -28,6 +28,34 @@ const REPO_COUNT: usize = 200;
 const GRANT_COUNT: usize = 600;
 const ACTIONS: [&str; 3] = ["read", "write", "delete"];
 
+#[derive(Clone, Copy)]
+struct Scale {
+    factor: usize,
+}
+
+impl Scale {
+    fn new(factor: usize) -> Self {
+        assert!(factor > 0, "--scale must be a positive integer");
+        Self { factor }
+    }
+
+    fn users(self) -> usize {
+        USER_COUNT * self.factor
+    }
+
+    fn groups(self) -> usize {
+        GROUP_COUNT * self.factor
+    }
+
+    fn repos(self) -> usize {
+        REPO_COUNT * self.factor
+    }
+
+    fn grants(self) -> usize {
+        GRANT_COUNT * self.factor
+    }
+}
+
 /// Minimal deterministic LCG (Knuth MMIX constants); avoids a `rand` dependency.
 struct Lcg(u64);
 
@@ -44,11 +72,13 @@ impl Lcg {
 struct Cli {
     backend: String,
     iters: usize,
+    scale: Scale,
 }
 
 fn parse_cli() -> Cli {
     let mut backend = "sql".to_owned();
     let mut iters = 2000_usize;
+    let mut scale = Scale::new(1);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -62,20 +92,38 @@ fn parse_cli() -> Cli {
                     .parse()
                     .expect("--iters must be a positive integer");
             }
-            other => panic!("unknown argument: {other} (expected --backend sql|rebac, --iters N)"),
+            "--scale" => {
+                scale = Scale::new(
+                    args.next()
+                        .expect("--scale requires a value")
+                        .parse()
+                        .expect("--scale must be a positive integer"),
+                );
+            }
+            other => panic!(
+                "unknown argument: {other} (expected --backend sql|rebac, --iters N, --scale N)"
+            ),
         }
     }
     if backend != "sql" && backend != "rebac" {
         panic!("--backend must be 'sql' or 'rebac', got '{backend}'");
     }
-    Cli { backend, iters }
+    Cli {
+        backend,
+        iters,
+        scale,
+    }
 }
 
-fn seed(path: &std::path::Path) {
+fn seed(path: &std::path::Path, scale: Scale) {
     let conn = Connection::open(path).expect("open raw sqlite");
     let now = Store::unix_now();
+    let user_count = scale.users();
+    let group_count = scale.groups();
+    let repo_count = scale.repos();
+    let grant_count = scale.grants();
 
-    for i in 0..USER_COUNT {
+    for i in 0..user_count {
         conn.execute(
             "INSERT INTO users (
                id, display_name, primary_email, primary_email_normalized,
@@ -93,7 +141,7 @@ fn seed(path: &std::path::Path) {
         .expect("insert user");
     }
 
-    for i in 0..GROUP_COUNT {
+    for i in 0..group_count {
         conn.execute(
             "INSERT INTO groups (id, name, description, created_at, updated_at)
              VALUES (?1, ?2, '', ?3, ?4)",
@@ -105,23 +153,27 @@ fn seed(path: &std::path::Path) {
     // Deterministic acyclic nesting (edges always point to a higher index):
     //   group-{i}    contains group-{i+10} for i in 0..10 (depth 2)
     //   group-{i+10} contains group-{i+20} for i in 0..5  (depth 3 chains)
-    let mut nested_edges: Vec<(usize, usize)> = (0..10).map(|i| (i, i + 10)).collect();
-    nested_edges.extend((0..5).map(|i| (i + 10, i + 20)));
-    for (parent, child) in nested_edges {
-        conn.execute(
-            "INSERT INTO group_groups (group_id, member_group_id, created_at)
-             VALUES (?1, ?2, ?3)",
-            params![format!("group-{parent}"), format!("group-{child}"), now],
-        )
-        .expect("insert group nesting");
+    for block in 0..scale.factor {
+        let offset = block * GROUP_COUNT;
+        let mut nested_edges: Vec<(usize, usize)> =
+            (0..10).map(|i| (offset + i, offset + i + 10)).collect();
+        nested_edges.extend((0..5).map(|i| (offset + i + 10, offset + i + 20)));
+        for (parent, child) in nested_edges {
+            conn.execute(
+                "INSERT INTO group_groups (group_id, member_group_id, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![format!("group-{parent}"), format!("group-{child}"), now],
+            )
+            .expect("insert group nesting");
+        }
     }
 
     // 1..=3 group memberships per user, chosen by a fixed-seed LCG.
     let mut lcg = Lcg(0x5EED_1234_5678_9ABC);
-    for user in 0..USER_COUNT {
+    for user in 0..user_count {
         let count = 1 + (lcg.next() as usize) % 3;
         for _ in 0..count {
-            let group = (lcg.next() as usize) % GROUP_COUNT;
+            let group = (lcg.next() as usize) % group_count;
             conn.execute(
                 "INSERT OR IGNORE INTO group_members (group_id, user_id, created_at)
                  VALUES (?1, ?2, ?3)",
@@ -131,7 +183,7 @@ fn seed(path: &std::path::Path) {
         }
     }
 
-    for i in 0..REPO_COUNT {
+    for i in 0..repo_count {
         conn.execute(
             "INSERT INTO repositories (
                id, name, remote_url, lore_repository_id, status,
@@ -152,13 +204,13 @@ fn seed(path: &std::path::Path) {
     // Grants alternate user/group subjects; role cycles reader/writer/admin.
     // Index arithmetic keeps the universe reproducible across runs.
     let mut seeded_grants = 0_usize;
-    for i in 0..GRANT_COUNT {
+    for i in 0..grant_count {
         let (subject_type, subject_id) = if i % 2 == 0 {
-            ("user", format!("user-{}", (i * 7) % USER_COUNT))
+            ("user", format!("user-{}", (i * 7) % user_count))
         } else {
-            ("group", format!("group-{}", (i * 11) % GROUP_COUNT))
+            ("group", format!("group-{}", (i * 11) % group_count))
         };
-        let repository_id = format!("repo-pk-{}", (i * 13) % REPO_COUNT);
+        let repository_id = format!("repo-pk-{}", (i * 13) % repo_count);
         let role = ["reader", "writer", "admin"][i % 3];
         let inserted = conn
             .execute(
@@ -179,7 +231,7 @@ fn seed(path: &std::path::Path) {
         seeded_grants += inserted;
     }
     println!(
-        "seeded: users={USER_COUNT} groups={GROUP_COUNT} repos={REPO_COUNT} grants={seeded_grants}"
+        "seeded: users={user_count} groups={group_count} repos={repo_count} grants={seeded_grants}"
     );
 }
 
@@ -191,7 +243,7 @@ async fn main() {
     let path = dir.path().join("bench.sqlite3");
     let store = Store::open(&path).await.expect("open sqlite");
     store.migrate().await.expect("migrate sqlite");
-    seed(&path);
+    seed(&path, cli.scale);
 
     let policy: Arc<dyn AuthorizationPolicy> = match cli.backend.as_str() {
         "sql" => Arc::new(store.clone()),
@@ -199,19 +251,24 @@ async fn main() {
         _ => unreachable!(),
     };
 
-    let user_ids: Vec<String> = (0..USER_COUNT).map(|i| format!("user-{i}")).collect();
-    let resource_ids: Vec<String> = (0..REPO_COUNT)
+    let user_count = cli.scale.users();
+    let repo_count = cli.scale.repos();
+    let user_ids: Vec<String> = (0..user_count).map(|i| format!("user-{i}")).collect();
+    let resource_ids: Vec<String> = (0..repo_count)
         .map(|i| ResourceID::for_repository_id(&format!("repo-{i}")).expect("resource id"))
         .collect();
 
-    println!("backend={} iters={}", cli.backend, cli.iters);
+    println!(
+        "backend={} iters={} scale={}",
+        cli.backend, cli.iters, cli.scale.factor
+    );
 
     // Phase A: can_access
     let (mut allow, mut deny, mut errors) = (0_u64, 0_u64, 0_u64);
     let start = Instant::now();
     for i in 0..cli.iters {
-        let user = &user_ids[i % USER_COUNT];
-        let resource = &resource_ids[(i * 31 + 7) % REPO_COUNT];
+        let user = &user_ids[i % user_count];
+        let resource = &resource_ids[(i * 31 + 7) % repo_count];
         let action = ACTIONS[i % ACTIONS.len()];
         match policy.can_access(user, resource, action).await {
             Ok(true) => allow += 1,
@@ -236,7 +293,7 @@ async fn main() {
     let mut list_errors = 0_u64;
     let start = Instant::now();
     for i in 0..list_iters {
-        let user = &user_ids[i % USER_COUNT];
+        let user = &user_ids[i % user_count];
         match policy
             .list_accessible(user, ResourceFilter::default())
             .await

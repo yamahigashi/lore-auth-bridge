@@ -717,7 +717,7 @@ fn can_access_snapshot_conn(
 ) -> Result<SnapshotTupleReader, CoreError> {
     let mut tuples = Vec::new();
     read_active_repository_grant_tuples_conn(conn, lore_repository_id, &mut tuples)?;
-    read_all_group_member_tuples_conn(conn, &mut tuples)?;
+    read_user_reachable_group_member_tuples_conn(conn, user_id, &mut tuples)?;
     validate_snapshot_can_access_roles(&tuples, user_id, action)?;
     Ok(SnapshotTupleReader::new(tuples))
 }
@@ -733,7 +733,7 @@ fn list_accessible_snapshot_conn(
     }
     let mut tuples = Vec::new();
     read_candidate_grant_tuples_conn(conn, &resource_ids, &mut tuples)?;
-    read_all_group_member_tuples_conn(conn, &mut tuples)?;
+    read_user_reachable_group_member_tuples_conn(conn, user_id, &mut tuples)?;
     Ok((resource_ids, SnapshotTupleReader::new(tuples)))
 }
 
@@ -853,22 +853,76 @@ fn grant_tuple(
     }
 }
 
-fn read_all_group_member_tuples_conn(
+fn read_user_reachable_group_member_tuples_conn(
     conn: &rusqlite::Connection,
+    user_id: &str,
     tuples: &mut Vec<Tuple>,
 ) -> Result<(), CoreError> {
-    read_group_member_tuples_conn(
-        conn,
-        &TupleFilter {
-            object_type: Some("group".to_owned()),
-            object_id: None,
-            relation: Some("member".to_owned()),
-            subject_type: None,
-            subject_id: None,
-        },
-        tuples,
-    )
-    .map_err(core_from_authz)
+    // ReBAC only needs group membership branches that can start from this
+    // user. A group C is a transitive member of the user exactly when C is in
+    // the user's upward closure: direct groups plus every parent group reached
+    // through group_groups. Edges outside that closure cannot contribute to an
+    // allow path; omitting them only makes unrelated resolver branches read
+    // empty and deny. Cycles and max-depth behavior inside the closure remain
+    // authz-core's responsibility.
+    let mut direct_stmt = conn
+        .prepare_cached(
+            "SELECT group_id, user_id
+             FROM group_members
+             WHERE user_id = ?1
+             ORDER BY group_id, user_id",
+        )
+        .map_err(core_from_sql)?;
+    let direct_rows = direct_stmt
+        .query_map(params![user_id], |row| {
+            Ok(Tuple {
+                object_type: "group".to_owned(),
+                object_id: row.get(0)?,
+                relation: "member".to_owned(),
+                subject_type: "user".to_owned(),
+                subject_id: row.get(1)?,
+                condition: None,
+            })
+        })
+        .map_err(tuple_core_from_sql)?;
+    for row in direct_rows {
+        tuples.push(row.map_err(tuple_core_from_sql)?);
+    }
+
+    let mut group_stmt = conn
+        .prepare_cached(
+            "WITH RECURSIVE user_groups(group_id) AS (
+               SELECT group_id
+               FROM group_members
+               WHERE user_id = ?1
+               UNION
+               SELECT gg.group_id
+               FROM group_groups gg
+               JOIN user_groups ug ON gg.member_group_id = ug.group_id
+             )
+             SELECT gg.group_id, gg.member_group_id
+             FROM group_groups gg
+             JOIN user_groups ug ON gg.member_group_id = ug.group_id
+             ORDER BY gg.group_id, gg.member_group_id",
+        )
+        .map_err(core_from_sql)?;
+    let group_rows = group_stmt
+        .query_map(params![user_id], |row| {
+            let member_group_id: String = row.get(1)?;
+            Ok(Tuple {
+                object_type: "group".to_owned(),
+                object_id: row.get(0)?,
+                relation: "member".to_owned(),
+                subject_type: "group".to_owned(),
+                subject_id: format!("{member_group_id}#member"),
+                condition: None,
+            })
+        })
+        .map_err(tuple_core_from_sql)?;
+    for row in group_rows {
+        tuples.push(row.map_err(tuple_core_from_sql)?);
+    }
+    Ok(())
 }
 
 fn validate_snapshot_can_access_roles(
@@ -1077,5 +1131,43 @@ mod tests {
             .await
             .expect("filter malformed group subject");
         assert!(malformed_group_filter.is_empty());
+    }
+
+    #[test]
+    fn user_scoped_group_snapshot_loads_only_upward_closure_edges() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            "
+            CREATE TABLE group_members (
+              group_id TEXT NOT NULL,
+              user_id TEXT NOT NULL
+            );
+            CREATE TABLE group_groups (
+              group_id TEXT NOT NULL,
+              member_group_id TEXT NOT NULL
+            );
+            INSERT INTO group_members (group_id, user_id) VALUES
+              ('group-leaf', 'user-1'),
+              ('group-noise-child', 'user-2');
+            INSERT INTO group_groups (group_id, member_group_id) VALUES
+              ('group-mid', 'group-leaf'),
+              ('group-top', 'group-mid'),
+              ('group-noise-parent', 'group-noise-child');
+            ",
+        )
+        .expect("seed group graph");
+
+        let mut tuples = Vec::new();
+        read_user_reachable_group_member_tuples_conn(&conn, "user-1", &mut tuples)
+            .expect("read scoped group tuples");
+
+        assert_eq!(
+            tuples,
+            vec![
+                tuple("group", "group-leaf", "member", "user", "user-1"),
+                tuple("group", "group-mid", "member", "group", "group-leaf#member"),
+                tuple("group", "group-top", "member", "group", "group-mid#member"),
+            ]
+        );
     }
 }
