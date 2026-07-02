@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/lore-auth-proto",
+    "crates/lore-auth-core",
+    "crates/lore-auth-adapters",
+    "crates/lore-auth-inbound",
+    "crates/lore-auth-server",
+    "crates/lore-authctl",
+    "crates/lore-claimprobe",
+]
+exclude = ["lore"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/yamahigashi/lore-auth-bridge"
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+base64 = "0.22"
+hex = "0.4"
+ipnet = "2.11"
+jsonwebtoken = { version = "10.4.0", default-features = false, features = ["rust_crypto"] }
+prost = "0.13"
+protoc-bin-vendored = "3.1"
+regex = "1.11"
+rusqlite = { version = "0.37", features = ["bundled"] }
+rsa = { version = "0.9", features = ["pem"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml_ng = "0.10"
+sha2 = "0.10"
+tempfile = "3.20"
+thiserror = "2.0"
+tokio = { version = "1.45", features = ["macros", "rt-multi-thread", "signal"] }
+tokio-rusqlite = "0.7"
+tonic = { version = "0.12", features = ["transport"] }
+tonic-build = "0.12"
+tracing = "0.1"
+url = "2.5"
+uuid = { version = "1.17", features = ["v4"] }
+
+[workspace.lints.rust]
+warnings = "deny"

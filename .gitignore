@@ -13,3 +13,4 @@
 *.sqlite
 *.sqlite3
 *.db
+/target/
