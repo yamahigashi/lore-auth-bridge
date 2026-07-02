@@ -13,8 +13,6 @@ pub mod status;
 pub mod grpcauth;
 pub mod grpcrebac;
 
-pub mod httpserver {
-    //! HTTP route wiring for login, JWKS, session, and operational endpoints.
-}
+pub mod httpserver;
 
 pub mod ratelimit;
