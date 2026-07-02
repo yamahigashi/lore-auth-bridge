@@ -3,14 +3,11 @@
 package e2e
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/sqlite"
 )
 
 var repoIDRe = regexp.MustCompile(`urc-[0-9a-fA-F]{32}|[0-9a-fA-F]{32}`)
@@ -48,11 +45,7 @@ func TestRepositoryWorkflow(t *testing.T) {
 	}
 
 	// loreserver should have synced the resource into the broker via ReBAC.
-	ctx := context.Background()
-	repos, err := h.store.ListRepositories(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	repos := h.listRepositories(t)
 	if len(repos) == 0 {
 		t.Fatalf("expected a repository synced via RebacApi.CreateResource; output:\n%s", out)
 	}
@@ -60,24 +53,17 @@ func TestRepositoryWorkflow(t *testing.T) {
 	t.Logf("repository synced: name=%s lore_repository_id=%s source=%s", created.Name, created.LoreRepositoryID, created.Status)
 
 	// Grant the user write access, then a clone must succeed via authz exchange.
-	if _, err := h.store.AddGrant(ctx, "user", u.ID, created.Name, "writer"); err != nil {
-		t.Fatalf("add grant: %v", err)
-	}
+	h.addGrant(t, u, &created, "writer")
 	cloneDir := filepath.Join(h.dir, "clone")
 	if cout, err := h.runLore("clone", "lore://localhost:41337/"+repoName, cloneDir); err != nil {
 		t.Fatalf("clone failed after grant: %v\noutput:\n%s\nloreserver log:\n%s", err, cout, h.tailServerLog(60))
 	}
 }
 
-func registerUser(t *testing.T, h *harness) *sqlite.User {
+func registerUser(t *testing.T, h *harness) *e2eUser {
 	t.Helper()
-	u, err := h.store.AddUser(context.Background(), sqlite.AddUserParams{
-		Email: "e2e@example.com", DisplayName: "E2E User",
-	})
-	if err != nil {
-		t.Fatalf("register user: %v", err)
-	}
-	return u
+	h.runAuthctl("user", "add", "--email", "e2e@example.com", "--name", "E2E User")
+	return h.userByEmail(t, "e2e@example.com")
 }
 
 var _ = repoIDRe

@@ -3,10 +3,16 @@ managed:
   enabled: false
 plugins:
   - local: protoc-gen-go
-    out: internal/loreproto
-    opt: paths=source_relative
+    out: test/e2e/internal/loreproto
+    opt:
+      - paths=source_relative
+      - Mepicurc/auth_api.proto=github.com/yamahigashi/lore-auth-bridge/test/e2e/internal/loreproto/epicurc
+      - Mucsauth/rebac_api.proto=github.com/yamahigashi/lore-auth-bridge/test/e2e/internal/loreproto/ucsauth
   - local: protoc-gen-go-grpc
-    out: internal/loreproto
-    opt: paths=source_relative
+    out: test/e2e/internal/loreproto
+    opt:
+      - paths=source_relative
+      - Mepicurc/auth_api.proto=github.com/yamahigashi/lore-auth-bridge/test/e2e/internal/loreproto/epicurc
+      - Mucsauth/rebac_api.proto=github.com/yamahigashi/lore-auth-bridge/test/e2e/internal/loreproto/ucsauth
 inputs:
   - directory: third_party/lore-proto/proto

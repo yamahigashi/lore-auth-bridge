@@ -12,9 +12,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/sqlite"
-	pbAuth "github.com/yamahigashi/lore-auth-bridge/internal/loreproto/epicurc"
-	pbRebac "github.com/yamahigashi/lore-auth-bridge/internal/loreproto/ucsauth"
+	pbAuth "github.com/yamahigashi/lore-auth-bridge/test/e2e/internal/loreproto/epicurc"
+	pbRebac "github.com/yamahigashi/lore-auth-bridge/test/e2e/internal/loreproto/ucsauth"
 )
 
 func TestExactResourceClone(t *testing.T) {
@@ -30,9 +29,7 @@ func TestExactResourceClone(t *testing.T) {
 		t.Fatalf("repository create failed: %v\noutput:\n%s\nloreserver log:\n%s", err, out, h.tailServerLog(60))
 	}
 	repo := h.singleRepository(t)
-	if _, err := h.store.AddGrant(context.Background(), "user", u.ID, repo.Name, "writer"); err != nil {
-		t.Fatalf("add grant: %v", err)
-	}
+	h.addGrant(t, u, repo, "writer")
 	if out, err := h.runLore("clone", "lore://localhost:41337/"+repoName, filepath.Join(h.dir, "clone-exact")); err != nil {
 		t.Fatalf("clone failed: %v\noutput:\n%s\nloreserver log:\n%s", err, out, h.tailServerLog(60))
 	}
@@ -56,9 +53,7 @@ func TestWrongResourceDenied(t *testing.T) {
 	u := registerUser(t, h)
 	allowed := h.addRepository(t, "allowed", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 	denied := h.addRepository(t, "denied", "cccccccccccccccccccccccccccccccc")
-	if _, err := h.store.AddGrant(context.Background(), "user", u.ID, allowed.Name, "writer"); err != nil {
-		t.Fatalf("add grant: %v", err)
-	}
+	h.addGrant(t, u, allowed, "writer")
 	authn := h.mintAuthnToken("e2e@example.com")
 	_, err := h.exchange(authn, repoResourceID(denied.LoreRepositoryID))
 	if status.Code(err) != codes.PermissionDenied {
@@ -71,13 +66,9 @@ func TestDisabledUserDenied(t *testing.T) {
 	h := newHarness(t)
 	u := registerUser(t, h)
 	repo := h.addRepository(t, "disabled", "dddddddddddddddddddddddddddddddd")
-	if _, err := h.store.AddGrant(context.Background(), "user", u.ID, repo.Name, "writer"); err != nil {
-		t.Fatalf("add grant: %v", err)
-	}
+	h.addGrant(t, u, repo, "writer")
 	authn := h.mintAuthnToken("e2e@example.com")
-	if err := h.store.DisableUser(context.Background(), "e2e@example.com"); err != nil {
-		t.Fatalf("disable user: %v", err)
-	}
+	h.runAuthctl("user", "disable", "e2e@example.com")
 	_, err := h.exchange(authn, repoResourceID(repo.LoreRepositoryID))
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected Unauthenticated, got %v", err)
@@ -89,9 +80,7 @@ func TestExpiredAuthnRejected(t *testing.T) {
 	h := newHarness(t)
 	u := registerUser(t, h)
 	repo := h.addRepository(t, "expired", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
-	if _, err := h.store.AddGrant(context.Background(), "user", u.ID, repo.Name, "writer"); err != nil {
-		t.Fatalf("add grant: %v", err)
-	}
+	h.addGrant(t, u, repo, "writer")
 	authn := h.mintAuthnTokenTTL("e2e@example.com", -time.Hour)
 	_, err := h.exchange(authn, repoResourceID(repo.LoreRepositoryID))
 	if status.Code(err) != codes.Unauthenticated {
@@ -104,9 +93,7 @@ func TestWrongAudienceRejected(t *testing.T) {
 	h := newHarness(t)
 	u := registerUser(t, h)
 	repo := h.addRepository(t, "wrong-audience", "ffffffffffffffffffffffffffffffff")
-	if _, err := h.store.AddGrant(context.Background(), "user", u.ID, repo.Name, "writer"); err != nil {
-		t.Fatalf("add grant: %v", err)
-	}
+	h.addGrant(t, u, repo, "writer")
 	authn := h.mintAuthnTokenAudience("e2e@example.com", []string{"lore-service"})
 	_, err := h.exchange(authn, repoResourceID(repo.LoreRepositoryID))
 	if status.Code(err) != codes.Unauthenticated {
@@ -119,9 +106,7 @@ func TestLookupUserPermissions(t *testing.T) {
 	h := newHarness(t)
 	u := registerUser(t, h)
 	repo := h.addRepository(t, "lookup", "11111111111111111111111111111111")
-	if _, err := h.store.AddGrant(context.Background(), "user", u.ID, repo.Name, "writer"); err != nil {
-		t.Fatalf("add grant: %v", err)
-	}
+	h.addGrant(t, u, repo, "writer")
 	authn := h.mintAuthnToken("e2e@example.com")
 	client, closeClient := h.authClient()
 	defer closeClient()
@@ -144,20 +129,14 @@ func TestRebacCreateThenDelete(t *testing.T) {
 	if _, err := client.CreateResource(context.Background(), &pbRebac.CreateResourceRequest{ResourceId: resourceID, ResourceName: "rebac-matrix"}); err != nil {
 		t.Fatalf("create resource: %v", err)
 	}
-	repo, err := h.store.FindRepositoryByResourceID(context.Background(), resourceID)
-	if err != nil {
-		t.Fatalf("find created resource: %v", err)
-	}
+	repo := h.findRepositoryByResourceID(t, resourceID, false)
 	if repo.Status != "active" {
 		t.Fatalf("resource not active: %#v", repo)
 	}
 	if _, err := client.DeleteResource(context.Background(), &pbRebac.DeleteResourceRequest{ResourceId: resourceID}); err != nil {
 		t.Fatalf("delete resource: %v", err)
 	}
-	repo, err = h.store.FindRepositoryAnyStatusByResourceID(context.Background(), resourceID)
-	if err != nil {
-		t.Fatalf("find deleted resource: %v", err)
-	}
+	repo = h.findRepositoryByResourceID(t, resourceID, true)
 	if repo.Status != "deleted" {
 		t.Fatalf("resource not deleted: %#v", repo)
 	}
@@ -176,21 +155,20 @@ func (h *harness) exchange(authnToken, resourceID string) (*pbAuth.ExchangeUserT
 	return client.ExchangeUserTokenForMultiresourceToken(ctx, &pbAuth.ExchangeUserTokenForMultiresourceTokenRequest{ResourceId: []string{resourceID}})
 }
 
-func (h *harness) addRepository(t *testing.T, name, loreRepositoryID string) *sqlite.Repository {
+func (h *harness) addRepository(t *testing.T, name, loreRepositoryID string) *e2eRepository {
 	t.Helper()
-	repo, err := h.store.AddRepository(context.Background(), name, "lore://localhost:41337/"+name, loreRepositoryID)
-	if err != nil {
-		t.Fatalf("add repository: %v", err)
-	}
-	return repo
+	h.runAuthctl("repo", "add", name, "--remote", "lore://localhost:41337/"+name, "--lore-repository-id", loreRepositoryID)
+	return h.findRepositoryByResourceID(t, repoResourceID(loreRepositoryID), false)
 }
 
-func (h *harness) singleRepository(t *testing.T) *sqlite.Repository {
+func (h *harness) addGrant(t *testing.T, user *e2eUser, repo *e2eRepository, role string) {
 	t.Helper()
-	repos, err := h.store.ListRepositories(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	h.runAuthctl("grant", "add", "user:"+user.Email, repo.Name, role)
+}
+
+func (h *harness) singleRepository(t *testing.T) *e2eRepository {
+	t.Helper()
+	repos := h.listRepositories(t)
 	if len(repos) != 1 {
 		t.Fatalf("expected exactly one repository, got %#v", repos)
 	}

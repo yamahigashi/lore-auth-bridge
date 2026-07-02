@@ -19,7 +19,7 @@ use lore_auth_core::{
     service::token::{TokenConfig, TokenService},
 };
 
-const DEFAULT_CONFIG: &str = "crates/lore-auth-adapters/examples/rust-example.yaml";
+const DEFAULT_CONFIG: &str = "configs/lore-auth.example.yaml";
 
 #[derive(Debug, Parser)]
 #[command(name = "lore-authctl", about = "Manage lore-auth-bridge")]

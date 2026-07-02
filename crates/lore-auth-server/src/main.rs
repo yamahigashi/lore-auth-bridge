@@ -38,7 +38,7 @@ const GRPC_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 struct Cli {
     #[arg(
         long,
-        default_value = "crates/lore-auth-adapters/examples/rust-example.yaml"
+        default_value = "configs/lore-auth.example.yaml"
     )]
     config: String,
 }

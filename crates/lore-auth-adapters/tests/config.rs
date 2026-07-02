@@ -232,7 +232,7 @@ fn missing_config_file_reports_read_error() {
 
 #[test]
 fn example_yaml_stays_valid() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rust-example.yaml");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/lore-auth.example.yaml");
 
     let cfg = config::load(path).expect("example config loads");
 
