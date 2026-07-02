@@ -1,6 +1,6 @@
 //! ReBAC authorization adapter backed by authz-core.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use authz_core::{
@@ -55,7 +55,7 @@ pub struct SqliteTupleReader {
 #[derive(Clone)]
 pub struct RebacAuthorizationPolicy {
     reader: SqliteTupleReader,
-    provider: StaticPolicyProvider,
+    resolver: Arc<CoreResolver<SqliteTupleReader, StaticPolicyProvider>>,
 }
 
 impl SqliteTupleReader {
@@ -82,42 +82,23 @@ impl RebacAuthorizationPolicy {
         let model = parse_dsl(AUTHZ_DSL)
             .map_err(|err| CoreError::InvalidArgument(format!("authz: parse model: {err}")))?;
         let provider = StaticPolicyProvider::new(TypeSystem::new(model));
-        Ok(Self { reader, provider })
+        let resolver = Arc::new(CoreResolver::new(reader.clone(), provider));
+        Ok(Self { reader, resolver })
     }
 
-    async fn lookup_active_repository(&self, resource_id: &str) -> Result<String, CoreError> {
-        let lore_repository_id = model::ResourceID::repository_id_from_resource_id(resource_id);
-        self.reader
-            .conn
-            .call(move |conn| {
-                conn.query_row(
-                    "SELECT id
-                     FROM repositories
-                     WHERE status = 'active'
-                       AND lore_repository_id = ?1",
-                    params![lore_repository_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(core_from_sql)?
-                .ok_or(CoreError::NotFound)
-            })
-            .await
-            .map_err(core_from_driver)
-    }
-
-    async fn validate_can_access_roles(
+    async fn lookup_and_validate_can_access(
         &self,
-        repository_id: &str,
+        resource_id: &str,
         user_id: &str,
         action: &str,
     ) -> Result<(), CoreError> {
-        let repository_id = repository_id.to_owned();
+        let lore_repository_id = model::ResourceID::repository_id_from_resource_id(resource_id);
         let user_id = user_id.to_owned();
         let action = action.to_owned();
         self.reader
             .conn
             .call(move |conn| {
+                let repository_id = lookup_active_repository_conn(conn, &lore_repository_id)?;
                 validate_can_access_roles_conn(conn, &repository_id, &user_id, &action)
             })
             .await
@@ -146,7 +127,6 @@ impl RebacAuthorizationPolicy {
         subject_type: &str,
         subject_id: &str,
     ) -> Result<bool, CoreError> {
-        let resolver = CoreResolver::new(self.reader.clone(), self.provider.clone());
         let request = ResolveCheckRequest::new(
             object_type.to_owned(),
             object_id.to_owned(),
@@ -154,7 +134,8 @@ impl RebacAuthorizationPolicy {
             subject_type.to_owned(),
             subject_id.to_owned(),
         );
-        match resolver
+        match self
+            .resolver
             .resolve_check(request)
             .await
             .map_err(core_from_authz)?
@@ -194,8 +175,7 @@ impl AuthorizationPolicy for RebacAuthorizationPolicy {
         resource_id: &str,
         action: &str,
     ) -> Result<bool, CoreError> {
-        let repository_id = self.lookup_active_repository(resource_id).await?;
-        self.validate_can_access_roles(&repository_id, user_id, action)
+        self.lookup_and_validate_can_access(resource_id, user_id, action)
             .await?;
         let relations: &[&str] = match action {
             "read" => &["reader", "writer", "admin"],
@@ -388,7 +368,7 @@ fn read_grant_tuples_conn(
          ORDER BY r.lore_repository_id, g.role, g.subject_type, g.subject_id",
         clauses.join(" AND ")
     );
-    let mut stmt = conn.prepare(&sql).map_err(authz_from_sql)?;
+    let mut stmt = conn.prepare_cached(&sql).map_err(authz_from_sql)?;
     let rows = stmt
         .query_map(params_from_iter(values.iter()), |row| {
             let lore_repository_id: String = row.get(0)?;
@@ -460,7 +440,7 @@ fn read_user_group_member_tuples_conn(
          FROM group_members{where_sql}
          ORDER BY group_id, user_id"
     );
-    let mut stmt = conn.prepare(&sql).map_err(authz_from_sql)?;
+    let mut stmt = conn.prepare_cached(&sql).map_err(authz_from_sql)?;
     let rows = stmt
         .query_map(params_from_iter(values.iter()), |row| {
             Ok(Tuple {
@@ -510,7 +490,7 @@ fn read_group_group_member_tuples_conn(
          FROM group_groups{where_sql}
          ORDER BY group_id, member_group_id"
     );
-    let mut stmt = conn.prepare(&sql).map_err(authz_from_sql)?;
+    let mut stmt = conn.prepare_cached(&sql).map_err(authz_from_sql)?;
     let rows = stmt
         .query_map(params_from_iter(values.iter()), |row| {
             let member_group_id: String = row.get(1)?;
@@ -587,6 +567,24 @@ fn matches_filter_value(value: &str, filter: &Option<String>) -> bool {
     filter.as_ref().is_none_or(|expected| expected == value)
 }
 
+fn lookup_active_repository_conn(
+    conn: &rusqlite::Connection,
+    lore_repository_id: &str,
+) -> Result<String, CoreError> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id
+             FROM repositories
+             WHERE status = 'active'
+               AND lore_repository_id = ?1",
+        )
+        .map_err(core_from_sql)?;
+    stmt.query_row(params![lore_repository_id], |row| row.get::<_, String>(0))
+        .optional()
+        .map_err(core_from_sql)?
+        .ok_or(CoreError::NotFound)
+}
+
 fn validate_can_access_roles_conn(
     conn: &rusqlite::Connection,
     repository_id: &str,
@@ -594,7 +592,7 @@ fn validate_can_access_roles_conn(
     action: &str,
 ) -> Result<(), CoreError> {
     let mut stmt = conn
-        .prepare(
+        .prepare_cached(
             "WITH RECURSIVE user_groups(group_id) AS (
                SELECT group_id FROM group_members WHERE user_id = ?2
                UNION
@@ -643,7 +641,7 @@ fn candidate_resource_ids_conn(
     prefix: &str,
 ) -> Result<Vec<String>, CoreError> {
     let mut stmt = conn
-        .prepare(
+        .prepare_cached(
             "WITH RECURSIVE user_groups(group_id) AS (
                SELECT group_id FROM group_members WHERE user_id = ?1
                UNION

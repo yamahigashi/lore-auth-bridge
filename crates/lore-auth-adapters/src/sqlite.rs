@@ -2817,7 +2817,7 @@ fn grant_evidence_conn(
     let mut out = Vec::new();
 
     let mut direct = conn
-        .prepare(
+        .prepare_cached(
             "SELECT g.subject_type, g.subject_id, COALESCE(u.primary_email, u.id), g.role
              FROM grants g
              LEFT JOIN users u ON u.id = g.subject_id
@@ -2848,7 +2848,7 @@ fn grant_evidence_conn(
     if !group_ids.is_empty() {
         let group_paths = group_paths_conn(conn, user_id, include_nested_groups, &group_ids)?;
         let mut group_stmt = conn
-            .prepare(
+            .prepare_cached(
                 "SELECT g.subject_type,
                         g.subject_id,
                         COALESCE(gr.name, g.subject_id) AS subject_name,
@@ -2918,17 +2918,18 @@ fn repository_id_by_resource_conn(
             "resource_id must not be empty".to_owned(),
         ));
     }
-    conn.query_row(
-        "SELECT id
-         FROM repositories
-         WHERE status = 'active'
-           AND lore_repository_id = ?1",
-        params![lore_repository_id],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()
-    .map_err(core_from_sql)?
-    .ok_or(CoreError::NotFound)
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id
+             FROM repositories
+             WHERE status = 'active'
+               AND lore_repository_id = ?1",
+        )
+        .map_err(core_from_sql)?;
+    stmt.query_row(params![lore_repository_id], |row| row.get::<_, String>(0))
+        .optional()
+        .map_err(core_from_sql)?
+        .ok_or(CoreError::NotFound)
 }
 
 fn reachable_group_ids_conn(
@@ -2948,7 +2949,7 @@ fn reachable_group_ids_conn(
     } else {
         "SELECT group_id FROM group_members WHERE user_id = ?1"
     };
-    let mut stmt = conn.prepare(sql).map_err(core_from_sql)?;
+    let mut stmt = conn.prepare_cached(sql).map_err(core_from_sql)?;
     let rows = stmt
         .query_map(params![user_id], |row| row.get::<_, String>(0))
         .map_err(core_from_sql)?;
@@ -2967,7 +2968,7 @@ fn group_paths_conn(
 ) -> CoreResult<HashMap<String, String>> {
     let mut labels = HashMap::new();
     let mut label_stmt = conn
-        .prepare("SELECT id, name FROM groups ORDER BY name")
+        .prepare_cached("SELECT id, name FROM groups ORDER BY name")
         .map_err(core_from_sql)?;
     let label_rows = label_stmt
         .query_map([], |row| {
@@ -2982,7 +2983,7 @@ fn group_paths_conn(
     let mut paths = HashMap::<String, String>::new();
     let mut queue = VecDeque::new();
     let mut direct_stmt = conn
-        .prepare(
+        .prepare_cached(
             "SELECT gm.group_id, COALESCE(g.name, gm.group_id)
              FROM group_members gm
              LEFT JOIN groups g ON g.id = gm.group_id
@@ -3010,7 +3011,7 @@ fn group_paths_conn(
 
     let mut parents_by_member = HashMap::<String, Vec<String>>::new();
     let mut edge_stmt = conn
-        .prepare(
+        .prepare_cached(
             "SELECT member_group_id, group_id
              FROM group_groups
              ORDER BY member_group_id, group_id",
