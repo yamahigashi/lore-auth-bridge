@@ -12,6 +12,7 @@ hex.workspace = true
 ipnet.workspace = true
 jsonwebtoken.workspace = true
 lore-auth-core = { path = "../lore-auth-core" }
+openidconnect.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
 rsa.workspace = true

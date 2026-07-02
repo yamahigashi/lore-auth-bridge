@@ -18,20 +18,14 @@ pub mod authz {
     //! Authorization policy adapter implementations.
 }
 
-pub mod idpregistry {
-    //! Identity provider registry adapter implementations.
-}
+pub mod idpregistry;
 
 pub mod memory;
 
-pub mod oidc {
-    //! OIDC identity provider adapter implementations.
-}
+pub mod oidc;
 
 pub mod rs256;
 
 pub mod sqlite;
 
-pub mod staticidp {
-    //! Static identity provider adapter implementations.
-}
+pub mod staticidp;
