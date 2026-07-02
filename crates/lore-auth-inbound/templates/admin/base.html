@@ -14,6 +14,10 @@
         <li><strong>{{ self.t("admin.app.title") }}</strong></li>
       </ul>
       <ul>
+        <li><a href="/admin"{% if active == "dashboard" %} aria-current="page"{% endif %}>{{ self.t("admin.nav.dashboard") }}</a></li>
+        <li><a href="/admin/repositories"{% if active == "repositories" %} aria-current="page"{% endif %}>{{ self.t("admin.nav.repositories") }}</a></li>
+        <li><a href="/admin/users"{% if active == "users" %} aria-current="page"{% endif %}>{{ self.t("admin.nav.users") }}</a></li>
+        <li><a href="/admin/groups"{% if active == "groups" %} aria-current="page"{% endif %}>{{ self.t("admin.nav.groups") }}</a></li>
         <li><a href="/admin?lang=en"{% if lang == "en" %} aria-current="page"{% endif %}>EN</a></li>
         <li><a href="/admin?lang=ja"{% if lang == "ja" %} aria-current="page"{% endif %}>JA</a></li>
       </ul>

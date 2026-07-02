@@ -8,8 +8,8 @@ use lore_auth_core::{
         AuthzTokenInput, BrowserSession, CreateDeviceAuthorizationInput, DeviceAuthorization,
         ExternalIdentity, Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult,
         LoginResolutionRequest, LoginState, LoginStateInput, Resource, ResourceFilter,
-        ResourcePermission, SignedToken, SigningKeyMeta, TokenPrincipal, User, VerifiedToken,
-        VerifyOptions,
+        ResourcePermission, SignedToken, SigningKeyMeta, TokenPrincipal, User, UserListFilter,
+        VerifiedToken, VerifyOptions,
     },
     ports::{
         AccountDirectory, AdminAuditLog, AuthorizationPolicy, BeginAuthRequest, BeginAuthResult,
@@ -89,6 +89,14 @@ impl AccountDirectory for NullPorts {
         _input: AddInvitationInput,
     ) -> Result<(User, IdentityInvitation), CoreError> {
         Err(CoreError::InvalidArgument("missing invitation".to_owned()))
+    }
+
+    async fn user_by_id(&self, _user_id: &str) -> Result<User, CoreError> {
+        Err(CoreError::NotFound)
+    }
+
+    async fn list_users(&self, _filter: UserListFilter) -> Result<Vec<User>, CoreError> {
+        Ok(Vec::new())
     }
 }
 
@@ -312,6 +320,14 @@ impl GroupAdmin for NullPorts {
     }
 
     async fn list_groups(&self) -> Result<Vec<Group>, CoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn list_group_members(&self, _group: &str) -> Result<Vec<User>, CoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn list_group_groups(&self, _group: &str) -> Result<Vec<Group>, CoreError> {
         Ok(Vec::new())
     }
 

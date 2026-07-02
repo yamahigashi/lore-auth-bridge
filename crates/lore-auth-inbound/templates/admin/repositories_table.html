@@ -1,0 +1,41 @@
+<section id="repositories-results">
+  {% if rows.len() >= limit %}
+  <p>{{ self.t("admin.list.limit_note") }} {{ limit }}</p>
+  {% endif %}
+  {% if rows.is_empty() %}
+  <p>{{ self.t("admin.repositories.empty") }}</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">{{ self.t("admin.repositories.name") }}</th>
+        <th scope="col">{{ self.t("admin.repositories.lore_repository_id") }}</th>
+        <th scope="col">{{ self.t("admin.repositories.resource_id") }}</th>
+        <th scope="col">{{ self.t("admin.common.status") }}</th>
+        <th scope="col">{{ self.t("admin.repositories.grants") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for repo in rows %}
+      <tr>
+        <td>{{ repo.name }}</td>
+        <td>{{ repo.lore_repository_id }}</td>
+        <td>{{ repo.resource_id }}</td>
+        <td>{{ repo.status }}</td>
+        <td>
+          {% if repo.grants.is_empty() %}
+          {{ self.t("admin.repositories.no_grants") }}
+          {% else %}
+          <ul>
+            {% for grant in repo.grants %}
+            <li>{{ grant.subject }}: {{ grant.role }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>

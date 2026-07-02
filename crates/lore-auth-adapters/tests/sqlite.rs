@@ -5,7 +5,7 @@ use lore_auth_core::{
     CoreError,
     model::{
         AddInvitationInput, AddUserInput, ExternalIdentity, IssuedToken, LoginResolutionRequest,
-        LoginStateInput, LoginTrustPolicy, Resource, ResourceID, SigningKeyMeta,
+        LoginStateInput, LoginTrustPolicy, Resource, ResourceID, SigningKeyMeta, UserListFilter,
     },
     ports::{
         AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
@@ -241,6 +241,109 @@ async fn browser_session_returns_not_found_after_user_is_disabled() {
         store.user_by_browser_session(&browser.id).await,
         Err(CoreError::NotFound)
     ));
+}
+
+#[tokio::test]
+async fn sqlite_admin_read_ports_list_users_and_group_edges() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let alice = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            display_name: "Alice Artist".to_owned(),
+        })
+        .await
+        .expect("add alice");
+    let bob = store
+        .add_user(AddUserInput {
+            email: "bob@example.com".to_owned(),
+            display_name: "Bob".to_owned(),
+        })
+        .await
+        .expect("add bob");
+    let deleted = store
+        .add_user(AddUserInput {
+            email: "deleted@example.com".to_owned(),
+            display_name: "Deleted Artist".to_owned(),
+        })
+        .await
+        .expect("add deleted");
+    let artists = store
+        .add_group("artists", "Art team")
+        .await
+        .expect("add artists");
+    let riggers = store.add_group("riggers", "").await.expect("add riggers");
+    store
+        .add_group_member("artists", &alice.id)
+        .await
+        .expect("add alice to artists");
+    store
+        .add_group_member("artists", &bob.id)
+        .await
+        .expect("add bob to artists");
+    store
+        .add_group_member("artists", &deleted.id)
+        .await
+        .expect("add deleted to artists");
+    store
+        .disable_user(&deleted.id)
+        .await
+        .expect("mark deleted fixture inactive");
+    rusqlite::Connection::open(fixture._dir.path().join("test.sqlite3"))
+        .expect("open sqlite fixture directly")
+        .execute(
+            "UPDATE users SET status = 'deleted' WHERE id = ?1",
+            rusqlite::params![deleted.id],
+        )
+        .expect("delete user fixture");
+    store
+        .add_group_group(&artists.id, &riggers.id)
+        .await
+        .expect("nest riggers under artists");
+
+    let users = store
+        .list_users(UserListFilter {
+            query: "ART".to_owned(),
+            limit: 1,
+        })
+        .await
+        .expect("list users");
+    assert_eq!(
+        users
+            .iter()
+            .map(|user| user.email.as_str())
+            .collect::<Vec<_>>(),
+        ["alice@example.com"]
+    );
+    assert_eq!(users[0].last_login_at, 0);
+    assert_eq!(
+        store.user_by_id(&bob.id).await.expect("user by id").email,
+        "bob@example.com"
+    );
+
+    let members = store
+        .list_group_members("artists")
+        .await
+        .expect("list group members");
+    assert_eq!(
+        members
+            .iter()
+            .map(|user| user.email.as_str())
+            .collect::<Vec<_>>(),
+        ["alice@example.com", "bob@example.com"]
+    );
+
+    let nested = store
+        .list_group_groups("artists")
+        .await
+        .expect("list nested groups");
+    assert_eq!(
+        nested
+            .iter()
+            .map(|group| group.name.as_str())
+            .collect::<Vec<_>>(),
+        ["riggers"]
+    );
 }
 
 #[tokio::test]

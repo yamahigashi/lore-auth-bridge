@@ -22,7 +22,10 @@ use axum::{
 use lore_auth_core::{
     CoreError,
     model::{self, Permission, User},
-    ports::{BeginAuthRequest, CompleteAuthRequest, StateStore, TokenSigner},
+    ports::{
+        AccountDirectory, BeginAuthRequest, CompleteAuthRequest, GrantAdmin, GroupAdmin,
+        StateStore, TokenSigner,
+    },
     service::{
         device::DeviceService, login::LoginService, permission::PermissionService,
         resource::ResourceService, token::TokenService,
@@ -73,6 +76,9 @@ pub struct Services {
     pub tokens: Arc<TokenService>,
     pub resources: Arc<ResourceService>,
     pub permissions: Arc<PermissionService>,
+    pub accounts: Arc<dyn AccountDirectory>,
+    pub groups: Arc<dyn GroupAdmin>,
+    pub grants: Arc<dyn GrantAdmin>,
     pub state: Arc<dyn StateStore>,
     pub jwks: Arc<dyn TokenSigner>,
     pub device: Option<Arc<DeviceService>>,

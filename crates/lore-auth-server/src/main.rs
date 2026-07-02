@@ -6,8 +6,8 @@ use lore_auth_adapters::{authz, config, device, idpregistry, oidc, rs256, sqlite
 use lore_auth_core::{
     CoreError,
     ports::{
-        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, IssuedTokenLog,
-        ResourceStore, StateStore, TokenSigner,
+        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GroupAdmin,
+        IssuedTokenLog, ResourceStore, StateStore, TokenSigner,
     },
     service::{
         device::{DeviceConfig, DeviceService},
@@ -146,6 +146,8 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
     let token_log: Arc<dyn IssuedTokenLog> = store.clone();
     let state_store: Arc<dyn StateStore> = store.clone();
     let device_store: Arc<dyn DeviceAuthorizationStore> = store.clone();
+    let groups: Arc<dyn GroupAdmin> = store.clone();
+    let grants: Arc<dyn GrantAdmin> = store.clone();
 
     let auth_service_audience = config::public_host(&cfg.server.public_base_url)
         .context("startup: public base url host")?;
@@ -201,7 +203,7 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
         device_store,
         resource_store,
         authz,
-        accounts,
+        accounts.clone(),
         tokens.clone(),
         Arc::new(device::UuidDeviceCodeGenerator),
     ));
@@ -221,6 +223,9 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
         tokens: tokens.clone(),
         resources: resources.clone(),
         permissions: permissions.clone(),
+        accounts: accounts.clone(),
+        groups,
+        grants,
         state: state_store,
         jwks: signer,
         device: Some(device),

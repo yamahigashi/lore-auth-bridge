@@ -81,6 +81,14 @@ impl GroupAdmin for AuditedGroupAdmin {
         self.inner.list_groups().await
     }
 
+    async fn list_group_members(&self, group: &str) -> Result<Vec<model::User>, CoreError> {
+        self.inner.list_group_members(group).await
+    }
+
+    async fn list_group_groups(&self, group: &str) -> Result<Vec<model::Group>, CoreError> {
+        self.inner.list_group_groups(group).await
+    }
+
     async fn add_group_member(&self, group: &str, user_email_or_id: &str) -> Result<(), CoreError> {
         self.inner.add_group_member(group, user_email_or_id).await?;
         self.record(

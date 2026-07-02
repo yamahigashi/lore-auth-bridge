@@ -1,0 +1,31 @@
+<section id="users-results">
+  {% if rows.len() >= limit %}
+  <p>{{ self.t("admin.list.limit_note") }} {{ limit }}</p>
+  {% endif %}
+  {% if rows.is_empty() %}
+  <p>{{ self.t("admin.users.empty") }}</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">{{ self.t("admin.users.email") }}</th>
+        <th scope="col">{{ self.t("admin.users.display_name") }}</th>
+        <th scope="col">{{ self.t("admin.common.status") }}</th>
+        <th scope="col">{{ self.t("admin.users.last_login") }}</th>
+        <th scope="col">{{ self.t("admin.users.access") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for user in rows %}
+      <tr>
+        <td>{{ user.email }}</td>
+        <td>{{ user.display_name }}</td>
+        <td>{{ user.status }}</td>
+        <td>{{ user.last_login }}</td>
+        <td><a href="/admin/users/{{ user.id }}/access">{{ self.t("admin.users.access_link") }}</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>

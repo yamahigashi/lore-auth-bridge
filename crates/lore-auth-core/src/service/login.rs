@@ -280,6 +280,7 @@ fn user_from_principal(principal: &model::TokenPrincipal) -> model::User {
         email: principal.preferred_username.clone(),
         display_name: principal.display_name.clone(),
         status: "active".to_owned(),
+        last_login_at: 0,
     }
 }
 

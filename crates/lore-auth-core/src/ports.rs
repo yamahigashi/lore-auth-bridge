@@ -27,6 +27,14 @@ pub trait AccountDirectory: Send + Sync {
         &self,
         input: model::AddInvitationInput,
     ) -> Result<(model::User, model::IdentityInvitation), CoreError>;
+
+    async fn user_by_id(&self, user_id: &str) -> Result<model::User, CoreError>;
+
+    /// Lists non-deleted users matching the optional query, capped by `limit`.
+    async fn list_users(
+        &self,
+        filter: model::UserListFilter,
+    ) -> Result<Vec<model::User>, CoreError>;
 }
 
 #[async_trait]
@@ -219,6 +227,9 @@ pub trait AdminAuditLog: Send + Sync {
 pub trait GroupAdmin: Send + Sync {
     async fn add_group(&self, name: &str, description: &str) -> Result<model::Group, CoreError>;
     async fn list_groups(&self) -> Result<Vec<model::Group>, CoreError>;
+    /// Lists direct user members. Deleted users must not be returned.
+    async fn list_group_members(&self, group: &str) -> Result<Vec<model::User>, CoreError>;
+    async fn list_group_groups(&self, group: &str) -> Result<Vec<model::Group>, CoreError>;
     async fn add_group_member(&self, group: &str, user_email_or_id: &str) -> Result<(), CoreError>;
     async fn remove_group_member(
         &self,

@@ -47,6 +47,7 @@ async fn token_service_mints_authn_with_auth_service_audience_and_verifies_by_jt
         email: "alice@example.com".to_owned(),
         display_name: "Alice".to_owned(),
         status: "active".to_owned(),
+        ..User::default()
     });
     let service = token_service(&store);
 
@@ -74,6 +75,7 @@ async fn token_service_requires_writer_and_never_emits_lore_admin_permission() {
         email: "alice@example.com".to_owned(),
         display_name: "Alice".to_owned(),
         status: "active".to_owned(),
+        ..User::default()
     });
     let resource_id = ResourceID::for_repository_id("repo-1").expect("resource id");
     store.add_test_resource(Resource {
@@ -297,6 +299,7 @@ async fn device_service_runs_start_preview_approve_token_and_consumes_authorizat
         email: "alice@example.com".to_owned(),
         display_name: "Alice".to_owned(),
         status: "active".to_owned(),
+        ..User::default()
     });
     store.add_test_resource(Resource {
         id: "resource-1".to_owned(),

@@ -9,7 +9,7 @@ use lore_auth_core::{
     model::{
         AddInvitationInput, AuthnTokenInput, ExternalIdentity, IssuedToken, LoginResolutionRequest,
         LoginTrustPolicy, Permission, Resource, ResourceFilter, ResourceID, ResourcePermission,
-        User, VerifyOptions,
+        User, UserListFilter, VerifyOptions,
     },
     ports::{
         AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
@@ -79,6 +79,7 @@ async fn memory_authn_token_lookup_returns_not_found_for_disabled_user() {
         email: "disabled@example.com".to_owned(),
         display_name: "Disabled User".to_owned(),
         status: "disabled".to_owned(),
+        ..User::default()
     });
     IssuedTokenLog::record(
         &store,
@@ -110,6 +111,7 @@ async fn memory_browser_session_returns_not_found_for_disabled_user() {
         email: "disabled@example.com".to_owned(),
         display_name: "Disabled User".to_owned(),
         status: "active".to_owned(),
+        ..User::default()
     });
     let session = store
         .create_browser_session(&user.id, Duration::from_secs(60))
@@ -124,6 +126,97 @@ async fn memory_browser_session_returns_not_found_for_disabled_user() {
 }
 
 #[tokio::test]
+async fn memory_admin_read_ports_list_users_and_group_edges() {
+    let store = Store::new();
+    let alice = store.add_test_user(User {
+        id: "user-alice".to_owned(),
+        email: "alice@example.com".to_owned(),
+        display_name: "Alice Artist".to_owned(),
+        status: "active".to_owned(),
+        last_login_at: 123,
+    });
+    let bob = store.add_test_user(User {
+        id: "user-bob".to_owned(),
+        email: "bob@example.com".to_owned(),
+        display_name: "Bob".to_owned(),
+        status: "active".to_owned(),
+        ..User::default()
+    });
+    let deleted = store.add_test_user(User {
+        id: "user-deleted".to_owned(),
+        email: "deleted@example.com".to_owned(),
+        display_name: "Deleted Artist".to_owned(),
+        status: "deleted".to_owned(),
+        ..User::default()
+    });
+    let artists = store
+        .add_group("artists", "Art team")
+        .await
+        .expect("add artists");
+    let riggers = store.add_group("riggers", "").await.expect("add riggers");
+    store
+        .add_group_member("artists", &alice.id)
+        .await
+        .expect("add alice to artists");
+    store
+        .add_group_member("artists", &bob.id)
+        .await
+        .expect("add bob to artists");
+    store
+        .add_group_member("artists", &deleted.id)
+        .await
+        .expect("add deleted user to artists");
+    store
+        .add_group_group(&artists.id, &riggers.id)
+        .await
+        .expect("nest riggers under artists");
+
+    let users = store
+        .list_users(UserListFilter {
+            query: "ART".to_owned(),
+            limit: 1,
+        })
+        .await
+        .expect("list users");
+    assert_eq!(
+        users
+            .iter()
+            .map(|user| user.email.as_str())
+            .collect::<Vec<_>>(),
+        ["alice@example.com"]
+    );
+    assert_eq!(users[0].last_login_at, 123);
+    assert_eq!(
+        store.user_by_id(&bob.id).await.expect("user by id").email,
+        "bob@example.com"
+    );
+
+    let members = store
+        .list_group_members("artists")
+        .await
+        .expect("list group members");
+    assert_eq!(
+        members
+            .iter()
+            .map(|user| user.email.as_str())
+            .collect::<Vec<_>>(),
+        ["alice@example.com", "bob@example.com"]
+    );
+
+    let nested = store
+        .list_group_groups("artists")
+        .await
+        .expect("list nested groups");
+    assert_eq!(
+        nested
+            .iter()
+            .map(|group| group.name.as_str())
+            .collect::<Vec<_>>(),
+        ["riggers"]
+    );
+}
+
+#[tokio::test]
 async fn memory_store_resolves_existing_identity_and_email_invitation() {
     let store = Store::new();
     let user = store.add_test_user(User {
@@ -131,6 +224,7 @@ async fn memory_store_resolves_existing_identity_and_email_invitation() {
         email: "golden@example.com".to_owned(),
         display_name: "Golden User".to_owned(),
         status: "active".to_owned(),
+        ..User::default()
     });
     let identity = store.add_test_external_identity(ExternalIdentity {
         user_id: user.id.clone(),
@@ -194,6 +288,7 @@ async fn memory_store_tracks_resources_grants_and_authn_tokens() {
         email: "golden@example.com".to_owned(),
         display_name: "Golden User".to_owned(),
         status: "active".to_owned(),
+        ..User::default()
     });
     let resource_id = ResourceID::for_repository_id("repo-1").expect("resource id");
     store.add_test_resource(Resource {

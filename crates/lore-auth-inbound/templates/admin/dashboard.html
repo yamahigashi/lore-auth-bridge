@@ -8,10 +8,9 @@
 </section>
 <nav aria-label='{{ self.t("admin.nav.label") }}'>
   <ul>
-    <li><span aria-disabled="true">{{ self.t("admin.nav.overview") }}</span></li>
-    <li><span aria-disabled="true">{{ self.t("admin.nav.grants") }}</span></li>
-    <li><span aria-disabled="true">{{ self.t("admin.nav.groups") }}</span></li>
-    <li><span aria-disabled="true">{{ self.t("admin.nav.simulator") }}</span></li>
+    <li><a href="/admin/repositories">{{ self.t("admin.nav.repositories") }}</a></li>
+    <li><a href="/admin/users">{{ self.t("admin.nav.users") }}</a></li>
+    <li><a href="/admin/groups">{{ self.t("admin.nav.groups") }}</a></li>
   </ul>
 </nav>
 {% endblock %}

@@ -14,8 +14,8 @@ use lore_auth_core::{
         AuthzTokenInput, BrowserSession, CreateDeviceAuthorizationInput, DeviceAuthorization,
         ExternalIdentity, Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult,
         LoginResolutionRequest, LoginState, LoginStateInput, LoginTrustPolicy, Resource,
-        ResourceFilter, ResourcePermission, SignedToken, TokenPrincipal, User, VerifiedToken,
-        VerifyOptions,
+        ResourceFilter, ResourcePermission, SignedToken, TokenPrincipal, User, UserListFilter,
+        VerifiedToken, VerifyOptions,
     },
     ports::{
         AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
@@ -298,6 +298,7 @@ impl AccountDirectory for Store {
             email: input.email.trim().to_owned(),
             display_name: input.display_name,
             status: "active".to_owned(),
+            last_login_at: 0,
         };
         self.lock().users.insert(user.id.clone(), user.clone());
         Ok(user)
@@ -321,6 +322,7 @@ impl AccountDirectory for Store {
             email: input.email.trim().to_owned(),
             display_name: input.display_name,
             status: "pending".to_owned(),
+            last_login_at: 0,
         };
         let invitation = IdentityInvitation {
             id: uuid::Uuid::new_v4().to_string(),
@@ -343,6 +345,45 @@ impl AccountDirectory for Store {
             .invitations
             .insert(invitation.id.clone(), invitation.clone());
         Ok((user, invitation))
+    }
+
+    async fn user_by_id(&self, user_id: &str) -> Result<User, CoreError> {
+        self.lock()
+            .users
+            .get(user_id)
+            .filter(|user| user.status != "deleted")
+            .cloned()
+            .ok_or(CoreError::NotFound)
+    }
+
+    async fn list_users(&self, filter: UserListFilter) -> Result<Vec<User>, CoreError> {
+        let query = filter.query.trim().to_ascii_lowercase();
+        let limit = effective_limit(filter.limit);
+        let mut out = self
+            .lock()
+            .users
+            .values()
+            .filter(|user| user.status != "deleted")
+            .filter(|user| {
+                query.is_empty()
+                    || lore_auth_core::model::normalize_email(&user.email).contains(&query)
+                    || user.display_name.to_ascii_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        out.sort_by(|left, right| {
+            let left_key = (
+                lore_auth_core::model::normalize_email(&left.email),
+                &left.id,
+            );
+            let right_key = (
+                lore_auth_core::model::normalize_email(&right.email),
+                &right.id,
+            );
+            left_key.cmp(&right_key)
+        });
+        out.truncate(limit);
+        Ok(out)
     }
 }
 
@@ -844,6 +885,54 @@ impl GroupAdmin for Store {
         Ok(out)
     }
 
+    async fn list_group_members(&self, group: &str) -> Result<Vec<User>, CoreError> {
+        let state = self.lock();
+        let group = group_by_name_or_id(&state, group)?;
+        let mut out = state
+            .group_members
+            .iter()
+            .filter(|(_, groups)| {
+                groups
+                    .iter()
+                    .any(|member| member == &group.id || member == &group.name)
+            })
+            .filter_map(|(user_id, _)| {
+                state
+                    .users
+                    .get(user_id)
+                    .filter(|user| user.status != "deleted")
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        out.sort_by(|left, right| {
+            let left_key = (
+                lore_auth_core::model::normalize_email(&left.email),
+                &left.id,
+            );
+            let right_key = (
+                lore_auth_core::model::normalize_email(&right.email),
+                &right.id,
+            );
+            left_key.cmp(&right_key)
+        });
+        Ok(out)
+    }
+
+    async fn list_group_groups(&self, group: &str) -> Result<Vec<Group>, CoreError> {
+        let state = self.lock();
+        let group = group_by_name_or_id(&state, group)?;
+        let mut out = state
+            .group_groups
+            .get(&group.id)
+            .into_iter()
+            .flatten()
+            .filter_map(|group_id| state.groups.values().find(|group| group.id == *group_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        out.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(out)
+    }
+
     async fn add_group_member(&self, group: &str, user_email_or_id: &str) -> Result<(), CoreError> {
         let mut state = self.lock();
         let user_id = resolve_user_id(&state, user_email_or_id)?.to_owned();
@@ -1017,18 +1106,21 @@ fn resolve_user_id<'a>(state: &'a State, email_or_id: &str) -> Result<&'a str, C
 }
 
 fn resolve_group_id<'a>(state: &'a State, group: &str) -> Result<&'a str, CoreError> {
+    Ok(group_by_name_or_id(state, group)?.id.as_str())
+}
+
+fn group_by_name_or_id<'a>(state: &'a State, group: &str) -> Result<&'a Group, CoreError> {
     if let Some(candidate) = state
         .groups
         .values()
         .find(|candidate| candidate.id == group)
     {
-        return Ok(candidate.id.as_str());
+        return Ok(candidate);
     }
     state
         .groups
         .values()
         .find(|candidate| candidate.name == group)
-        .map(|group| group.id.as_str())
         .ok_or(CoreError::NotFound)
 }
 
@@ -1128,6 +1220,10 @@ fn unix_or_now(time: Option<SystemTime>) -> i64 {
 
 fn now_unix() -> i64 {
     unix_or_now(Some(SystemTime::now()))
+}
+
+fn effective_limit(limit: usize) -> usize {
+    limit.max(1)
 }
 
 fn hash_secret(value: &str) -> String {

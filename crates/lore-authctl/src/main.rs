@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use lore_auth_adapters::{authz, config, rs256, sqlite};
 use lore_auth_core::{
     CoreError,
-    model::{AddInvitationInput, AddUserInput, Resource},
+    model::{AddInvitationInput, AddUserInput, Resource, UserListFilter},
     ports::{
         AccountDirectory, AuthorizationPolicy, GrantAdmin, GroupAdmin, IssuedTokenLog,
         ResourceStore, SigningKeyAdmin, TokenSigner,
@@ -358,7 +358,15 @@ async fn run_user(config_path: &Path, db: Option<&Path>, command: UserCommand) -
             println!("{}\t{}\t{}", user.id, value(&user.email), user.status);
         }
         UserCommand::List => {
-            for user in env.store.list_users().await.map_err(core_error)? {
+            for user in env
+                .store
+                .list_users(UserListFilter {
+                    query: String::new(),
+                    limit: usize::MAX,
+                })
+                .await
+                .map_err(core_error)?
+            {
                 let subject = if user.status == "pending" {
                     String::new()
                 } else {

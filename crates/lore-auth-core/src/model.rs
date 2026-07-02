@@ -208,6 +208,13 @@ pub struct User {
     pub email: String,
     pub display_name: String,
     pub status: String,
+    pub last_login_at: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UserListFilter {
+    pub query: String,
+    pub limit: usize,
 }
 
 impl User {

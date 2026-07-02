@@ -1,0 +1,12 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ self.t("admin.users.title") }}{% endblock %}
+{% block content %}
+<section>
+  <h1>{{ self.t("admin.users.title") }}</h1>
+  <form method="get" action="/admin/users" hx-get="/admin/users" hx-target="#users-results" hx-push-url="true">
+    <input type="search" name="q" value="{{ query }}" placeholder='{{ self.t("admin.search.placeholder") }}' aria-label='{{ self.t("admin.search.label") }}'>
+    <button type="submit">{{ self.t("admin.search.submit") }}</button>
+  </form>
+</section>
+{% include "admin/users_table.html" %}
+{% endblock %}

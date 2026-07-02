@@ -1,0 +1,31 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ self.t("admin.user_access.title") }}{% endblock %}
+{% block content %}
+<section>
+  <h1>{{ self.t("admin.user_access.title") }}</h1>
+  <p>{{ user.email }} ({{ user.status }})</p>
+</section>
+<section>
+  <p>{{ self.t("admin.list.limit_note") }} {{ limit }}</p>
+  {% if rows.is_empty() %}
+  <p>{{ self.t("admin.user_access.empty") }}</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">{{ self.t("admin.user_access.resource_id") }}</th>
+        <th scope="col">{{ self.t("admin.user_access.permissions") }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.resource_id }}</td>
+        <td>{{ row.permissions }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}

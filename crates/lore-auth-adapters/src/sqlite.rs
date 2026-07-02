@@ -14,7 +14,7 @@ use lore_auth_core::{
         self, AddInvitationInput, AddUserInput, AdminAuditEntry, AuthSession, BrowserSession,
         ExternalIdentity, Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult,
         LoginResolutionRequest, LoginState, LoginStateInput, LoginTrustPolicy, Resource,
-        ResourceFilter, ResourcePermission, SigningKeyMeta, TokenPrincipal, User,
+        ResourceFilter, ResourcePermission, SigningKeyMeta, TokenPrincipal, User, UserListFilter,
     },
     ports::{
         AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
@@ -488,24 +488,6 @@ impl Store {
             .map_err(core_from_driver)
     }
 
-    pub async fn list_users(&self) -> CoreResult<Vec<User>> {
-        self.conn
-            .call(|conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT id, primary_email, display_name, status
-                         FROM users
-                         WHERE status <> 'deleted'
-                         ORDER BY primary_email_normalized, id",
-                    )
-                    .map_err(core_from_sql)?;
-                let rows = stmt.query_map([], user_from_row).map_err(core_from_sql)?;
-                collect_rows(rows)
-            })
-            .await
-            .map_err(core_from_driver)
-    }
-
     pub async fn list_admin_audit(&self) -> CoreResult<Vec<AdminAuditEntry>> {
         self.conn
             .call(|conn| {
@@ -735,7 +717,8 @@ impl AccountDirectory for Store {
             .call(move |conn| {
                 let user = conn
                     .query_row(
-                        "SELECT u.id, u.primary_email, u.display_name, u.status
+                        "SELECT u.id, u.primary_email, u.display_name, u.status,
+                                COALESCE(u.last_login_at, 0)
                          FROM issued_tokens it
                          JOIN users u ON u.id = it.user_id
                          WHERE it.jti = ?1
@@ -769,6 +752,21 @@ impl AccountDirectory for Store {
     ) -> CoreResult<(User, IdentityInvitation)> {
         self.conn
             .call(move |conn| add_invitation_conn(conn, input))
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn user_by_id(&self, user_id: &str) -> CoreResult<User> {
+        let user_id = user_id.to_owned();
+        self.conn
+            .call(move |conn| user_by_id_conn(conn, &user_id))
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn list_users(&self, filter: UserListFilter) -> CoreResult<Vec<User>> {
+        self.conn
+            .call(move |conn| list_users_conn(conn, &filter))
             .await
             .map_err(core_from_driver)
     }
@@ -1269,7 +1267,8 @@ impl StateStore for Store {
         self.conn
             .call(move |conn| {
                 conn.query_row(
-                    "SELECT u.id, u.primary_email, u.display_name, u.status
+                    "SELECT u.id, u.primary_email, u.display_name, u.status,
+                            COALESCE(u.last_login_at, 0)
                      FROM sessions s
                      JOIN users u ON u.id = s.user_id
                      WHERE s.id = ?1
@@ -1454,6 +1453,54 @@ impl GroupAdmin for Store {
                     .prepare("SELECT id, name, description FROM groups ORDER BY name")
                     .map_err(core_from_sql)?;
                 let rows = stmt.query_map([], group_from_row).map_err(core_from_sql)?;
+                collect_rows(rows)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn list_group_members(&self, group: &str) -> CoreResult<Vec<User>> {
+        let group = group.to_owned();
+        self.conn
+            .call(move |conn| {
+                let group_id = group_id_by_name_or_id_conn(conn, &group)?;
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT u.id, u.primary_email, u.display_name, u.status,
+                                COALESCE(u.last_login_at, 0)
+                         FROM group_members gm
+                         JOIN users u ON u.id = gm.user_id
+                         WHERE gm.group_id = ?1
+                           AND u.status <> 'deleted'
+                         ORDER BY u.primary_email_normalized, u.id",
+                    )
+                    .map_err(core_from_sql)?;
+                let rows = stmt
+                    .query_map(params![group_id], user_from_row)
+                    .map_err(core_from_sql)?;
+                collect_rows(rows)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn list_group_groups(&self, group: &str) -> CoreResult<Vec<Group>> {
+        let group = group.to_owned();
+        self.conn
+            .call(move |conn| {
+                let group_id = group_id_by_name_or_id_conn(conn, &group)?;
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT g.id, g.name, g.description
+                         FROM group_groups gg
+                         JOIN groups g ON g.id = gg.member_group_id
+                         WHERE gg.group_id = ?1
+                         ORDER BY g.name",
+                    )
+                    .map_err(core_from_sql)?;
+                let rows = stmt
+                    .query_map(params![group_id], group_from_row)
+                    .map_err(core_from_sql)?;
                 collect_rows(rows)
             })
             .await
@@ -1645,6 +1692,7 @@ fn add_user_conn(conn: &rusqlite::Connection, input: AddUserInput) -> CoreResult
         email: input.email.trim().to_owned(),
         display_name: input.display_name,
         status: "active".to_owned(),
+        last_login_at: 0,
     };
     conn.execute(
         "INSERT INTO users (
@@ -1689,6 +1737,7 @@ fn add_invitation_conn(
         email: email.clone(),
         display_name: input.display_name,
         status: "pending".to_owned(),
+        last_login_at: 0,
     };
     let invitation = IdentityInvitation {
         id: new_id(),
@@ -2284,9 +2333,35 @@ fn resolve_user_id_conn(conn: &rusqlite::Connection, email_or_id: &str) -> CoreR
     .ok_or(CoreError::NotFound)
 }
 
+fn list_users_conn(conn: &rusqlite::Connection, filter: &UserListFilter) -> CoreResult<Vec<User>> {
+    let query = filter.query.trim().to_ascii_lowercase();
+    let like = format!("%{}%", escape_like(&query));
+    let limit = i64::try_from(effective_limit(filter.limit)).unwrap_or(i64::MAX);
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, primary_email, display_name, status, COALESCE(last_login_at, 0)
+             FROM users
+             WHERE status <> 'deleted'
+               AND (
+                 ?1 = ''
+                 OR LOWER(primary_email_normalized) LIKE ?2 ESCAPE '\\'
+                 OR LOWER(COALESCE(display_name, '')) LIKE ?2 ESCAPE '\\'
+               )
+             ORDER BY primary_email_normalized, id
+             LIMIT ?3",
+        )
+        .map_err(core_from_sql)?;
+    let rows = stmt
+        .query_map(params![query, like, limit], user_from_row)
+        .map_err(core_from_sql)?;
+    collect_rows(rows)
+}
+
 fn user_by_id_conn(conn: &rusqlite::Connection, user_id: &str) -> CoreResult<User> {
     conn.query_row(
-        "SELECT id, primary_email, display_name, status FROM users WHERE id = ?1",
+        "SELECT id, primary_email, display_name, status, COALESCE(last_login_at, 0)
+         FROM users
+         WHERE id = ?1 AND status <> 'deleted'",
         params![user_id],
         user_from_row,
     )
@@ -2297,7 +2372,9 @@ fn user_by_id_conn(conn: &rusqlite::Connection, user_id: &str) -> CoreResult<Use
 
 fn user_by_id_tx(tx: &rusqlite::Transaction<'_>, user_id: &str) -> CoreResult<User> {
     tx.query_row(
-        "SELECT id, primary_email, display_name, status FROM users WHERE id = ?1",
+        "SELECT id, primary_email, display_name, status, COALESCE(last_login_at, 0)
+         FROM users
+         WHERE id = ?1",
         params![user_id],
         user_from_row,
     )
@@ -2370,6 +2447,7 @@ fn user_from_row(row: &Row<'_>) -> rusqlite::Result<User> {
         email: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
         display_name: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
         status: row.get(3)?,
+        last_login_at: row.get(4)?,
     })
 }
 
@@ -2600,6 +2678,21 @@ fn bool_to_i64(value: bool) -> i64 {
 
 fn require_affected(changed: usize, not_found: CoreError) -> CoreResult<()> {
     if changed == 0 { Err(not_found) } else { Ok(()) }
+}
+
+fn effective_limit(limit: usize) -> usize {
+    limit.max(1)
+}
+
+fn escape_like(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }
 
 fn core_from_driver(err: tokio_rusqlite::Error<CoreError>) -> CoreError {

@@ -58,6 +58,7 @@ fn user_display_values_fall_back_to_bridge_subject() {
         email: String::new(),
         display_name: String::new(),
         status: "active".to_owned(),
+        ..User::default()
     };
 
     assert_eq!(user.bridge_subject(), "user:alice");

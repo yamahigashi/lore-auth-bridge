@@ -1,0 +1,58 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ self.t("admin.groups.title") }}{% endblock %}
+{% block content %}
+<section>
+  <h1>{{ self.t("admin.groups.title") }}</h1>
+  <form method="get" action="/admin/groups">
+    <input type="search" name="q" value="{{ query }}" placeholder='{{ self.t("admin.search.placeholder") }}' aria-label='{{ self.t("admin.search.label") }}'>
+    <button type="submit">{{ self.t("admin.search.submit") }}</button>
+  </form>
+</section>
+<section>
+  {% if rows.len() >= limit %}
+  <p>{{ self.t("admin.list.limit_note") }} {{ limit }}</p>
+  {% endif %}
+  {% if rows.is_empty() %}
+  <p>{{ self.t("admin.groups.empty") }}</p>
+  {% else %}
+  {% for group in rows %}
+  <article>
+    <header>
+      <strong>{{ group.name }}</strong>
+      <small>{{ group.description }}</small>
+    </header>
+    <div>
+      <h2>{{ self.t("admin.groups.members") }}</h2>
+      {% if group.members.is_empty() %}
+      <p>{{ self.t("admin.groups.no_members") }}</p>
+      {% else %}
+      <ul>
+        {% for member in group.members %}
+        <li>{{ member.email }} {{ member.display_name }}</li>
+        {% endfor %}
+      </ul>
+      {% if group.members_more > 0 %}
+      <p>+{{ group.members_more }} {{ self.t("admin.groups.more") }}</p>
+      {% endif %}
+      {% endif %}
+    </div>
+    <div>
+      <h2>{{ self.t("admin.groups.nested_groups") }}</h2>
+      {% if group.nested_groups.is_empty() %}
+      <p>{{ self.t("admin.groups.no_nested_groups") }}</p>
+      {% else %}
+      <ul>
+        {% for nested in group.nested_groups %}
+        <li>{{ nested.name }} {{ nested.description }}</li>
+        {% endfor %}
+      </ul>
+      {% if group.nested_groups_more > 0 %}
+      <p>+{{ group.nested_groups_more }} {{ self.t("admin.groups.more") }}</p>
+      {% endif %}
+      {% endif %}
+    </div>
+  </article>
+  {% endfor %}
+  {% endif %}
+</section>
+{% endblock %}
