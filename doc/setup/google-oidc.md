@@ -162,8 +162,7 @@ Usually, an administrator registers the target user's email.
 The examples above set `trust.email_binding: verified_email_invitation`, so the first verified-email login can consume that invitation and create the external identity binding.
 
 ```bash
-go run ./cmd/lore-authctl user invite \
-  --config .quickstart/lore-auth.yaml \
+lore-authctl --config .quickstart/lore-auth.yaml user invite \
   --idp google \
   --email '<Google email>' \
   --name '<display name>'
@@ -201,7 +200,7 @@ If `redirect_uri_mismatch` appears, check that the Authorized redirect URI in Go
 
 If the login flow reports `No Lore token was issued`, Google login succeeded but the bridge did not find a matching registered user.
 
-Invite the verified email with `lore-authctl user invite`, then retry login.
+Invite the verified email with `lore-authctl --config <cfg> user invite`, then retry login.
 
 If login is rejected while an External app is in testing mode, check that the Google account used for login is listed in test users.
 

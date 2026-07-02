@@ -16,9 +16,8 @@ For IdP login, see [Identity Providers](identity-providers.md).
 which lore
 which loreserver
 
-go test ./...
-go vet ./...
-go build ./...
+cargo build --release
+export PATH="$PWD/target/release:$PATH"
 ```
 
 ## Quickstart Directory
@@ -55,6 +54,7 @@ Save the environment variables so the same values can be reused in other termina
 
 ```bash
 cat > .quickstart/env <<EOF
+export PATH="$PWD/target/release:\$PATH"
 export TRUST_CERT_FILE="$TRUST_CERT_FILE"
 export SSL_CERT_FILE="$TRUST_CERT_FILE"
 export LORE_CONFIG_PATH="$PWD/.quickstart/loreconfig"
@@ -105,14 +105,11 @@ YAML
 ```bash
 CONFIG=.quickstart/lore-auth.yaml
 
-go run ./cmd/lore-authctl init-db --config "$CONFIG"
+lore-authctl --config "$CONFIG" init-db
 
-go run ./cmd/lore-authctl key generate \
-  --config "$CONFIG" \
-  --kid manual-1
+lore-authctl --config "$CONFIG" key generate --kid manual-1
 
-go run ./cmd/lore-authctl user add \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" user add \
   --email manual@example.com \
   --name "Manual User"
 ```
@@ -122,7 +119,9 @@ go run ./cmd/lore-authctl user add \
 Start the bridge in another terminal.
 
 ```bash
-go run ./cmd/lore-auth-server -config .quickstart/lore-auth.yaml
+source .quickstart/env
+
+lore-auth-server --config .quickstart/lore-auth.yaml
 ```
 
 Check the HTTP side.
@@ -135,10 +134,9 @@ curl -f http://localhost:8080/.well-known/jwks.json
 ## authn token
 
 ```bash
-go run ./cmd/lore-authctl token mint-authn \
-  --config "$CONFIG" \
-  --out .quickstart/authn.jwt \
-  manual@example.com
+lore-authctl --config "$CONFIG" token mint-authn \
+  manual@example.com \
+  --out .quickstart/authn.jwt
 ```
 
 ## loreserver config
@@ -204,14 +202,13 @@ lore repository create lore://localhost:41337/manual-repo
 Check that the repository was recorded by the bridge.
 
 ```bash
-go run ./cmd/lore-authctl repo list --config "$CONFIG"
+lore-authctl --config "$CONFIG" repo list
 ```
 
 Add a grant.
 
 ```bash
-go run ./cmd/lore-authctl grant add \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" grant add \
   user:manual@example.com \
   manual-repo \
   writer
@@ -220,8 +217,7 @@ go run ./cmd/lore-authctl grant add \
 Check the ACL decision.
 
 ```bash
-go run ./cmd/lore-authctl check \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" check \
   manual@example.com \
   manual-repo \
   write

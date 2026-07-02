@@ -50,13 +50,13 @@ The bridge binds the verified external identity returned by the IdP to a reserve
 
 The bridge does not issue tokens to unregistered users.
 
-With IdP login, an administrator can preregister a user email with `lore-authctl user invite --idp <provider-id>`.
+With IdP login, an administrator can preregister a user email with `lore-authctl --config <cfg> user invite --idp <provider-id> --email <email>`.
 
 When that user logs in for the first time and the IdP returns the same verified email, the login becomes usable.
 
 When IdP login is not used, an administrator can issue an authn token with the CLI.
 
-In that mode, the administrator runs `lore-authctl token mint-authn` and passes the token to `lore auth login --token-type lore`.
+In that mode, the administrator runs `lore-authctl --config <cfg> token mint-authn <email>` and passes the token to `lore auth login --token-type lore`.
 
 ## Operational Setup Flow
 

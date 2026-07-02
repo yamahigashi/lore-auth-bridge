@@ -13,11 +13,9 @@ Private keys stay on the filesystem and are not stored in the DB or JWKS.
 Create the active key after applying DB migrations.
 
 ```bash
-go run ./cmd/lore-authctl init-db --config .quickstart/lore-auth.yaml
+lore-authctl --config .quickstart/lore-auth.yaml init-db
 
-go run ./cmd/lore-authctl key generate \
-  --config .quickstart/lore-auth.yaml \
-  --kid manual-1
+lore-authctl --config .quickstart/lore-auth.yaml key generate --kid manual-1
 ```
 
 `--kid` must match `jwt.active_kid`.
@@ -29,7 +27,7 @@ go run ./cmd/lore-authctl key generate \
 Check registered key metadata.
 
 ```bash
-go run ./cmd/lore-authctl key list --config .quickstart/lore-auth.yaml
+lore-authctl --config .quickstart/lore-auth.yaml key list
 ```
 
 The output contains `kid`, algorithm, status, and private key path.

@@ -26,7 +26,7 @@ If the user is registered, the browser session or CLI auth session completes.
 
 If the user is not registered, no token is issued and the whoami page displays the identity.
 
-When the IdP returns verified email addresses, an administrator can preregister a user with `lore-authctl user invite --idp <provider-id> --email <address>`.
+When the IdP returns verified email addresses, an administrator can preregister a user with `lore-authctl --config <cfg> user invite --idp <provider-id> --email <address>`.
 
 If the provider has `trust.email_binding: verified_email_invitation` and the invited user's first login returns a matching verified email from the IdP, the bridge creates the external identity binding and completes that login.
 
@@ -40,18 +40,16 @@ See [Google OIDC](google-oidc.md) for concrete Google OIDC settings.
 
 If IdP login is not used, an administrator can issue authn tokens with the administrative CLI.
 
-Register a user with the CLI, then issue an authn token with `lore-authctl token mint-authn`.
+Register a user with the CLI, then issue an authn token with `lore-authctl --config <cfg> token mint-authn <email>`.
 
 ```bash
-go run ./cmd/lore-authctl user add \
-  --config .quickstart/lore-auth.yaml \
+lore-authctl --config .quickstart/lore-auth.yaml user add \
   --email manual@example.com \
   --name "Manual User"
 
-go run ./cmd/lore-authctl token mint-authn \
-  --config .quickstart/lore-auth.yaml \
-  --out .quickstart/authn.jwt \
-  manual@example.com
+lore-authctl --config .quickstart/lore-auth.yaml token mint-authn \
+  manual@example.com \
+  --out .quickstart/authn.jwt
 ```
 
 With this method, the administrator passes the issued token to `lore auth login --token-type lore` to register it in the Lore CLI.

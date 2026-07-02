@@ -13,11 +13,9 @@ private key は filesystem に置き、DB と JWKS には保存しません。
 DB migration 後に active key を作ります。
 
 ```bash
-go run ./cmd/lore-authctl init-db --config .quickstart/lore-auth.yaml
+lore-authctl --config .quickstart/lore-auth.yaml init-db
 
-go run ./cmd/lore-authctl key generate \
-  --config .quickstart/lore-auth.yaml \
-  --kid manual-1
+lore-authctl --config .quickstart/lore-auth.yaml key generate --kid manual-1
 ```
 
 `--kid` は `jwt.active_kid` と一致させます。
@@ -29,7 +27,7 @@ go run ./cmd/lore-authctl key generate \
 登録された key metadata を確認します。
 
 ```bash
-go run ./cmd/lore-authctl key list --config .quickstart/lore-auth.yaml
+lore-authctl --config .quickstart/lore-auth.yaml key list
 ```
 
 出力には `kid`、algorithm、status、private key path が含まれます。

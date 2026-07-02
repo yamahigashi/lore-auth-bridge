@@ -2,11 +2,11 @@
 
 [日本語](README.ja.md)
 
-`lore-auth-bridge` is a Go bridge that connects Lore authentication to external identity providers and ACL backends.
+`lore-auth-bridge` is a Rust bridge that connects Lore authentication to external identity providers and ACL backends.
 
 It provides login, repository-scoped token exchange, JWKS-based signature verification, and repository lifecycle synchronization for the Lore CLI and `loreserver`.
 
-The current backend set is OIDC identity providers, SQLite, and Casbin.
+The current backend set is OIDC identity providers, SQLite, and a SQLite-backed authorization policy.
 
 ## Features
 
@@ -44,18 +44,13 @@ This repository builds three main binaries:
 
 ## Requirements
 
-- Go 1.26 or later
+- Rust stable toolchain
 - `lore` / `loreserver` binaries for real integration checks
+- Go toolchain for the end-to-end harness under `test/e2e`
 
 ## Installation
 
-When installing directly from the Go toolchain, use the public module path.
-
-```bash
-go install github.com/yamahigashi/lore-auth-bridge/cmd/lore-auth-server@latest
-go install github.com/yamahigashi/lore-auth-bridge/cmd/lore-authctl@latest
-go install github.com/yamahigashi/lore-auth-bridge/cmd/lore-claimprobe@latest
-```
+For released builds, download the platform archive from the project GitHub Releases page and put `lore-auth-server`, `lore-authctl`, and `lore-claimprobe` on `PATH`.
 
 When working from local changes, clone this repository and build the binaries from the checkout.
 
@@ -64,31 +59,42 @@ When working from local changes, clone this repository and build the binaries fr
 Unix shell:
 
 ```bash
-mkdir -p ./bin
-go build -o ./bin/lore-auth-server ./cmd/lore-auth-server
-go build -o ./bin/lore-authctl ./cmd/lore-authctl
-go build -o ./bin/lore-claimprobe ./cmd/lore-claimprobe
+cargo build --release
+
+target/release/lore-auth-server --help
+target/release/lore-authctl --help
+target/release/lore-claimprobe --help
 ```
 
 Windows PowerShell:
 
 ```powershell
-New-Item -ItemType Directory -Force .\bin | Out-Null
-go build -o .\bin\lore-auth-server.exe ./cmd/lore-auth-server
-go build -o .\bin\lore-authctl.exe ./cmd/lore-authctl
-go build -o .\bin\lore-claimprobe.exe ./cmd/lore-claimprobe
+cargo build --release
+
+.\target\release\lore-auth-server.exe --help
+.\target\release\lore-authctl.exe --help
+.\target\release\lore-claimprobe.exe --help
 ```
 
 ## Development Checks
 
-`go build ./...` checks that every package builds.
-
-Because it targets packages rather than named binaries, it normally does not leave executable files behind.
+Use Cargo for the Rust workspace checks.
 
 ```bash
-go build ./...
-go test ./...
-go vet ./...
+cargo build --workspace
+cargo test --workspace
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+The end-to-end harness is Go-based and runs only when explicitly enabled.
+
+```bash
+cargo build -p lore-auth-server -p lore-authctl
+LORE_E2E=1 \
+LORE_E2E_BRIDGE_BIN=target/debug/lore-auth-server \
+LORE_E2E_AUTHCTL_BIN=target/debug/lore-authctl \
+go test -tags e2e -count=1 -v ./test/e2e/...
 ```
 
 ## Configuration And Startup
@@ -100,11 +106,11 @@ The database, JWT issuer / audience, signing key, IdP settings, TLS, and `lorese
 See the [Setup Guide](doc/setup-guide.md) for the full procedure.
 
 ```bash
-./bin/lore-authctl init-db --config configs/lore-auth.example.yaml
-./bin/lore-auth-server --config configs/lore-auth.example.yaml
+target/release/lore-authctl --config configs/lore-auth.example.yaml init-db
+target/release/lore-auth-server --config configs/lore-auth.example.yaml
 ```
 
-On Windows, use `.\bin\lore-authctl.exe` and `.\bin\lore-auth-server.exe`.
+On Windows, use `.\target\release\lore-authctl.exe` and `.\target\release\lore-auth-server.exe`.
 
 ## User Registration
 
@@ -113,8 +119,7 @@ When IdP login is enabled, an administrator can preregister a user by provider I
 ```bash
 PROVIDER_ID=company-sso
 
-./bin/lore-authctl user invite \
-  --config configs/lore-auth.example.yaml \
+target/release/lore-authctl --config configs/lore-auth.example.yaml user invite \
   --idp "$PROVIDER_ID" \
   --email alice@example.com \
   --name "Alice Example"
@@ -130,7 +135,7 @@ When pairing the bridge with a new Lore binary, use `lore-claimprobe` to validat
 
 - Store private keys on the filesystem with mode `0600`. Do not store private keys in the DB or JWKS.
 - Do not leave JWTs, Google client secrets, or private keys in logs or in the repository.
-- `lore-authctl --print-login-command` and the web token page display token bodies.
+- `lore-authctl token mint-authn --print-login-command` and the web token page display token bodies.
   Do not use them in shared terminals, CI logs, or browser histories.
 - See [Signing Keys](doc/setup/signing-keys.md) for signing key and token rotation.
 

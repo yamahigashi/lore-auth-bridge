@@ -36,10 +36,7 @@ const GRPC_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 #[derive(Debug, Parser)]
 #[command(name = "lore-auth-server", about = "Lore UCS Auth/ReBAC bridge server")]
 struct Cli {
-    #[arg(
-        long,
-        default_value = "configs/lore-auth.example.yaml"
-    )]
+    #[arg(long, default_value = "configs/lore-auth.example.yaml")]
     config: String,
 }
 

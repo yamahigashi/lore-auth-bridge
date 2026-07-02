@@ -117,7 +117,11 @@ security:
 
 `device_poll_interval_seconds` is the device flow polling interval.
 
-`session_ttl_seconds` is the TTL for browser sessions and interactive login sessions.
+`session_ttl_seconds` is the TTL for browser sessions.
+
+`auth_session_ttl_seconds` can be set when interactive auth sessions need a different TTL.
+
+If omitted or set to zero, it defaults to `session_ttl_seconds`.
 
 `rebac_allowed_peer_cidrs` is the peer allowlist for `ucs.auth.RebacApi`.
 

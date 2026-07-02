@@ -117,7 +117,11 @@ security:
 
 `device_poll_interval_seconds` は device flow の polling interval です。
 
-`session_ttl_seconds` はブラウザセッションと interactive login session の TTL です。
+`session_ttl_seconds` はブラウザセッションの TTL です。
+
+interactive auth session に別の TTL を使う場合は、`auth_session_ttl_seconds` を設定できます。
+
+省略した場合、または `0` の場合は `session_ttl_seconds` が使われます。
 
 `rebac_allowed_peer_cidrs` は `ucs.auth.RebacApi` の peer allowlist です。
 

@@ -17,7 +17,7 @@ CONFIG=.quickstart/lore-auth.yaml
 Create the SQLite database and apply migrations.
 
 ```bash
-go run ./cmd/lore-authctl init-db --config "$CONFIG"
+lore-authctl --config "$CONFIG" init-db
 ```
 
 ## key generate
@@ -25,9 +25,7 @@ go run ./cmd/lore-authctl init-db --config "$CONFIG"
 Create an RS256 signing key and register public JWK metadata in the DB.
 
 ```bash
-go run ./cmd/lore-authctl key generate \
-  --config "$CONFIG" \
-  --kid manual-1
+lore-authctl --config "$CONFIG" key generate --kid manual-1
 ```
 
 `--kid` must match `jwt.active_kid`.
@@ -35,7 +33,7 @@ go run ./cmd/lore-authctl key generate \
 ## key list
 
 ```bash
-go run ./cmd/lore-authctl key list --config "$CONFIG"
+lore-authctl --config "$CONFIG" key list
 ```
 
 ## user invite
@@ -45,8 +43,7 @@ When IdP login is enabled, an administrator can preregister a user by provider I
 ```bash
 PROVIDER_ID=company-sso
 
-go run ./cmd/lore-authctl user invite \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" user invite \
   --idp "$PROVIDER_ID" \
   --email alice@example.com \
   --name "Alice Example"
@@ -63,8 +60,7 @@ When `identity_providers` is configured, `user invite` requires `--idp`.
 ## user add
 
 ```bash
-go run ./cmd/lore-authctl user add \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" user add \
   --email manual@example.com \
   --name "Manual User"
 ```
@@ -78,13 +74,13 @@ Use `user invite` for IdP login.
 ## user list
 
 ```bash
-go run ./cmd/lore-authctl user list --config "$CONFIG"
+lore-authctl --config "$CONFIG" user list
 ```
 
 ## user disable
 
 ```bash
-go run ./cmd/lore-authctl user disable --config "$CONFIG" manual@example.com
+lore-authctl --config "$CONFIG" user disable manual@example.com
 ```
 
 Disabled users are rejected during token exchange.
@@ -96,8 +92,7 @@ Repositories are normally registered through ReBAC `CreateResource` calls from `
 Use the following command for manual registration.
 
 ```bash
-go run ./cmd/lore-authctl repo add \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" repo add \
   manual-repo \
   --remote lore://localhost:41337/manual-repo \
   --lore-repository-id 11111111111111111111111111111111
@@ -110,14 +105,13 @@ It is not the repository name.
 ## repo list
 
 ```bash
-go run ./cmd/lore-authctl repo list --config "$CONFIG"
+lore-authctl --config "$CONFIG" repo list
 ```
 
 ## grant add
 
 ```bash
-go run ./cmd/lore-authctl grant add \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" grant add \
   user:manual@example.com \
   manual-repo \
   writer
@@ -132,16 +126,15 @@ It does not cover using `reader` as a read-only role.
 ## grant list
 
 ```bash
-go run ./cmd/lore-authctl grant list --config "$CONFIG"
+lore-authctl --config "$CONFIG" grant list
 
-go run ./cmd/lore-authctl grant list --config "$CONFIG" manual-repo
+lore-authctl --config "$CONFIG" grant list manual-repo
 ```
 
 ## grant remove
 
 ```bash
-go run ./cmd/lore-authctl grant remove \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" grant remove \
   user:manual@example.com \
   manual-repo \
   writer
@@ -152,8 +145,7 @@ go run ./cmd/lore-authctl grant remove \
 Check the bridge-side authorization backend decision.
 
 ```bash
-go run ./cmd/lore-authctl check \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" check \
   manual@example.com \
   manual-repo \
   write
@@ -166,19 +158,22 @@ The command returns `allow` when access is permitted.
 When IdP login is not used, manually issue an authn token.
 
 ```bash
-go run ./cmd/lore-authctl token mint-authn \
-  --config "$CONFIG" \
-  --out .quickstart/authn.jwt \
-  manual@example.com
+lore-authctl --config "$CONFIG" token mint-authn \
+  manual@example.com \
+  --out .quickstart/authn.jwt
 ```
 
-When `--out` is specified, the token is written to a file with mode `0600`, and the login command containing the token is not printed.
+When `--out` is specified, the token is written to a file with mode `0600`, and no token or login command is printed.
 
-If `--print-login-command` is set explicitly, the `lore auth login` command containing the token is printed to stderr.
+Without `--out`, the token is printed to stdout.
+
+If `--print-login-command` is also set, the `lore auth login` command containing the token is printed to stderr.
 
 That output can remain in terminal logs, so do not use it in shared terminals or CI logs.
 
 Pass the issued token to `lore auth login --token-type lore`.
+
+Use `--ttl 3600s`, `--ttl 15m`, or `--ttl 1h` to override the default authn token TTL.
 
 ```bash
 lore auth login \
@@ -195,11 +190,12 @@ Manually issue a repository-scoped authz token.
 During normal repository operations, the Lore CLI obtains authz tokens by calling `ExchangeUserTokenForMultiresourceToken`.
 
 ```bash
-go run ./cmd/lore-authctl token mint \
-  --config "$CONFIG" \
+lore-authctl --config "$CONFIG" token mint \
   manual@example.com \
   manual-repo \
   --role writer
 ```
 
-`token mint` also avoids printing a login command containing the token unless `--print-login-command` is set.
+Without `--out`, `token mint` prints the token to stdout.
+
+It prints a login command only when `--print-login-command` is set.
