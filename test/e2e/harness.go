@@ -27,6 +27,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"gopkg.in/yaml.v3"
 
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/casbin"
 	"github.com/yamahigashi/lore-auth-bridge/internal/adapter/rs256"
@@ -45,6 +46,8 @@ const (
 	loreGRPCPort = 41337
 	loreHTTPPort = 41339
 	activeKID    = "e2e-key-1"
+
+	bridgeBinEnv = "LORE_E2E_BRIDGE_BIN"
 )
 
 type harness struct {
@@ -62,6 +65,11 @@ type harness struct {
 	tokens     *service.TokenService
 	httpServer *http.Server
 	grpcServer *grpc.Server
+
+	bridgeConfigPath string
+	bridgeLog        string
+	bridge           *exec.Cmd
+	bridgeDone       chan error
 
 	loreserver *exec.Cmd
 	serverLog  string
@@ -113,28 +121,158 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) startBroker() {
 	t := h.t
+	if bridgeBin := os.Getenv(bridgeBinEnv); bridgeBin != "" {
+		h.startExternalBroker(bridgeBin)
+		return
+	}
 
 	// HTTP listener (JWKS + login + issuer base).
 	httpLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen broker http: %v", err)
 	}
-	httpPort := httpLn.Addr().(*net.TCPAddr).Port
-	h.httpURL = fmt.Sprintf("http://localhost:%d", httpPort)
 
 	// gRPC TLS listener (UrcAuthApi + RebacApi).
 	grpcLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen broker grpc: %v", err)
 	}
-	grpcPort := grpcLn.Addr().(*net.TCPAddr).Port
-	h.grpcAddr = fmt.Sprintf("127.0.0.1:%d", grpcPort)
-	h.authURL = fmt.Sprintf("https://localhost:%d", grpcPort)
+	serverCert := h.prepareBroker(httpLn.Addr().String(), grpcLn.Addr().String(), false)
 
-	serverCert, caPEM := h.makeServerCert()
+	coreStore := sqlite.NewCoreStore(h.store)
+	authz := casbin.NewService(h.store)
+	signer := rs256.NewSigner(h.cfg.JWT.ActiveKID, coreStore)
+	tokenSvc := h.tokens
+	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: h.cfg.Server.PublicBaseURL, SessionTTL: time.Duration(h.cfg.Security.SessionTTLSeconds) * time.Second}, nil, coreStore, coreStore, tokenSvc)
+	permissionSvc := service.NewPermissionService(coreStore, authz)
+	resourceSvc := service.NewResourceService(coreStore)
+
+	srv := httpserver.NewWithOptions(httpserver.Options{Config: h.cfg, Login: loginSvc, Tokens: tokenSvc, Resources: resourceSvc, State: coreStore, JWKS: signer, Device: device.NewService(h.cfg, h.store, tokenSvc)})
+	h.httpServer = &http.Server{Handler: srv.Handler()}
+	go func() { _ = h.httpServer.Serve(httpLn) }()
+
+	h.grpcServer = grpc.NewServer(grpc.Creds(credentials.NewServerTLSFromCert(&serverCert)))
+	pbAuth.RegisterUrcAuthApiServer(h.grpcServer, grpcauth.New(grpcauth.Services{Login: loginSvc, Tokens: tokenSvc, Permissions: permissionSvc}))
+	pbRebac.RegisterRebacApiServer(h.grpcServer, grpcrebac.New(resourceSvc))
+	go func() { _ = h.grpcServer.Serve(grpcLn) }()
+
+	h.waitHTTP(h.httpURL+"/.well-known/jwks.json", 5*time.Second, "broker JWKS")
+	t.Cleanup(h.stop)
+	t.Logf("broker HTTP %s, gRPC(TLS) %s", h.httpURL, h.authURL)
+}
+
+func (h *harness) startExternalBroker(bridgeBin string) {
+	t := h.t
+
+	bridgeBin = resolveBridgeBin(t, bridgeBin)
+	h.prepareBroker(freeTCPAddr(t), freeTCPAddr(t), true)
+	h.bridgeLog = filepath.Join(h.dir, "bridge.log")
+	logFile, err := os.Create(h.bridgeLog)
+	if err != nil {
+		t.Fatalf("create bridge log: %v", err)
+	}
+	cmd := h.bridgeCommand(bridgeBin)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start bridge %q: %v", bridgeBin, err)
+	}
+	h.bridge = cmd
+	h.bridgeDone = make(chan error, 1)
+	go func() {
+		h.bridgeDone <- cmd.Wait()
+		close(h.bridgeDone)
+	}()
+
+	t.Cleanup(h.stop)
+	h.waitBridgeHTTP(h.httpURL+"/.well-known/jwks.json", 30*time.Second, "broker JWKS")
+	t.Logf("broker external %s HTTP %s, gRPC(TLS) %s, config %s", bridgeBin, h.httpURL, h.authURL, h.bridgeConfigPath)
+}
+
+func (h *harness) bridgeCommand(bridgeBin string) *exec.Cmd {
+	cmd := exec.Command(bridgeBin, "--config", h.bridgeConfigPath)
+	cmd.Dir = h.dir
+	cmd.Env = os.Environ()
+	return cmd
+}
+
+func resolveBridgeBin(t *testing.T, bridgeBin string) string {
+	t.Helper()
+	if filepath.IsAbs(bridgeBin) {
+		return bridgeBin
+	}
+	if filepath.Dir(bridgeBin) == "." {
+		if resolved, err := exec.LookPath(bridgeBin); err == nil {
+			return resolved
+		}
+	}
+	if abs, ok := absIfExists(bridgeBin); ok {
+		return abs
+	}
+	if root, ok := repoRoot(); ok {
+		if abs, ok := absIfExists(filepath.Join(root, bridgeBin)); ok {
+			return abs
+		}
+	}
+	abs, err := filepath.Abs(bridgeBin)
+	if err != nil {
+		t.Fatalf("resolve bridge binary %q: %v", bridgeBin, err)
+	}
+	return abs
+}
+
+func absIfExists(path string) (string, bool) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", false
+	}
+	return abs, true
+}
+
+func repoRoot() (string, bool) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func (h *harness) prepareBroker(httpListen, grpcListen string, writeTLSFiles bool) tls.Certificate {
+	t := h.t
+
+	httpPort := portFromAddr(t, httpListen, "broker http")
+	grpcPort := portFromAddr(t, grpcListen, "broker grpc")
+	h.httpURL = "http://localhost:" + httpPort
+	h.grpcAddr = grpcListen
+	h.authURL = "https://localhost:" + grpcPort
+
+	serverCert, caPEM, certPEM, keyPEM := h.makeServerCert()
 	h.caCertPath = filepath.Join(h.dir, "broker-ca.pem")
 	if err := os.WriteFile(h.caCertPath, caPEM, 0o644); err != nil {
 		t.Fatalf("write ca: %v", err)
+	}
+
+	certPath := filepath.Join(h.dir, "broker-grpc.pem")
+	keyPathTLS := filepath.Join(h.dir, "broker-grpc-key.pem")
+	if writeTLSFiles {
+		if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+			t.Fatalf("write grpc cert: %v", err)
+		}
+		if err := os.WriteFile(keyPathTLS, keyPEM, 0o600); err != nil {
+			t.Fatalf("write grpc key: %v", err)
+		}
 	}
 
 	dbPath := filepath.Join(h.dir, "broker.sqlite3")
@@ -163,7 +301,13 @@ func (h *harness) startBroker() {
 	}
 
 	cfg := &config.Config{}
+	cfg.Server.Listen = httpListen
+	cfg.Server.GRPCListen = grpcListen
 	cfg.Server.PublicBaseURL = h.httpURL
+	if writeTLSFiles {
+		cfg.Server.GRPCTLSCertFile = certPath
+		cfg.Server.GRPCTLSKeyFile = keyPathTLS
+	}
 	cfg.Database.Path = dbPath
 	cfg.JWT.Issuer = h.httpURL
 	cfg.JWT.Audience = h.audience
@@ -173,38 +317,38 @@ func (h *harness) startBroker() {
 	cfg.Lore.AuthURL = h.authURL
 	cfg.Lore.DefaultRemoteURL = h.remoteURL
 	cfg.Security.SessionTTLSeconds = 600
+	cfg.Security.AuthSessionTTLSeconds = 600
 	cfg.Security.DeviceCodeTTLSeconds = 600
 	cfg.Security.DevicePollIntervalSeconds = 1
 	h.store = st
 	h.cfg = cfg
+	h.tokens = h.tokenService(cfg.JWT.Audience, "localhost")
+	h.writeBrokerConfig()
+	return serverCert
+}
 
-	coreStore := sqlite.NewCoreStore(st)
-	authz := casbin.NewService(st)
-	signer := rs256.NewSigner(cfg.JWT.ActiveKID, coreStore)
-	tokenSvc := service.NewTokenService(service.TokenConfig{
-		Issuer:              cfg.JWT.Issuer,
-		Audience:            cfg.JWT.Audience,
-		AuthServiceAudience: "localhost",
-		AuthnTTL:            time.Duration(cfg.JWT.TTLSeconds) * time.Second,
+func (h *harness) tokenService(audience []string, authServiceAudience string) *service.TokenService {
+	coreStore := sqlite.NewCoreStore(h.store)
+	authz := casbin.NewService(h.store)
+	return service.NewTokenService(service.TokenConfig{
+		Issuer:              h.cfg.JWT.Issuer,
+		Audience:            audience,
+		AuthServiceAudience: authServiceAudience,
+		AuthnTTL:            time.Duration(h.cfg.JWT.TTLSeconds) * time.Second,
 		AuthzTTL:            15 * time.Minute,
-	}, coreStore, coreStore, authz, signer, coreStore)
-	loginSvc := service.NewLoginService(service.LoginConfig{PublicBaseURL: cfg.Server.PublicBaseURL, SessionTTL: time.Duration(cfg.Security.SessionTTLSeconds) * time.Second}, nil, coreStore, coreStore, tokenSvc)
-	permissionSvc := service.NewPermissionService(coreStore, authz)
-	resourceSvc := service.NewResourceService(coreStore)
-	h.tokens = tokenSvc
+	}, coreStore, coreStore, authz, rs256.NewSigner(h.cfg.JWT.ActiveKID, coreStore), coreStore)
+}
 
-	srv := httpserver.NewWithOptions(httpserver.Options{Config: cfg, Login: loginSvc, Tokens: tokenSvc, Resources: resourceSvc, State: coreStore, JWKS: signer, Device: device.NewService(cfg, st, tokenSvc)})
-	h.httpServer = &http.Server{Handler: srv.Handler()}
-	go func() { _ = h.httpServer.Serve(httpLn) }()
-
-	h.grpcServer = grpc.NewServer(grpc.Creds(credentials.NewServerTLSFromCert(&serverCert)))
-	pbAuth.RegisterUrcAuthApiServer(h.grpcServer, grpcauth.New(grpcauth.Services{Login: loginSvc, Tokens: tokenSvc, Permissions: permissionSvc}))
-	pbRebac.RegisterRebacApiServer(h.grpcServer, grpcrebac.New(resourceSvc))
-	go func() { _ = h.grpcServer.Serve(grpcLn) }()
-
-	h.waitHTTP(h.httpURL+"/.well-known/jwks.json", 5*time.Second, "broker JWKS")
-	t.Cleanup(h.stop)
-	t.Logf("broker HTTP %s, gRPC(TLS) %s", h.httpURL, h.authURL)
+func (h *harness) writeBrokerConfig() {
+	h.t.Helper()
+	raw, err := yaml.Marshal(h.cfg)
+	if err != nil {
+		h.t.Fatalf("marshal bridge config: %v", err)
+	}
+	h.bridgeConfigPath = filepath.Join(h.dir, "bridge.yaml")
+	if err := os.WriteFile(h.bridgeConfigPath, raw, 0o644); err != nil {
+		h.t.Fatalf("write bridge config: %v", err)
+	}
 }
 
 func (h *harness) startLoreserver() {
@@ -280,6 +424,19 @@ func (h *harness) stop() {
 		defer cancel()
 		_ = h.httpServer.Shutdown(ctx)
 	}
+	if h.bridge != nil && h.bridge.Process != nil {
+		_ = h.bridge.Process.Signal(os.Interrupt)
+		if h.bridgeDone == nil {
+			_ = h.bridge.Process.Kill()
+		} else {
+			select {
+			case <-h.bridgeDone:
+			case <-time.After(5 * time.Second):
+				_ = h.bridge.Process.Kill()
+				<-h.bridgeDone
+			}
+		}
+	}
 	if h.store != nil {
 		_ = h.store.Close()
 	}
@@ -317,14 +474,7 @@ func (h *harness) mintAuthnTokenTTL(userEmailOrID string, ttl time.Duration) str
 func (h *harness) mintAuthnTokenAudience(userEmailOrID string, audience []string) string {
 	h.t.Helper()
 	userID := h.resolveUserID(userEmailOrID)
-	coreStore := sqlite.NewCoreStore(h.store)
-	authz := casbin.NewService(h.store)
-	tokenSvc := service.NewTokenService(service.TokenConfig{
-		Issuer:   h.cfg.JWT.Issuer,
-		Audience: audience,
-		AuthnTTL: time.Duration(h.cfg.JWT.TTLSeconds) * time.Second,
-		AuthzTTL: 15 * time.Minute,
-	}, coreStore, coreStore, authz, rs256.NewSigner(h.cfg.JWT.ActiveKID, coreStore), coreStore)
+	tokenSvc := h.tokenService(audience, "")
 	res, _, err := tokenSvc.MintAuthn(context.Background(), userID, 0)
 	if err != nil {
 		h.t.Fatalf("mint authn token: %v", err)
@@ -386,7 +536,7 @@ func (h *harness) runLore(args ...string) (string, error) {
 	return string(out), err
 }
 
-func (h *harness) makeServerCert() (tls.Certificate, []byte) {
+func (h *harness) makeServerCert() (tls.Certificate, []byte, []byte, []byte) {
 	t := h.t
 	// CA
 	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -435,12 +585,13 @@ func (h *harness) makeServerCert() (tls.Certificate, []byte) {
 	if err != nil {
 		t.Fatalf("marshal leaf key: %v", err)
 	}
+	certPEM := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}), caPEM...)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: leafKeyDER})
 	cert := tls.Certificate{
 		Certificate: [][]byte{leafDER, caDER},
 		PrivateKey:  leafKey,
 	}
-	_ = leafKeyDER
-	return cert, caPEM
+	return cert, caPEM, certPEM, keyPEM
 }
 
 func (h *harness) waitHTTP(url string, timeout time.Duration, what string) {
@@ -455,6 +606,27 @@ func (h *harness) waitHTTP(url string, timeout time.Duration, what string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	h.t.Fatalf("%s not reachable at %s", what, url)
+}
+
+func (h *harness) waitBridgeHTTP(url string, timeout time.Duration, what string) {
+	h.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-h.bridgeDone:
+			h.t.Fatalf("bridge exited before %s was reachable: %v\nbridge log tail:\n%s", what, err, h.tailBridgeLog(80))
+		default:
+		}
+		resp, err := http.Get(url)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode < 500 {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	h.t.Fatalf("%s not reachable at %s\nbridge log tail:\n%s", what, url, h.tailBridgeLog(80))
 }
 
 func (h *harness) waitHealth(url string, timeout time.Duration) bool {
@@ -481,6 +653,33 @@ func (h *harness) tailServerLog(n int) string {
 		return fmt.Sprintf("(no log: %v)", err)
 	}
 	return tail(string(data), n)
+}
+
+func (h *harness) tailBridgeLog(n int) string {
+	data, err := os.ReadFile(h.bridgeLog)
+	if err != nil {
+		return fmt.Sprintf("(no log: %v)", err)
+	}
+	return tail(string(data), n)
+}
+
+func freeTCPAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve tcp addr: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().String()
+}
+
+func portFromAddr(t *testing.T, addr, what string) string {
+	t.Helper()
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("parse %s addr %q: %v", what, addr, err)
+	}
+	return port
 }
 
 func envOr(key, fallback string) string {

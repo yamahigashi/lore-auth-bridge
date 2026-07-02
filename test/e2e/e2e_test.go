@@ -72,8 +72,7 @@ func TestRepositoryWorkflow(t *testing.T) {
 func registerUser(t *testing.T, h *harness) *sqlite.User {
 	t.Helper()
 	u, err := h.store.AddUser(context.Background(), sqlite.AddUserParams{
-		Provider: "google", Issuer: "https://accounts.google.com", Subject: "e2e-subject",
-		Email: "e2e@example.com", EmailVerified: true, DisplayName: "E2E User",
+		Email: "e2e@example.com", DisplayName: "E2E User",
 	})
 	if err != nil {
 		t.Fatalf("register user: %v", err)

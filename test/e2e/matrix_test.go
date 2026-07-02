@@ -154,7 +154,7 @@ func TestRebacCreateThenDelete(t *testing.T) {
 	if _, err := client.DeleteResource(context.Background(), &pbRebac.DeleteResourceRequest{ResourceId: resourceID}); err != nil {
 		t.Fatalf("delete resource: %v", err)
 	}
-	repo, err = h.store.FindRepositoryByResourceID(context.Background(), resourceID)
+	repo, err = h.store.FindRepositoryAnyStatusByResourceID(context.Background(), resourceID)
 	if err != nil {
 		t.Fatalf("find deleted resource: %v", err)
 	}

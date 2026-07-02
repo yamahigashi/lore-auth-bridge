@@ -28,9 +28,21 @@ LORE_E2E=1 go test -tags e2e -count=1 -v ./test/e2e/...
 
 `LORE_E2E` 未設定、または `lore`/`loreserver` が見つからない場合はスキップされます。
 
+別実装の bridge バイナリを検証する場合は `LORE_E2E_BRIDGE_BIN` に実行ファイルを指定します。
+この場合、harness は temp dir に config YAML / SQLite DB / TLS keypair / signing key を生成し、
+bridge を `--config <generated-yaml>` で起動して HTTP/gRPC ポートへ接続します。
+
+```bash
+go build -o /tmp/lore-auth-bridge ./cmd/lore-auth-server
+LORE_E2E=1 LORE_E2E_BRIDGE_BIN=/tmp/lore-auth-bridge go test -tags e2e -count=1 -v ./test/e2e/...
+```
+
+`LORE_E2E_BRIDGE_BIN` 未指定時は従来どおり Go の in-process bridge を起動します。
+
 ## 構成
 
-- broker (HTTP/JWKS) は **in-process** で 127.0.0.1 のランダムポートに起動します。
+- broker (HTTP/JWKS + gRPC/TLS) は既定では **in-process** で 127.0.0.1 のランダムポートに起動します。
+- `LORE_E2E_BRIDGE_BIN` 指定時は、同じ設定を外部 config YAML として渡し、bridge を別プロセスで起動します。
 - `loreserver` は別プロセスで起動し、auth を有効化して broker の JWKS を信頼します。
   - 設定は `LORE_CONFIG_PATH` の env layer (`e2e.toml`) として注入します。
   - すべて `127.0.0.1` で完結し、`lore://`（末尾 s なし）なので QUIC は自己署名証明書でも検証スキップされます。
@@ -52,7 +64,7 @@ LORE_E2E=1 go test -tags e2e -count=1 -v ./test/e2e/...
 | `TestRebacCreateThenDelete` | ReBAC `CreateResource` / `DeleteResource` | DB が active → deleted |
 | `TestReadOnlyPushBehavior` | `permission:["read"]` で push | 現時点では明示 skip（仕様保証に使わない） |
 
-broker は in-process（HTTP=JWKS、gRPC=TLS）で起動し、自己署名CAを `SSL_CERT_FILE` で lore/loreserver と Go gRPC client に信頼させ、`localhost` で UCS Auth + ReBAC の通し動作を検証します。
+broker は自己署名 CA を使った gRPC/TLS で起動し、CA を `SSL_CERT_FILE` で lore/loreserver と Go gRPC client に信頼させ、`localhost` で UCS Auth + ReBAC の通し動作を検証します。
 
 ## 調整ポイント
 
