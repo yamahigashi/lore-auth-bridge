@@ -1,2 +1,0 @@
--- Superseded by ADR 0006 identity_invitations.
--- Fresh databases no longer store pending external identity state on users.

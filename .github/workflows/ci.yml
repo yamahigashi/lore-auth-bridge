@@ -8,7 +8,9 @@ permissions:
   contents: read
 
 jobs:
-  go:
+  # The Go toolchain only compiles the black-box e2e harness; the e2e
+  # suite itself needs real lore/loreserver binaries and runs locally.
+  e2e-harness:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,14 +20,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - run: go test ./...
-      - run: go vet ./...
-      - run: go build ./...
-
-      - name: govulncheck
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+      - run: go vet ./test/e2e/
+      - run: go vet -tags e2e ./test/e2e/
+      - run: go build -tags e2e ./test/e2e/
 
   rust:
     runs-on: ubuntu-latest
