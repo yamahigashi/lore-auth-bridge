@@ -7,10 +7,7 @@ pub mod model;
 
 pub mod ports;
 
-pub mod service {
-    //! Application services for login, token exchange, permission lookup, and
-    //! resource synchronization.
-}
+pub mod service;
 
 /// Error type shared by core services and ports.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -46,4 +43,20 @@ pub enum CoreError {
     /// Token issue failed after the request had otherwise been accepted.
     #[error("token issue failed")]
     TokenIssueFailed,
+
+    /// A device flow code does not exist.
+    #[error("device invalid code")]
+    DeviceInvalidCode,
+
+    /// A device flow code expired before authorization completed.
+    #[error("device expired code")]
+    DeviceExpiredCode,
+
+    /// A device flow authorization is not pending.
+    #[error("device authorization is not pending")]
+    DeviceAuthorizationNotPending,
+
+    /// A device flow authorization is missing the user or repository binding.
+    #[error("device incomplete authorization")]
+    DeviceIncompleteAuthorization,
 }

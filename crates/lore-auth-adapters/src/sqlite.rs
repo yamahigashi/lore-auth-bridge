@@ -17,8 +17,8 @@ use lore_auth_core::{
         ResourcePermission, SigningKeyMeta, TokenPrincipal, User,
     },
     ports::{
-        AccountDirectory, AuthorizationPolicy, GrantAdmin, GroupAdmin, IssuedTokenLog,
-        ResourceStore, SigningKeyAdmin, StateStore,
+        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GroupAdmin,
+        IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore,
     },
 };
 use sha2::{Digest, Sha256};
@@ -794,6 +794,23 @@ impl ResourceStore for Store {
             .map_err(core_from_driver)
     }
 
+    async fn get_by_id(&self, id: &str) -> CoreResult<Resource> {
+        let id = id.to_owned();
+        self.conn
+            .call(move |conn| {
+                conn.query_row(
+                    &resource_select_sql("id = ?1 AND status = 'active'"),
+                    params![id],
+                    resource_from_row,
+                )
+                .optional()
+                .map_err(core_from_sql)?
+                .ok_or(CoreError::NotFound)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
     async fn get_by_resource_id(&self, resource_id: &str) -> CoreResult<Resource> {
         let lore_repository_id = model::ResourceID::repository_id_from_resource_id(resource_id);
         self.conn
@@ -844,6 +861,54 @@ impl ResourceStore for Store {
             })
             .await
             .map_err(core_from_driver)
+    }
+}
+
+#[async_trait]
+impl DeviceAuthorizationStore for Store {
+    async fn create_device_authorization(
+        &self,
+        input: model::CreateDeviceAuthorizationInput,
+    ) -> CoreResult<model::DeviceAuthorization> {
+        let device = Store::create_device_authorization(
+            self,
+            CreateDeviceAuthorizationParams {
+                device_code_hash: hash_code(&input.device_code),
+                user_code_hash: hash_code(&input.user_code),
+                requested_remote_url: input.requested_remote_url,
+                requested_repository_id: input.requested_repository_id,
+                ttl_seconds: ttl_seconds(input.ttl),
+            },
+        )
+        .await?;
+        Ok(device_to_core(device))
+    }
+
+    async fn device_by_user_code(&self, user_code: &str) -> CoreResult<model::DeviceAuthorization> {
+        Store::device_by_user_code_hash(self, &hash_code(user_code))
+            .await
+            .map(device_to_core)
+    }
+
+    async fn device_by_device_code(
+        &self,
+        device_code: &str,
+    ) -> CoreResult<model::DeviceAuthorization> {
+        Store::device_by_device_code_hash(self, &hash_code(device_code))
+            .await
+            .map(device_to_core)
+    }
+
+    async fn approve_device_authorization(&self, id: &str, user_id: &str) -> CoreResult<()> {
+        Store::approve_device_authorization(self, id, user_id).await
+    }
+
+    async fn consume_device_authorization(&self, id: &str) -> CoreResult<()> {
+        Store::consume_device_authorization(self, id).await
+    }
+
+    async fn expire_device_authorization(&self, id: &str) -> CoreResult<()> {
+        Store::expire_device_authorization(self, id).await
     }
 }
 
@@ -2196,6 +2261,20 @@ fn device_select_sql(clause: &str) -> String {
     )
 }
 
+fn device_to_core(device: DeviceAuthorization) -> model::DeviceAuthorization {
+    model::DeviceAuthorization {
+        id: device.id,
+        requested_remote_url: device.requested_remote_url,
+        requested_repository_id: device.requested_repository_id,
+        approved_user_id: device.approved_user_id,
+        status: device.status,
+        created_at: device.created_at,
+        expires_at: device.expires_at,
+        approved_at: device.approved_at,
+        consumed_at: device.consumed_at,
+    }
+}
+
 fn resource_id_from_resource(resource: &Resource) -> CoreResult<String> {
     if !resource.resource_id.trim().is_empty() {
         return Ok(resource.resource_id.clone());
@@ -2285,6 +2364,10 @@ fn hash_secret(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.trim().as_bytes());
     hex::encode(hasher.finalize())
+}
+
+fn hash_code(value: &str) -> String {
+    hash_secret(&value.trim().to_ascii_uppercase())
 }
 
 fn ttl_seconds(ttl: Duration) -> i64 {

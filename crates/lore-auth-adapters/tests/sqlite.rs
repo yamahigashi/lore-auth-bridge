@@ -9,8 +9,8 @@ use lore_auth_core::{
         ResourcePermission, SigningKeyMeta,
     },
     ports::{
-        AccountDirectory, AuthorizationPolicy, GrantAdmin, GroupAdmin, IssuedTokenLog,
-        ResourceStore, SigningKeyAdmin, StateStore,
+        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GroupAdmin,
+        IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore,
     },
 };
 
@@ -32,6 +32,7 @@ where
     T: AccountDirectory
         + AuthorizationPolicy
         + ResourceStore
+        + DeviceAuthorizationStore
         + StateStore
         + IssuedTokenLog
         + GroupAdmin

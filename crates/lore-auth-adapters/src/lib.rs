@@ -18,6 +18,8 @@ pub mod authz {
     //! Authorization policy adapter implementations.
 }
 
+pub mod device;
+
 pub mod idpregistry;
 
 pub mod memory;

@@ -302,6 +302,28 @@ pub struct ResourceFilter {
     pub prefix: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateDeviceAuthorizationInput {
+    pub device_code: String,
+    pub user_code: String,
+    pub requested_remote_url: String,
+    pub requested_repository_id: String,
+    pub ttl: Duration,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceAuthorization {
+    pub id: String,
+    pub requested_remote_url: String,
+    pub requested_repository_id: String,
+    pub approved_user_id: String,
+    pub status: String,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub approved_at: i64,
+    pub consumed_at: i64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthSession {
     pub id: String,

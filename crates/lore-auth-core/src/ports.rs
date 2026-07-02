@@ -100,9 +100,39 @@ pub trait IdentityProviderRegistry: Send + Sync {
 pub trait ResourceStore: Send + Sync {
     async fn upsert(&self, resource: model::Resource) -> Result<(), CoreError>;
     async fn delete(&self, resource_id: &str) -> Result<(), CoreError>;
+    async fn get_by_id(&self, id: &str) -> Result<model::Resource, CoreError>;
     async fn get_by_resource_id(&self, resource_id: &str) -> Result<model::Resource, CoreError>;
     async fn get_by_name(&self, name: &str) -> Result<model::Resource, CoreError>;
     async fn list(&self) -> Result<Vec<model::Resource>, CoreError>;
+}
+
+#[async_trait]
+pub trait DeviceAuthorizationStore: Send + Sync {
+    async fn create_device_authorization(
+        &self,
+        input: model::CreateDeviceAuthorizationInput,
+    ) -> Result<model::DeviceAuthorization, CoreError>;
+
+    async fn device_by_user_code(
+        &self,
+        user_code: &str,
+    ) -> Result<model::DeviceAuthorization, CoreError>;
+
+    async fn device_by_device_code(
+        &self,
+        device_code: &str,
+    ) -> Result<model::DeviceAuthorization, CoreError>;
+
+    async fn approve_device_authorization(&self, id: &str, user_id: &str) -> Result<(), CoreError>;
+
+    async fn consume_device_authorization(&self, id: &str) -> Result<(), CoreError>;
+
+    async fn expire_device_authorization(&self, id: &str) -> Result<(), CoreError>;
+}
+
+pub trait DeviceCodeGenerator: Send + Sync {
+    fn device_code(&self) -> Result<String, CoreError>;
+    fn user_code(&self) -> Result<String, CoreError>;
 }
 
 #[async_trait]

@@ -5,16 +5,16 @@ use lore_auth_core::{
     CoreError,
     model::{
         AddInvitationInput, AddUserInput, AuthSession, AuthnTokenInput, AuthzTokenInput,
-        BrowserSession, ExternalIdentity, Grant, Group, IdentityInvitation, IssuedToken,
-        LoginBindingResult, LoginResolutionRequest, LoginState, LoginStateInput, Resource,
-        ResourceFilter, ResourcePermission, SignedToken, SigningKeyMeta, TokenPrincipal, User,
-        VerifiedToken, VerifyOptions,
+        BrowserSession, CreateDeviceAuthorizationInput, DeviceAuthorization, ExternalIdentity,
+        Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult, LoginResolutionRequest,
+        LoginState, LoginStateInput, Resource, ResourceFilter, ResourcePermission, SignedToken,
+        SigningKeyMeta, TokenPrincipal, User, VerifiedToken, VerifyOptions,
     },
     ports::{
         AccountDirectory, AuthorizationPolicy, BeginAuthRequest, BeginAuthResult,
-        CompleteAuthRequest, GrantAdmin, GroupAdmin, IdentityProvider, IdentityProviderDescriptor,
-        IdentityProviderRegistry, IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore,
-        TokenSigner,
+        CompleteAuthRequest, DeviceAuthorizationStore, DeviceCodeGenerator, GrantAdmin, GroupAdmin,
+        IdentityProvider, IdentityProviderDescriptor, IdentityProviderRegistry, IssuedTokenLog,
+        ResourceStore, SigningKeyAdmin, StateStore, TokenSigner,
     },
 };
 
@@ -121,6 +121,10 @@ impl ResourceStore for NullPorts {
         Ok(())
     }
 
+    async fn get_by_id(&self, _id: &str) -> Result<Resource, CoreError> {
+        Err(CoreError::NotFound)
+    }
+
     async fn get_by_resource_id(&self, _resource_id: &str) -> Result<Resource, CoreError> {
         Err(CoreError::NotFound)
     }
@@ -131,6 +135,56 @@ impl ResourceStore for NullPorts {
 
     async fn list(&self) -> Result<Vec<Resource>, CoreError> {
         Ok(Vec::new())
+    }
+}
+
+#[async_trait]
+impl DeviceAuthorizationStore for NullPorts {
+    async fn create_device_authorization(
+        &self,
+        _input: CreateDeviceAuthorizationInput,
+    ) -> Result<DeviceAuthorization, CoreError> {
+        Err(CoreError::Unsupported)
+    }
+
+    async fn device_by_user_code(
+        &self,
+        _user_code: &str,
+    ) -> Result<DeviceAuthorization, CoreError> {
+        Err(CoreError::NotFound)
+    }
+
+    async fn device_by_device_code(
+        &self,
+        _device_code: &str,
+    ) -> Result<DeviceAuthorization, CoreError> {
+        Err(CoreError::NotFound)
+    }
+
+    async fn approve_device_authorization(
+        &self,
+        _id: &str,
+        _user_id: &str,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn consume_device_authorization(&self, _id: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn expire_device_authorization(&self, _id: &str) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
+impl DeviceCodeGenerator for NullPorts {
+    fn device_code(&self) -> Result<String, CoreError> {
+        Err(CoreError::Unsupported)
+    }
+
+    fn user_code(&self) -> Result<String, CoreError> {
+        Err(CoreError::Unsupported)
     }
 }
 
@@ -324,7 +378,9 @@ async fn all_ports_are_dyn_compatible() {
     let issued: Arc<dyn IssuedTokenLog> = ports.clone();
     let groups: Arc<dyn GroupAdmin> = ports.clone();
     let grants: Arc<dyn GrantAdmin> = ports.clone();
-    let keys: Arc<dyn SigningKeyAdmin> = ports;
+    let keys: Arc<dyn SigningKeyAdmin> = ports.clone();
+    let devices: Arc<dyn DeviceAuthorizationStore> = ports.clone();
+    let codes: Arc<dyn DeviceCodeGenerator> = ports;
     let registry: Arc<dyn IdentityProviderRegistry> = Arc::new(NullRegistry);
 
     assert!(
@@ -346,4 +402,6 @@ async fn all_ports_are_dyn_compatible() {
     assert!(groups.list_groups().await.expect("groups").is_empty());
     assert!(grants.list_grants("repo").await.expect("grants").is_empty());
     assert!(keys.list_keys().await.expect("keys").is_empty());
+    assert!(devices.device_by_user_code("code").await.is_err());
+    assert!(codes.device_code().is_err());
 }

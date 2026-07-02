@@ -9,8 +9,8 @@ use lore_auth_core::{
         User, VerifyOptions,
     },
     ports::{
-        AccountDirectory, AuthorizationPolicy, GrantAdmin, GroupAdmin, IssuedTokenLog,
-        ResourceStore, StateStore, TokenSigner,
+        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GroupAdmin,
+        IssuedTokenLog, ResourceStore, StateStore, TokenSigner,
     },
 };
 
@@ -19,6 +19,7 @@ where
     T: AccountDirectory
         + AuthorizationPolicy
         + ResourceStore
+        + DeviceAuthorizationStore
         + StateStore
         + TokenSigner
         + IssuedTokenLog
