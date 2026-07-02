@@ -11,15 +11,12 @@ use clap::{Args, Parser, Subcommand};
 use lore_auth_adapters::{authz, config, rs256, sqlite};
 use lore_auth_core::{
     CoreError,
-    model::{AddInvitationInput, AddUserInput, Resource, UserListFilter},
+    model::{AddInvitationInput, AddUserInput, Resource, ResourceID, UserListFilter},
     ports::{
-        AccountDirectory, AuthorizationPolicy, GrantAdmin, GroupAdmin, IssuedTokenLog,
-        ResourceStore, SigningKeyAdmin, TokenSigner,
+        AccountDirectory, AccountQuery, AuthorizationPolicy, GrantAdmin, GrantQuery, GroupAdmin,
+        GroupQuery, IssuedTokenLog, ResourceQuery, ResourceStore, SigningKeyAdmin, TokenSigner,
     },
-    service::{
-        admin::{AuditedGrantAdmin, AuditedGroupAdmin},
-        token::{TokenConfig, TokenService},
-    },
+    service::token::{TokenConfig, TokenService},
 };
 
 const DEFAULT_CONFIG: &str = "configs/lore-auth.example.yaml";
@@ -90,6 +87,7 @@ enum UserCommand {
     Invite(UserInvite),
     List,
     Disable(UserDisable),
+    Enable(UserEnable),
 }
 
 #[derive(Debug, Args)]
@@ -116,6 +114,11 @@ struct UserInvite {
 
 #[derive(Debug, Args)]
 struct UserDisable {
+    user: String,
+}
+
+#[derive(Debug, Args)]
+struct UserEnable {
     user: String,
 }
 
@@ -302,7 +305,8 @@ async fn run_signing_key(
     command: SigningKeyCommand,
 ) -> Result<()> {
     let env = open_env(config_path, db).await?;
-    let keys = rs256::SigningKeyAdmin::new(&env.cfg.jwt.signing_key_dir, env.store.clone());
+    let audited = Arc::new(env.store.audited(authctl_actor()));
+    let keys = rs256::SigningKeyAdmin::new(&env.cfg.jwt.signing_key_dir, audited);
     match command {
         SigningKeyCommand::Generate(args) => {
             let key = keys
@@ -328,10 +332,10 @@ async fn run_signing_key(
 
 async fn run_user(config_path: &Path, db: Option<&Path>, command: UserCommand) -> Result<()> {
     let env = open_env(config_path, db).await?;
+    let audited = env.store.audited(authctl_actor());
     match command {
         UserCommand::Add(args) => {
-            let user = env
-                .store
+            let user = audited
                 .add_user(AddUserInput {
                     email: args.email,
                     display_name: args.name,
@@ -343,8 +347,7 @@ async fn run_user(config_path: &Path, db: Option<&Path>, command: UserCommand) -
         UserCommand::Invite(args) => {
             let (provider_id, issuer) =
                 resolve_user_idp(&env.cfg, args.idp.as_deref(), &args.provider, &args.issuer)?;
-            let (user, _) = env
-                .store
+            let (user, _) = audited
                 .add_invitation(AddInvitationInput {
                     provider_id,
                     issuer,
@@ -382,11 +385,12 @@ async fn run_user(config_path: &Path, db: Option<&Path>, command: UserCommand) -
             }
         }
         UserCommand::Disable(args) => {
-            env.store
-                .disable_user(&args.user)
-                .await
-                .map_err(core_error)?;
+            audited.disable_user(&args.user).await.map_err(core_error)?;
             println!("disabled");
+        }
+        UserCommand::Enable(args) => {
+            audited.enable_user(&args.user).await.map_err(core_error)?;
+            println!("enabled");
         }
     }
     Ok(())
@@ -394,7 +398,7 @@ async fn run_user(config_path: &Path, db: Option<&Path>, command: UserCommand) -
 
 async fn run_group(config_path: &Path, db: Option<&Path>, command: GroupCommand) -> Result<()> {
     let env = open_env(config_path, db).await?;
-    let groups = AuditedGroupAdmin::new(env.store.clone(), env.store.clone(), authctl_actor());
+    let groups = env.store.audited(authctl_actor());
     match command {
         GroupCommand::Add(args) => {
             let group = groups
@@ -404,7 +408,7 @@ async fn run_group(config_path: &Path, db: Option<&Path>, command: GroupCommand)
             println!("{}\t{}", group.id, group.name);
         }
         GroupCommand::List => {
-            for group in groups.list_groups().await.map_err(core_error)? {
+            for group in env.store.list_groups().await.map_err(core_error)? {
                 println!("{}\t{}", group.id, group.name);
             }
         }
@@ -457,16 +461,23 @@ fn require_rebac_for_nested_group(cfg: &config::Config) -> Result<()> {
 
 async fn run_repo(config_path: &Path, db: Option<&Path>, command: RepoCommand) -> Result<()> {
     let env = open_env(config_path, db).await?;
+    let audited = env.store.audited(authctl_actor());
     match command {
         RepoCommand::Add(args) => {
+            let lore_repository_id = args.lore_repository_id;
+            let resource = Resource {
+                name: args.name,
+                remote_url: args.remote,
+                lore_repository_id: lore_repository_id.clone(),
+                ..Resource::default()
+            };
+            audited.upsert(resource).await.map_err(core_error)?;
             let repo = env
                 .store
-                .upsert_and_get(Resource {
-                    name: args.name,
-                    remote_url: args.remote,
-                    lore_repository_id: args.lore_repository_id,
-                    ..Resource::default()
-                })
+                .get_by_resource_id(
+                    &ResourceID::for_repository_id(&lore_repository_id)
+                        .ok_or_else(|| anyhow!("lore_repository_id must not be empty"))?,
+                )
                 .await
                 .map_err(core_error)?;
             println!("{}\t{}\t{}", repo.id, repo.name, repo.lore_repository_id);
@@ -485,10 +496,10 @@ async fn run_repo(config_path: &Path, db: Option<&Path>, command: RepoCommand) -
 
 async fn run_grant(config_path: &Path, db: Option<&Path>, command: GrantCommand) -> Result<()> {
     let env = open_env(config_path, db).await?;
-    let grants = AuditedGrantAdmin::new(env.store.clone(), env.store.clone(), authctl_actor());
+    let grants = env.store.audited(authctl_actor());
     match command {
         GrantCommand::Add(args) => {
-            let (subject_type, subject_id) = resolve_grant_subject(&env, &args.subject).await?;
+            let (subject_type, subject_id) = resolve_grant_subject(&args.subject)?;
             let grant = grants
                 .add_grant(&subject_type, &subject_id, &args.repo, &args.role)
                 .await
@@ -499,7 +510,7 @@ async fn run_grant(config_path: &Path, db: Option<&Path>, command: GrantCommand)
             );
         }
         GrantCommand::Remove(args) => {
-            let (subject_type, subject_id) = resolve_grant_subject(&env, &args.subject).await?;
+            let (subject_type, subject_id) = resolve_grant_subject(&args.subject)?;
             grants
                 .remove_grant(&subject_type, &subject_id, &args.repo, &args.role)
                 .await
@@ -508,7 +519,7 @@ async fn run_grant(config_path: &Path, db: Option<&Path>, command: GrantCommand)
         }
         GrantCommand::List(args) => {
             let repo = args.repo.unwrap_or_default();
-            for grant in grants.list_grants(&repo).await.map_err(core_error)? {
+            for grant in env.store.list_grants(&repo).await.map_err(core_error)? {
                 println!(
                     "{}\t{}:{}\t{}\t{}",
                     grant.id, grant.subject_type, grant.subject_id, grant.repository_id, grant.role
@@ -670,28 +681,10 @@ fn resolve_user_idp(
     Ok((idp.to_owned(), provider_cfg.issuer.clone()))
 }
 
-async fn resolve_grant_subject(env: &Env, value: &str) -> Result<(String, String)> {
+fn resolve_grant_subject(value: &str) -> Result<(String, String)> {
     let (subject_type, id) = subject_parts(value)?;
     match subject_type {
-        "user" => Ok((
-            "user".to_owned(),
-            env.store
-                .resolve_user(id)
-                .await
-                .map_err(core_error)
-                .with_context(|| format!("resolve subject {value:?}"))?
-                .id,
-        )),
-        "group" => Ok((
-            "group".to_owned(),
-            env.store
-                .find_group_by_name(id)
-                .await
-                .map_err(core_error)
-                .with_context(|| format!("resolve subject {value:?}"))?
-                .id,
-        )),
-        "service_account" => Ok(("service_account".to_owned(), id.to_owned())),
+        "user" | "group" => Ok((subject_type.to_owned(), id.to_owned())),
         other => bail!("unknown subject type {other:?}"),
     }
 }

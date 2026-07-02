@@ -60,7 +60,7 @@ pub enum CoreError {
     #[error("device incomplete authorization")]
     DeviceIncompleteAuthorization,
 
-    /// A mutating admin operation succeeded, but audit recording failed.
-    #[error("operation succeeded but audit logging failed: {0}")]
+    /// A mutating admin operation was rolled back because audit recording failed.
+    #[error("operation rolled back because audit logging failed: {0}")]
     AdminAuditFailed(String),
 }

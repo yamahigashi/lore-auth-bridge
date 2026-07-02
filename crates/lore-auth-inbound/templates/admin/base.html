@@ -24,7 +24,9 @@
     </nav>
   </header>
   <main class="container">
-    <section aria-live="polite" class="flash" hidden></section>
+    {% if !flash.is_empty() %}
+    <section aria-live="polite" class="flash">{{ flash }}</section>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 </body>

@@ -4,22 +4,25 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
     sync::LazyLock,
+    time::Duration,
 };
 
 use askama::Template;
 use axum::{
     Router,
     body::Body,
-    extract::{Path, Query, State, connect_info::ConnectInfo},
+    extract::{Form, Path, Query, Request, State, connect_info::ConnectInfo},
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{self, HeaderName},
     },
+    middleware::Next,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use ipnet::IpNet;
 use lore_auth_core::{CoreError, model};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::Deserialize;
 
 use crate::httpserver::{self, AppState};
@@ -41,6 +44,19 @@ const HTMX_JS: &[u8] = include_bytes!("admin/static/htmx.min.js");
 const PICO_CSS: &[u8] = include_bytes!("admin/static/pico.min.css");
 const ADMIN_LIST_LIMIT: usize = 100;
 const ADMIN_GROUP_EDGE_LIMIT: usize = 20;
+const ADMIN_CSRF_TTL: Duration = Duration::from_secs(10 * 60);
+const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}')
+    .add(b'/');
 
 static EN_DICT: LazyLock<BTreeMap<String, String>> =
     LazyLock::new(|| load_dictionary("en", EN_DICT_RAW));
@@ -51,6 +67,7 @@ static JA_DICT: LazyLock<BTreeMap<String, String>> =
 pub struct AdminConfig {
     pub admin_emails: Vec<String>,
     pub allowed_peer_cidrs: Vec<IpNet>,
+    pub allow_group_nesting: bool,
 }
 
 impl AdminConfig {
@@ -65,11 +82,45 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/admin", get(handle_dashboard))
         .route("/admin/", get(handle_dashboard))
         .route("/admin/repositories", get(handle_repositories))
+        .route("/admin/repositories", post(handle_repository_add))
+        .route(
+            "/admin/repositories/:resource_id/disable",
+            post(handle_repository_disable),
+        )
+        .route("/admin/repositories/grants/add", post(handle_grant_add))
+        .route(
+            "/admin/repositories/grants/remove",
+            post(handle_grant_remove),
+        )
         .route("/admin/users", get(handle_users))
+        .route("/admin/users", post(handle_user_add))
+        .route("/admin/users/invite", post(handle_user_invite))
+        .route("/admin/users/:id/disable", post(handle_user_disable))
         .route("/admin/users/:id/access", get(handle_user_access))
         .route("/admin/groups", get(handle_groups))
+        .route("/admin/groups", post(handle_group_add))
+        .route("/admin/groups/members/add", post(handle_group_member_add))
+        .route(
+            "/admin/groups/members/remove",
+            post(handle_group_member_remove),
+        )
+        .route("/admin/groups/nests/add", post(handle_group_nest_add))
+        .route("/admin/groups/nests/remove", post(handle_group_nest_remove))
         .route("/admin/static/htmx.min.js", get(handle_htmx))
         .route("/admin/static/pico.min.css", get(handle_pico))
+}
+
+pub(crate) async fn guard_middleware(
+    State(state): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    match require_admin(&state, request.headers(), peer).await {
+        Ok(_) => {}
+        Err(response) => return response,
+    }
+    next.run(request).await
 }
 
 #[derive(Deserialize)]
@@ -81,6 +132,92 @@ struct LangQuery {
 struct SearchQuery {
     q: Option<String>,
     lang: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RepositoryAddForm {
+    #[serde(default)]
+    csrf_token: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    remote_url: String,
+    #[serde(default)]
+    lore_repository_id: String,
+}
+
+#[derive(Deserialize)]
+struct CsrfForm {
+    #[serde(default)]
+    csrf_token: String,
+}
+
+#[derive(Deserialize)]
+struct GrantForm {
+    #[serde(default)]
+    csrf_token: String,
+    #[serde(default)]
+    repo: String,
+    #[serde(default)]
+    subject_type: String,
+    #[serde(default)]
+    subject_id: String,
+    #[serde(default)]
+    role: String,
+}
+
+#[derive(Deserialize)]
+struct UserAddForm {
+    #[serde(default)]
+    csrf_token: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    display_name: String,
+}
+
+#[derive(Deserialize)]
+struct UserInviteForm {
+    #[serde(default)]
+    csrf_token: String,
+    #[serde(default)]
+    provider_id: String,
+    #[serde(default)]
+    issuer: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    display_name: String,
+}
+
+#[derive(Deserialize)]
+struct GroupAddForm {
+    #[serde(default)]
+    csrf_token: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Deserialize)]
+struct GroupMemberForm {
+    #[serde(default)]
+    csrf_token: String,
+    #[serde(default)]
+    group: String,
+    #[serde(default)]
+    user: String,
+}
+
+#[derive(Deserialize)]
+struct GroupNestForm {
+    #[serde(default)]
+    csrf_token: String,
+    #[serde(default)]
+    parent_group: String,
+    #[serde(default)]
+    member_group: String,
 }
 
 async fn handle_dashboard(
@@ -100,6 +237,7 @@ async fn handle_dashboard(
         lang: lang.as_str(),
         user_email: &session.user.email,
         user_display: &user_display,
+        flash: "",
     };
     let mut response = match template.render() {
         Ok(html) => html_response(StatusCode::OK, html),
@@ -124,10 +262,15 @@ async fn handle_repositories(
     headers: HeaderMap,
     peer: Option<ConnectInfo<SocketAddr>>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers, peer).await {
-        return response;
-    }
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
     let lang = resolve_lang(&headers, query.lang.as_deref());
+    let csrf_token = match create_admin_csrf(&state, &session).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
     let search = normalized_query(query.q.as_deref());
     let rows = match repository_rows(&state, &search).await {
         Ok(rows) => rows,
@@ -138,6 +281,7 @@ async fn handle_repositories(
             lang: lang.as_str(),
             rows: &rows,
             limit: ADMIN_LIST_LIMIT,
+            csrf_token: &csrf_token,
         });
     }
     render_template(RepositoriesTemplate {
@@ -146,6 +290,8 @@ async fn handle_repositories(
         query: &search,
         rows: &rows,
         limit: ADMIN_LIST_LIMIT,
+        csrf_token: &csrf_token,
+        flash: "",
     })
 }
 
@@ -155,10 +301,15 @@ async fn handle_users(
     headers: HeaderMap,
     peer: Option<ConnectInfo<SocketAddr>>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers, peer).await {
-        return response;
-    }
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
     let lang = resolve_lang(&headers, query.lang.as_deref());
+    let csrf_token = match create_admin_csrf(&state, &session).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
     let search = normalized_query(query.q.as_deref());
     let rows = match user_rows(&state, &search).await {
         Ok(rows) => rows,
@@ -169,6 +320,8 @@ async fn handle_users(
             lang: lang.as_str(),
             rows: &rows,
             limit: ADMIN_LIST_LIMIT,
+            csrf_token: &csrf_token,
+            current_user_id: &session.user.id,
         });
     }
     render_template(UsersTemplate {
@@ -177,6 +330,9 @@ async fn handle_users(
         query: &search,
         rows: &rows,
         limit: ADMIN_LIST_LIMIT,
+        csrf_token: &csrf_token,
+        flash: "",
+        current_user_id: &session.user.id,
     })
 }
 
@@ -219,6 +375,7 @@ async fn handle_user_access(
         user: UserRow::from(user),
         rows,
         limit: ADMIN_LIST_LIMIT,
+        flash: "",
     })
 }
 
@@ -228,10 +385,15 @@ async fn handle_groups(
     headers: HeaderMap,
     peer: Option<ConnectInfo<SocketAddr>>,
 ) -> Response {
-    if let Err(response) = require_admin(&state, &headers, peer).await {
-        return response;
-    }
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
     let lang = resolve_lang(&headers, query.lang.as_deref());
+    let csrf_token = match create_admin_csrf(&state, &session).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
     let search = normalized_query(query.q.as_deref());
     let rows = match group_rows(&state, &search).await {
         Ok(rows) => rows,
@@ -243,7 +405,376 @@ async fn handle_groups(
         query: &search,
         rows,
         limit: ADMIN_LIST_LIMIT,
+        csrf_token: &csrf_token,
+        flash: "",
+        allow_group_nesting: state.cfg.admin.allow_group_nesting,
     })
+}
+
+async fn handle_repository_add(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<RepositoryAddForm>,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    let writes = state
+        .services
+        .admin_writes
+        .for_actor(&admin_actor(&session));
+    let flash = match writes
+        .resources
+        .upsert(model::Resource {
+            name: form.name,
+            remote_url: form.remote_url,
+            lore_repository_id: form.lore_repository_id,
+            ..model::Resource::default()
+        })
+        .await
+    {
+        Ok(()) => translate(&resolve_lang(&headers, None), "admin.flash.saved"),
+        Err(err) => format!(
+            "{}: {err}",
+            translate(&resolve_lang(&headers, None), "admin.flash.error")
+        ),
+    };
+    render_repositories_page(&state, &headers, &session, "", &flash).await
+}
+
+async fn handle_repository_disable(
+    State(state): State<AppState>,
+    Path(resource_id): Path<String>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    let writes = state
+        .services
+        .admin_writes
+        .for_actor(&admin_actor(&session));
+    let flash = match writes.resources.delete(&resource_id).await {
+        Ok(()) => translate(&resolve_lang(&headers, None), "admin.flash.saved"),
+        Err(err) => format!(
+            "{}: {err}",
+            translate(&resolve_lang(&headers, None), "admin.flash.error")
+        ),
+    };
+    render_repositories_page(&state, &headers, &session, "", &flash).await
+}
+
+async fn handle_grant_add(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<GrantForm>,
+) -> Response {
+    mutate_grant(state, headers, peer, form, true).await
+}
+
+async fn handle_grant_remove(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<GrantForm>,
+) -> Response {
+    mutate_grant(state, headers, peer, form, false).await
+}
+
+async fn mutate_grant(
+    state: AppState,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    form: GrantForm,
+    add: bool,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    let writes = state
+        .services
+        .admin_writes
+        .for_actor(&admin_actor(&session));
+    let result = if add {
+        writes
+            .grants
+            .add_grant(&form.subject_type, &form.subject_id, &form.repo, &form.role)
+            .await
+            .map(|_| ())
+    } else {
+        writes
+            .grants
+            .remove_grant(&form.subject_type, &form.subject_id, &form.repo, &form.role)
+            .await
+    };
+    let lang = resolve_lang(&headers, None);
+    let flash = match result {
+        Ok(()) => translate(&lang, "admin.flash.saved"),
+        Err(err) => format!("{}: {err}", translate(&lang, "admin.flash.error")),
+    };
+    render_repositories_page(&state, &headers, &session, "", &flash).await
+}
+
+async fn handle_user_add(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<UserAddForm>,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    let writes = state
+        .services
+        .admin_writes
+        .for_actor(&admin_actor(&session));
+    let lang = resolve_lang(&headers, None);
+    let flash = match writes
+        .accounts
+        .add_user(model::AddUserInput {
+            email: form.email,
+            display_name: form.display_name,
+        })
+        .await
+    {
+        Ok(_) => translate(&lang, "admin.flash.saved"),
+        Err(err) => format!("{}: {err}", translate(&lang, "admin.flash.error")),
+    };
+    render_users_page(&state, &headers, &session, "", &flash).await
+}
+
+async fn handle_user_invite(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<UserInviteForm>,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    let writes = state
+        .services
+        .admin_writes
+        .for_actor(&admin_actor(&session));
+    let lang = resolve_lang(&headers, None);
+    let flash = match writes
+        .accounts
+        .add_invitation(model::AddInvitationInput {
+            provider_id: form.provider_id,
+            issuer: form.issuer,
+            email: form.email,
+            display_name: form.display_name,
+            binding_policy: "verified_email_invitation".to_owned(),
+            expires_at: 0,
+        })
+        .await
+    {
+        Ok(_) => translate(&lang, "admin.flash.saved"),
+        Err(err) => format!("{}: {err}", translate(&lang, "admin.flash.error")),
+    };
+    render_users_page(&state, &headers, &session, "", &flash).await
+}
+
+async fn handle_user_disable(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    let lang = resolve_lang(&headers, None);
+    let target = match state.services.accounts.user_by_id(&id).await {
+        Ok(user) => user,
+        Err(err) => {
+            let flash = format!("{}: {err}", translate(&lang, "admin.flash.error"));
+            return render_users_page(&state, &headers, &session, "", &flash).await;
+        }
+    };
+    if let Err(err) = validate_admin_disable_target(&state, &session, &target).await {
+        let flash = format!("{}: {err}", translate(&lang, "admin.flash.error"));
+        return render_users_page(&state, &headers, &session, "", &flash).await;
+    }
+    let writes = state
+        .services
+        .admin_writes
+        .for_actor(&admin_actor(&session));
+    let flash = match writes.accounts.disable_user(&id).await {
+        Ok(()) => translate(&lang, "admin.flash.saved"),
+        Err(err) => format!("{}: {err}", translate(&lang, "admin.flash.error")),
+    };
+    render_users_page(&state, &headers, &session, "", &flash).await
+}
+
+async fn handle_group_add(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<GroupAddForm>,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    let writes = state
+        .services
+        .admin_writes
+        .for_actor(&admin_actor(&session));
+    let lang = resolve_lang(&headers, None);
+    let flash = match writes.groups.add_group(&form.name, &form.description).await {
+        Ok(_) => translate(&lang, "admin.flash.saved"),
+        Err(err) => format!("{}: {err}", translate(&lang, "admin.flash.error")),
+    };
+    render_groups_page(&state, &headers, &session, "", &flash).await
+}
+
+async fn handle_group_member_add(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<GroupMemberForm>,
+) -> Response {
+    mutate_group_member(state, headers, peer, form, true).await
+}
+
+async fn handle_group_member_remove(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<GroupMemberForm>,
+) -> Response {
+    mutate_group_member(state, headers, peer, form, false).await
+}
+
+async fn mutate_group_member(
+    state: AppState,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    form: GroupMemberForm,
+    add: bool,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    let writes = state
+        .services
+        .admin_writes
+        .for_actor(&admin_actor(&session));
+    let result = if add {
+        writes
+            .groups
+            .add_group_member(&form.group, &form.user)
+            .await
+    } else {
+        writes
+            .groups
+            .remove_group_member(&form.group, &form.user)
+            .await
+    };
+    let lang = resolve_lang(&headers, None);
+    let flash = match result {
+        Ok(()) => translate(&lang, "admin.flash.saved"),
+        Err(err) => format!("{}: {err}", translate(&lang, "admin.flash.error")),
+    };
+    render_groups_page(&state, &headers, &session, "", &flash).await
+}
+
+async fn handle_group_nest_add(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<GroupNestForm>,
+) -> Response {
+    mutate_group_nest(state, headers, peer, form, true).await
+}
+
+async fn handle_group_nest_remove(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    Form(form): Form<GroupNestForm>,
+) -> Response {
+    mutate_group_nest(state, headers, peer, form, false).await
+}
+
+async fn mutate_group_nest(
+    state: AppState,
+    headers: HeaderMap,
+    peer: Option<ConnectInfo<SocketAddr>>,
+    form: GroupNestForm,
+    add: bool,
+) -> Response {
+    let session = match require_admin(&state, &headers, peer).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
+        return response;
+    }
+    if !state.cfg.admin.allow_group_nesting {
+        return text_response(
+            StatusCode::BAD_REQUEST,
+            "nested group operations require authz.backend: rebac",
+        );
+    }
+    let writes = state
+        .services
+        .admin_writes
+        .for_actor(&admin_actor(&session));
+    let result = if add {
+        writes
+            .groups
+            .add_group_group(&form.parent_group, &form.member_group)
+            .await
+    } else {
+        writes
+            .groups
+            .remove_group_group(&form.parent_group, &form.member_group)
+            .await
+    };
+    let lang = resolve_lang(&headers, None);
+    let flash = match result {
+        Ok(()) => translate(&lang, "admin.flash.saved"),
+        Err(err) => format!("{}: {err}", translate(&lang, "admin.flash.error")),
+    };
+    render_groups_page(&state, &headers, &session, "", &flash).await
 }
 
 async fn handle_htmx(
@@ -324,11 +855,50 @@ async fn require_admin(
     Ok(session)
 }
 
+async fn create_admin_csrf(
+    state: &AppState,
+    session: &httpserver::BrowserSession,
+) -> Result<String, Response> {
+    state
+        .services
+        .state
+        .create_csrf_token(&session.session_id, ADMIN_CSRF_TTL)
+        .await
+        .map_err(|_| text_response(StatusCode::INTERNAL_SERVER_ERROR, "csrf unavailable"))
+}
+
+async fn require_admin_csrf(
+    state: &AppState,
+    session: &httpserver::BrowserSession,
+    csrf_token: &str,
+) -> Result<(), Response> {
+    if csrf_token.trim().is_empty()
+        || state
+            .services
+            .state
+            .consume_csrf_token(&session.session_id, csrf_token)
+            .await
+            .is_err()
+    {
+        return Err(text_response(StatusCode::FORBIDDEN, "invalid csrf token"));
+    }
+    Ok(())
+}
+
+fn admin_actor(session: &httpserver::BrowserSession) -> String {
+    if !session.user.email.trim().is_empty() {
+        session.user.email.clone()
+    } else {
+        session.user.id.clone()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RepositoryRow {
     name: String,
     lore_repository_id: String,
     resource_id: String,
+    resource_id_path: String,
     status: String,
     grants: Vec<GrantRow>,
 }
@@ -336,12 +906,15 @@ struct RepositoryRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct GrantRow {
     subject: String,
+    subject_type: String,
+    subject_id: String,
     role: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct UserRow {
     id: String,
+    id_path: String,
     email: String,
     display_name: String,
     status: String,
@@ -372,13 +945,143 @@ struct GroupLinkRow {
 
 impl From<model::User> for UserRow {
     fn from(user: model::User) -> Self {
+        let id_path = encode_path_segment(&user.id);
         Self {
             id: user.id,
+            id_path,
             email: user.email,
             display_name: user.display_name,
             status: user.status,
             last_login: format_unix(user.last_login_at),
         }
+    }
+}
+
+async fn render_repositories_page(
+    state: &AppState,
+    headers: &HeaderMap,
+    session: &httpserver::BrowserSession,
+    query: &str,
+    flash: &str,
+) -> Response {
+    let lang = resolve_lang(headers, None);
+    let csrf_token = match create_admin_csrf(state, session).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let rows = match repository_rows(state, query).await {
+        Ok(rows) => rows,
+        Err(response) => return response,
+    };
+    render_template(RepositoriesTemplate {
+        active: "repositories",
+        lang: lang.as_str(),
+        query,
+        rows: &rows,
+        limit: ADMIN_LIST_LIMIT,
+        csrf_token: &csrf_token,
+        flash,
+    })
+}
+
+async fn render_users_page(
+    state: &AppState,
+    headers: &HeaderMap,
+    session: &httpserver::BrowserSession,
+    query: &str,
+    flash: &str,
+) -> Response {
+    let lang = resolve_lang(headers, None);
+    let csrf_token = match create_admin_csrf(state, session).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let rows = match user_rows(state, query).await {
+        Ok(rows) => rows,
+        Err(response) => return response,
+    };
+    render_template(UsersTemplate {
+        active: "users",
+        lang: lang.as_str(),
+        query,
+        rows: &rows,
+        limit: ADMIN_LIST_LIMIT,
+        csrf_token: &csrf_token,
+        flash,
+        current_user_id: &session.user.id,
+    })
+}
+
+async fn render_groups_page(
+    state: &AppState,
+    headers: &HeaderMap,
+    session: &httpserver::BrowserSession,
+    query: &str,
+    flash: &str,
+) -> Response {
+    let lang = resolve_lang(headers, None);
+    let csrf_token = match create_admin_csrf(state, session).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let rows = match group_rows(state, query).await {
+        Ok(rows) => rows,
+        Err(response) => return response,
+    };
+    render_template(GroupsTemplate {
+        active: "groups",
+        lang: lang.as_str(),
+        query,
+        rows,
+        limit: ADMIN_LIST_LIMIT,
+        csrf_token: &csrf_token,
+        flash,
+        allow_group_nesting: state.cfg.admin.allow_group_nesting,
+    })
+}
+
+async fn validate_admin_disable_target(
+    state: &AppState,
+    session: &httpserver::BrowserSession,
+    target: &model::User,
+) -> Result<(), CoreError> {
+    if target.id == session.user.id {
+        return Err(CoreError::InvalidArgument(
+            "cannot disable the current admin session user".to_owned(),
+        ));
+    }
+    let target_email = model::normalize_email(&target.email);
+    let is_configured_admin = state
+        .cfg
+        .admin
+        .admin_emails
+        .iter()
+        .any(|email| model::normalize_email(email) == target_email);
+    if !is_configured_admin {
+        return Ok(());
+    }
+    let users = state
+        .services
+        .accounts
+        .list_users(model::UserListFilter {
+            query: String::new(),
+            limit: usize::MAX,
+        })
+        .await?;
+    let active_admins_remaining =
+        users.into_iter().any(|user| {
+            user.id != target.id
+                && user.status == "active"
+                && state.cfg.admin.admin_emails.iter().any(|email| {
+                    model::normalize_email(email) == model::normalize_email(&user.email)
+                })
+        });
+    if active_admins_remaining {
+        Ok(())
+    } else {
+        Err(CoreError::InvalidArgument(
+            "cannot disable the last active admin user".to_owned(),
+        ))
     }
 }
 
@@ -403,12 +1106,15 @@ async fn repository_rows(state: &AppState, query: &str) -> Result<Vec<Repository
             .into_iter()
             .map(|grant| GrantRow {
                 subject: format!("{}:{}", grant.subject_type, grant.subject_id),
+                subject_type: grant.subject_type,
+                subject_id: grant.subject_id,
                 role: grant.role,
             })
             .collect::<Vec<_>>();
         rows.push(RepositoryRow {
             name: resource.name,
             lore_repository_id: resource.lore_repository_id,
+            resource_id_path: encode_path_segment(&resource.resource_id),
             resource_id: resource.resource_id,
             status: resource.status,
             grants,
@@ -525,6 +1231,10 @@ fn matches_search<'a>(query: &str, values: impl IntoIterator<Item = &'a String>)
         .any(|value| value.to_lowercase().contains(&query))
 }
 
+fn encode_path_segment(value: &str) -> String {
+    utf8_percent_encode(value, PATH_SEGMENT_ENCODE_SET).to_string()
+}
+
 fn format_unix(value: i64) -> String {
     if value <= 0 {
         "-".to_owned()
@@ -560,6 +1270,7 @@ struct DashboardTemplate<'a> {
     lang: &'a str,
     user_email: &'a str,
     user_display: &'a str,
+    flash: &'a str,
 }
 
 impl DashboardTemplate<'_> {
@@ -576,6 +1287,8 @@ struct RepositoriesTemplate<'a> {
     query: &'a str,
     rows: &'a [RepositoryRow],
     limit: usize,
+    csrf_token: &'a str,
+    flash: &'a str,
 }
 
 impl RepositoriesTemplate<'_> {
@@ -590,6 +1303,7 @@ struct RepositoriesTableTemplate<'a> {
     lang: &'a str,
     rows: &'a [RepositoryRow],
     limit: usize,
+    csrf_token: &'a str,
 }
 
 impl RepositoriesTableTemplate<'_> {
@@ -606,6 +1320,9 @@ struct UsersTemplate<'a> {
     query: &'a str,
     rows: &'a [UserRow],
     limit: usize,
+    csrf_token: &'a str,
+    flash: &'a str,
+    current_user_id: &'a str,
 }
 
 impl UsersTemplate<'_> {
@@ -620,6 +1337,8 @@ struct UsersTableTemplate<'a> {
     lang: &'a str,
     rows: &'a [UserRow],
     limit: usize,
+    csrf_token: &'a str,
+    current_user_id: &'a str,
 }
 
 impl UsersTableTemplate<'_> {
@@ -636,6 +1355,7 @@ struct UserAccessTemplate<'a> {
     user: UserRow,
     rows: Vec<AccessRow>,
     limit: usize,
+    flash: &'a str,
 }
 
 impl UserAccessTemplate<'_> {
@@ -652,6 +1372,9 @@ struct GroupsTemplate<'a> {
     query: &'a str,
     rows: Vec<GroupRow>,
     limit: usize,
+    csrf_token: &'a str,
+    flash: &'a str,
+    allow_group_nesting: bool,
 }
 
 impl GroupsTemplate<'_> {

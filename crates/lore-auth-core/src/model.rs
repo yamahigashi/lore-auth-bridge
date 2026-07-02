@@ -150,6 +150,34 @@ pub fn normalize_email(email: &str) -> String {
     email.trim().to_ascii_lowercase()
 }
 
+#[must_use]
+pub fn normalize_valid_account_email(email: &str) -> Option<String> {
+    let normalized = normalize_email(email);
+    if normalized.is_empty()
+        || !normalized.contains('@')
+        || normalized.chars().any(char::is_whitespace)
+    {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+#[must_use]
+pub fn normalize_valid_lore_repository_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        None
+    } else {
+        Some(value.to_owned())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Group {
     pub id: String,

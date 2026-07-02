@@ -9,6 +9,35 @@
   </form>
 </section>
 <section>
+  <h2>{{ self.t("admin.groups.add") }}</h2>
+  <form method="post" action="/admin/groups">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="name" placeholder='{{ self.t("admin.groups.group") }}' aria-label='{{ self.t("admin.groups.group") }}'>
+    <input type="text" name="description" placeholder='{{ self.t("admin.groups.description") }}' aria-label='{{ self.t("admin.groups.description") }}'>
+    <button type="submit">{{ self.t("admin.common.add") }}</button>
+  </form>
+</section>
+<section>
+  <h2>{{ self.t("admin.groups.member_add") }}</h2>
+  <form method="post" action="/admin/groups/members/add">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="group" placeholder='{{ self.t("admin.groups.group") }}' aria-label='{{ self.t("admin.groups.group") }}'>
+    <input type="text" name="user" placeholder='{{ self.t("admin.groups.user") }}' aria-label='{{ self.t("admin.groups.user") }}'>
+    <button type="submit">{{ self.t("admin.common.add") }}</button>
+  </form>
+</section>
+{% if allow_group_nesting %}
+<section>
+  <h2>{{ self.t("admin.groups.nest_add") }}</h2>
+  <form method="post" action="/admin/groups/nests/add">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="parent_group" placeholder='{{ self.t("admin.groups.parent") }}' aria-label='{{ self.t("admin.groups.parent") }}'>
+    <input type="text" name="member_group" placeholder='{{ self.t("admin.groups.member_group") }}' aria-label='{{ self.t("admin.groups.member_group") }}'>
+    <button type="submit">{{ self.t("admin.common.add") }}</button>
+  </form>
+</section>
+{% endif %}
+<section>
   {% if rows.len() >= limit %}
   <p>{{ self.t("admin.list.limit_note") }} {{ limit }}</p>
   {% endif %}
@@ -28,7 +57,15 @@
       {% else %}
       <ul>
         {% for member in group.members %}
-        <li>{{ member.email }} {{ member.display_name }}</li>
+        <li>
+          {{ member.email }} {{ member.display_name }}
+          <form method="post" action="/admin/groups/members/remove" hx-confirm='{{ self.t("admin.common.confirm") }}'>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="group" value="{{ group.name }}">
+            <input type="hidden" name="user" value="{{ member.id }}">
+            <button type="submit">{{ self.t("admin.common.remove") }}</button>
+          </form>
+        </li>
         {% endfor %}
       </ul>
       {% if group.members_more > 0 %}
@@ -43,7 +80,17 @@
       {% else %}
       <ul>
         {% for nested in group.nested_groups %}
-        <li>{{ nested.name }} {{ nested.description }}</li>
+        <li>
+          {{ nested.name }} {{ nested.description }}
+          {% if allow_group_nesting %}
+          <form method="post" action="/admin/groups/nests/remove" hx-confirm='{{ self.t("admin.common.confirm") }}'>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="parent_group" value="{{ group.name }}">
+            <input type="hidden" name="member_group" value="{{ nested.name }}">
+            <button type="submit">{{ self.t("admin.common.remove") }}</button>
+          </form>
+          {% endif %}
+        </li>
         {% endfor %}
       </ul>
       {% if group.nested_groups_more > 0 %}

@@ -8,5 +8,34 @@
     <button type="submit">{{ self.t("admin.search.submit") }}</button>
   </form>
 </section>
+<section>
+  <h2>{{ self.t("admin.repositories.manual_add") }}</h2>
+  <p>{{ self.t("admin.repositories.manual_warning") }}</p>
+  <form method="post" action="/admin/repositories">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="name" placeholder='{{ self.t("admin.repositories.name") }}' aria-label='{{ self.t("admin.repositories.name") }}'>
+    <input type="url" name="remote_url" placeholder='{{ self.t("admin.repositories.remote_url") }}' aria-label='{{ self.t("admin.repositories.remote_url") }}'>
+    <input type="text" name="lore_repository_id" placeholder='{{ self.t("admin.repositories.lore_repository_id") }}' aria-label='{{ self.t("admin.repositories.lore_repository_id") }}'>
+    <button type="submit">{{ self.t("admin.common.add") }}</button>
+  </form>
+</section>
+<section>
+  <h2>{{ self.t("admin.grants.add") }}</h2>
+  <form method="post" action="/admin/repositories/grants/add">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="repo" placeholder='{{ self.t("admin.repositories.name") }}' aria-label='{{ self.t("admin.repositories.name") }}'>
+    <select name="subject_type" aria-label='{{ self.t("admin.grants.subject_type") }}'>
+      <option value="user">user</option>
+      <option value="group">group</option>
+    </select>
+    <input type="text" name="subject_id" placeholder='{{ self.t("admin.grants.subject_id") }}' aria-label='{{ self.t("admin.grants.subject_id") }}'>
+    <select name="role" aria-label='{{ self.t("admin.grants.role") }}'>
+      <option value="reader">reader</option>
+      <option value="writer">writer</option>
+      <option value="admin">admin</option>
+    </select>
+    <button type="submit">{{ self.t("admin.common.add") }}</button>
+  </form>
+</section>
 {% include "admin/repositories_table.html" %}
 {% endblock %}

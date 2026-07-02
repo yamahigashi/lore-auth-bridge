@@ -1,7 +1,4 @@
-use std::{
-    sync::Arc,
-    time::{Duration, UNIX_EPOCH},
-};
+use std::time::{Duration, UNIX_EPOCH};
 
 use lore_auth_adapters::memory::Store;
 use lore_auth_core::{
@@ -12,10 +9,10 @@ use lore_auth_core::{
         User, UserListFilter, VerifyOptions,
     },
     ports::{
-        AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
-        GroupAdmin, IssuedTokenLog, ResourceStore, StateStore, TokenSigner,
+        AccountDirectory, AccountQuery, AdminAuditLog, AuthorizationPolicy,
+        DeviceAuthorizationStore, GrantAdmin, GrantQuery, GroupAdmin, GroupQuery, IssuedTokenLog,
+        ResourceStore, StateStore, TokenSigner,
     },
-    service::admin::{AuditedGrantAdmin, AuditedGroupAdmin},
 };
 
 fn assert_core_ports<T>()
@@ -29,7 +26,9 @@ where
         + IssuedTokenLog
         + AdminAuditLog
         + GroupAdmin
+        + GroupQuery
         + GrantAdmin
+        + GrantQuery
         + Send
         + Sync,
 {
@@ -42,21 +41,27 @@ fn memory_store_implements_core_test_double_ports() {
 
 #[tokio::test]
 async fn audited_memory_group_and_grant_writes_record_admin_audit() {
-    let store = Arc::new(Store::new());
+    let store = Store::new();
     let user = store.add_test_user(User {
         id: "user-1".to_owned(),
         email: "alice@example.com".to_owned(),
         status: "active".to_owned(),
         ..User::default()
     });
-    let groups = AuditedGroupAdmin::new(store.clone(), store.clone(), "authctl:test-user");
-    let grants = AuditedGrantAdmin::new(store.clone(), store.clone(), "authctl:test-user");
+    store.add_test_resource(Resource {
+        name: "game-assets".to_owned(),
+        lore_repository_id: "game-assets".to_owned(),
+        resource_id: ResourceID::for_repository_id("game-assets").expect("resource id"),
+        status: "active".to_owned(),
+        ..Resource::default()
+    });
+    let audited = store.audited("authctl:test-user");
 
-    groups
+    audited
         .add_group("artists", "Art team")
         .await
         .expect("audited group add");
-    grants
+    audited
         .add_grant("user", &user.id, "game-assets", "writer")
         .await
         .expect("audited grant add");
@@ -214,6 +219,59 @@ async fn memory_admin_read_ports_list_users_and_group_edges() {
             .collect::<Vec<_>>(),
         ["riggers"]
     );
+}
+
+#[tokio::test]
+async fn memory_grant_resolves_user_and_group_subjects_like_sqlite() {
+    let store = Store::new();
+    let user = store.add_test_user(User {
+        id: "user-1".to_owned(),
+        email: "alice@example.com".to_owned(),
+        status: "active".to_owned(),
+        ..User::default()
+    });
+    store
+        .add_group("artists", "Art team")
+        .await
+        .expect("add group");
+    store
+        .add_group_member("artists", &user.id)
+        .await
+        .expect("add member");
+    let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
+    store.add_test_resource(Resource {
+        name: "game-assets".to_owned(),
+        lore_repository_id: "repo-id".to_owned(),
+        resource_id: resource_id.clone(),
+        status: "active".to_owned(),
+        ..Resource::default()
+    });
+
+    let grant = store
+        .add_grant("group", "artists", "game-assets", "writer")
+        .await
+        .expect("group name grant");
+
+    assert_eq!(grant.subject_type, "group");
+    assert_ne!(grant.subject_id, "artists");
+    assert!(
+        store
+            .can_access(&user.id, &resource_id, "write")
+            .await
+            .expect("group grant access")
+    );
+    assert!(matches!(
+        store
+            .add_grant("team", "artists", "game-assets", "writer")
+            .await,
+        Err(CoreError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        store
+            .add_grant("group", "missing", "game-assets", "writer")
+            .await,
+        Err(CoreError::InvalidArgument(_))
+    ));
 }
 
 #[tokio::test]

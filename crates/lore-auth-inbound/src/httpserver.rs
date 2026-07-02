@@ -10,7 +10,7 @@ use std::{
 use axum::{
     Router,
     body::{Body, to_bytes},
-    extract::{Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{self, HeaderName},
@@ -23,12 +23,12 @@ use lore_auth_core::{
     CoreError,
     model::{self, Permission, User},
     ports::{
-        AccountDirectory, BeginAuthRequest, CompleteAuthRequest, GrantAdmin, GroupAdmin,
-        StateStore, TokenSigner,
+        AccountQuery, AdminWritePortFactory, BeginAuthRequest, CompleteAuthRequest, GrantQuery,
+        GroupQuery, ResourceQuery, StateStore, TokenSigner,
     },
     service::{
         device::DeviceService, login::LoginService, permission::PermissionService,
-        resource::ResourceService, token::TokenService,
+        token::TokenService,
     },
 };
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
@@ -43,6 +43,7 @@ pub const STATE_COOKIE_NAME: &str = "lore_oauth_state";
 pub const LOGIN_SESSION_COOKIE_NAME: &str = "lore_login_session";
 
 const MAX_JSON_BODY_BYTES: usize = 64 * 1024;
+const MAX_ADMIN_BODY_BYTES: usize = 64 * 1024;
 const LOGIN_STATE_TTL: Duration = Duration::from_secs(10 * 60);
 const CSRF_TTL: Duration = Duration::from_secs(10 * 60);
 const RATE_LIMIT: usize = 60;
@@ -74,11 +75,12 @@ pub struct HttpConfig {
 pub struct Services {
     pub login: Option<Arc<LoginService>>,
     pub tokens: Arc<TokenService>,
-    pub resources: Arc<ResourceService>,
+    pub resources: Arc<dyn ResourceQuery>,
     pub permissions: Arc<PermissionService>,
-    pub accounts: Arc<dyn AccountDirectory>,
-    pub groups: Arc<dyn GroupAdmin>,
-    pub grants: Arc<dyn GrantAdmin>,
+    pub accounts: Arc<dyn AccountQuery>,
+    pub admin_writes: Arc<dyn AdminWritePortFactory>,
+    pub groups: Arc<dyn GroupQuery>,
+    pub grants: Arc<dyn GrantQuery>,
     pub state: Arc<dyn StateStore>,
     pub jwks: Arc<dyn TokenSigner>,
     pub device: Option<Arc<DeviceService>>,
@@ -116,7 +118,14 @@ pub fn build_router(cfg: HttpConfig, services: Services) -> Router {
         .route("/api/device/start", post(handle_device_start))
         .route("/api/device/token", post(handle_device_token));
     if state.cfg.admin.enabled() {
-        router = router.merge(admin::routes());
+        router = router.merge(
+            admin::routes()
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    admin::guard_middleware,
+                ))
+                .layer(DefaultBodyLimit::max(MAX_ADMIN_BODY_BYTES)),
+        );
     }
     router
         .with_state(state.clone())

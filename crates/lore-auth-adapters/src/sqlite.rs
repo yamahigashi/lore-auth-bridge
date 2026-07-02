@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,8 +18,9 @@ use lore_auth_core::{
         ResourceFilter, ResourcePermission, SigningKeyMeta, TokenPrincipal, User, UserListFilter,
     },
     ports::{
-        AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
-        GroupAdmin, IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore,
+        AccountDirectory, AccountQuery, AdminAuditLog, AdminWritePortFactory, AdminWritePorts,
+        AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GrantQuery, GroupAdmin,
+        GroupQuery, IssuedTokenLog, ResourceQuery, ResourceStore, SigningKeyAdmin, StateStore,
     },
 };
 use sha2::{Digest, Sha256};
@@ -303,6 +305,36 @@ pub struct Store {
     conn: Connection,
 }
 
+#[derive(Clone)]
+pub struct AuditedStore {
+    inner: Store,
+    actor: String,
+}
+
+#[derive(Clone)]
+pub struct AuditedStoreFactory {
+    store: Store,
+}
+
+impl AuditedStoreFactory {
+    #[must_use]
+    pub fn new(store: Store) -> Self {
+        Self { store }
+    }
+}
+
+impl AdminWritePortFactory for AuditedStoreFactory {
+    fn for_actor(&self, actor: &str) -> AdminWritePorts {
+        let audited = Arc::new(self.store.audited(actor.to_owned()));
+        AdminWritePorts {
+            accounts: audited.clone(),
+            resources: audited.clone(),
+            groups: audited.clone(),
+            grants: audited,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CreateDeviceAuthorizationParams {
     pub device_code_hash: String,
@@ -398,6 +430,14 @@ impl Store {
         unix_now()
     }
 
+    #[must_use]
+    pub fn audited(&self, actor: impl Into<String>) -> AuditedStore {
+        AuditedStore {
+            inner: self.clone(),
+            actor: actor.into(),
+        }
+    }
+
     pub(crate) fn connection(&self) -> Connection {
         self.conn.clone()
     }
@@ -405,7 +445,7 @@ impl Store {
     pub async fn upsert_and_get(&self, resource: Resource) -> CoreResult<Resource> {
         let resource_id = resource_id_from_resource(&resource)?;
         <Self as ResourceStore>::upsert(self, resource).await?;
-        <Self as ResourceStore>::get_by_resource_id(self, &resource_id).await
+        <Self as ResourceQuery>::get_by_resource_id(self, &resource_id).await
     }
 
     pub async fn revoke_issued_token(&self, jti: &str) -> CoreResult<()> {
@@ -510,18 +550,15 @@ impl Store {
     pub async fn disable_user(&self, email_or_id: &str) -> CoreResult<()> {
         let email_or_id = email_or_id.to_owned();
         self.conn
-            .call(move |conn| {
-                let user_id = resolve_user_id_conn(conn, &email_or_id)?;
-                let changed = conn
-                    .execute(
-                        "UPDATE users
-                         SET status = 'disabled', updated_at = ?1
-                         WHERE id = ?2 AND status <> 'deleted'",
-                        params![unix_now(), user_id],
-                    )
-                    .map_err(core_from_sql)?;
-                require_affected(changed, CoreError::NotFound)
-            })
+            .call(move |conn| disable_user_conn(conn, &email_or_id))
+            .await
+            .map_err(core_from_driver)
+    }
+
+    pub async fn enable_user(&self, email_or_id: &str) -> CoreResult<()> {
+        let email_or_id = email_or_id.to_owned();
+        self.conn
+            .call(move |conn| enable_user_conn(conn, &email_or_id))
             .await
             .map_err(core_from_driver)
     }
@@ -686,6 +723,65 @@ impl Store {
     }
 }
 
+impl AuditedStore {
+    pub async fn add_signing_key_meta(
+        &self,
+        key: SigningKeyMeta,
+        bits: u32,
+    ) -> CoreResult<SigningKeyMeta> {
+        let actor = self.actor.clone();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let key = add_signing_key_meta_conn(&tx, key)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "signing_key.generate",
+                        "signing_key",
+                        key.kid.clone(),
+                        format!("kid={} alg={} bits={bits}", key.kid, key.alg),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(key)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    pub async fn signing_key_by_kid(&self, kid: &str) -> CoreResult<SigningKeyMeta> {
+        self.inner.signing_key_by_kid(kid).await
+    }
+
+    pub async fn list_keys(&self) -> CoreResult<Vec<SigningKeyMeta>> {
+        self.inner.list_keys().await
+    }
+}
+
+#[async_trait]
+impl AccountQuery for Store {
+    async fn user_by_id(&self, user_id: &str) -> CoreResult<User> {
+        let user_id = user_id.to_owned();
+        self.conn
+            .call(move |conn| user_by_id_conn(conn, &user_id))
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn list_users(&self, filter: UserListFilter) -> CoreResult<Vec<User>> {
+        self.conn
+            .call(move |conn| list_users_conn(conn, &filter))
+            .await
+            .map_err(core_from_driver)
+    }
+}
+
 #[async_trait]
 impl AccountDirectory for Store {
     async fn resolve_login(
@@ -756,19 +852,12 @@ impl AccountDirectory for Store {
             .map_err(core_from_driver)
     }
 
-    async fn user_by_id(&self, user_id: &str) -> CoreResult<User> {
-        let user_id = user_id.to_owned();
-        self.conn
-            .call(move |conn| user_by_id_conn(conn, &user_id))
-            .await
-            .map_err(core_from_driver)
+    async fn disable_user(&self, user_id_or_email: &str) -> CoreResult<()> {
+        Store::disable_user(self, user_id_or_email).await
     }
 
-    async fn list_users(&self, filter: UserListFilter) -> CoreResult<Vec<User>> {
-        self.conn
-            .call(move |conn| list_users_conn(conn, &filter))
-            .await
-            .map_err(core_from_driver)
+    async fn enable_user(&self, user_id_or_email: &str) -> CoreResult<()> {
+        Store::enable_user(self, user_id_or_email).await
     }
 }
 
@@ -906,21 +995,14 @@ impl ResourceStore for Store {
     async fn delete(&self, resource_id: &str) -> CoreResult<()> {
         let lore_repository_id = model::ResourceID::repository_id_from_resource_id(resource_id);
         self.conn
-            .call(move |conn| {
-                let changed = conn
-                    .execute(
-                        "UPDATE repositories
-                         SET status = 'deleted', updated_at = ?1
-                         WHERE lore_repository_id = ?2",
-                        params![unix_now(), lore_repository_id],
-                    )
-                    .map_err(core_from_sql)?;
-                require_affected(changed, CoreError::NotFound)
-            })
+            .call(move |conn| delete_resource_conn(conn, &lore_repository_id))
             .await
             .map_err(core_from_driver)
     }
+}
 
+#[async_trait]
+impl ResourceQuery for Store {
     async fn get_by_id(&self, id: &str) -> CoreResult<Resource> {
         let id = id.to_owned();
         self.conn
@@ -1387,26 +1469,546 @@ impl IssuedTokenLog for Store {
 impl AdminAuditLog for Store {
     async fn record(&self, entry: AdminAuditEntry) -> CoreResult<()> {
         self.conn
+            .call(move |conn| insert_admin_audit_conn(conn, entry))
+            .await
+            .map_err(core_from_driver)
+    }
+}
+
+#[async_trait]
+impl GrantAdmin for AuditedStore {
+    async fn add_grant(
+        &self,
+        subject_type: &str,
+        subject_id: &str,
+        repo: &str,
+        role: &str,
+    ) -> CoreResult<Grant> {
+        let actor = self.actor.clone();
+        let subject_type = subject_type.to_owned();
+        let subject_id = subject_id.to_owned();
+        let repo = repo.to_owned();
+        let role = role.to_owned();
+        self.inner
+            .conn
             .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO admin_audit (
-                       id, actor, action, object_type, object_id, detail, created_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        entry.id,
-                        entry.actor,
-                        entry.action,
-                        entry.object_type,
-                        entry.object_id,
-                        entry.detail,
-                        entry.created_at
-                    ],
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let grant = add_grant_conn(&tx, &subject_type, &subject_id, &repo, &role)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "grant.add",
+                        "grant",
+                        grant.id.clone(),
+                        grant_detail(&subject_type, &subject_id, &repo, &role),
+                    ),
                 )
-                .map_err(core_from_sql)?;
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(grant)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn remove_grant(
+        &self,
+        subject_type: &str,
+        subject_id: &str,
+        repo: &str,
+        role: &str,
+    ) -> CoreResult<()> {
+        let actor = self.actor.clone();
+        let subject_type = subject_type.to_owned();
+        let subject_id = subject_id.to_owned();
+        let repo = repo.to_owned();
+        let role = role.to_owned();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                remove_grant_conn(&tx, &subject_type, &subject_id, &repo, &role)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "grant.remove",
+                        "grant",
+                        format!("{subject_type}:{subject_id}:{repo}:{role}"),
+                        grant_detail(&subject_type, &subject_id, &repo, &role),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
                 Ok(())
             })
             .await
             .map_err(core_from_driver)
+    }
+}
+
+#[async_trait]
+impl GrantQuery for AuditedStore {
+    async fn list_grants(&self, repo: &str) -> CoreResult<Vec<Grant>> {
+        self.inner.list_grants(repo).await
+    }
+}
+
+#[async_trait]
+impl AccountQuery for AuditedStore {
+    async fn user_by_id(&self, user_id: &str) -> CoreResult<User> {
+        self.inner.user_by_id(user_id).await
+    }
+
+    async fn list_users(&self, filter: UserListFilter) -> CoreResult<Vec<User>> {
+        self.inner.list_users(filter).await
+    }
+}
+
+#[async_trait]
+impl AccountDirectory for AuditedStore {
+    async fn resolve_login(
+        &self,
+        req: LoginResolutionRequest,
+    ) -> CoreResult<(TokenPrincipal, LoginBindingResult)> {
+        self.inner.resolve_login(req).await
+    }
+
+    async fn principal_by_user_id(&self, user_id: &str) -> CoreResult<TokenPrincipal> {
+        self.inner.principal_by_user_id(user_id).await
+    }
+
+    async fn principal_by_authn_token_jti(&self, jti: &str) -> CoreResult<TokenPrincipal> {
+        self.inner.principal_by_authn_token_jti(jti).await
+    }
+
+    async fn add_user(&self, input: AddUserInput) -> CoreResult<User> {
+        let actor = self.actor.clone();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let user = add_user_conn(&tx, input)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "user.add",
+                        "user",
+                        user.id.clone(),
+                        format!("email={}", user.email),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(user)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn add_invitation(
+        &self,
+        input: AddInvitationInput,
+    ) -> CoreResult<(User, IdentityInvitation)> {
+        let actor = self.actor.clone();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let (user, invitation) = add_invitation_db(&tx, input)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "user.invite",
+                        "user",
+                        user.id.clone(),
+                        format!("email={} invitation_id={}", user.email, invitation.id),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok((user, invitation))
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn disable_user(&self, user_id_or_email: &str) -> CoreResult<()> {
+        let actor = self.actor.clone();
+        let user_id_or_email = user_id_or_email.to_owned();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let user = resolve_user_id_conn(&tx, &user_id_or_email)
+                    .and_then(|user_id| user_by_id_conn(&tx, &user_id))?;
+                disable_user_conn(&tx, &user_id_or_email)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "user.disable",
+                        "user",
+                        user.id,
+                        format!("email={}", user.email),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn enable_user(&self, user_id_or_email: &str) -> CoreResult<()> {
+        let actor = self.actor.clone();
+        let user_id_or_email = user_id_or_email.to_owned();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let user = resolve_user_id_conn(&tx, &user_id_or_email)
+                    .and_then(|user_id| user_by_id_conn(&tx, &user_id))?;
+                enable_user_conn(&tx, &user_id_or_email)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "user.enable",
+                        "user",
+                        user.id,
+                        format!("email={}", user.email),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+}
+
+#[async_trait]
+impl ResourceStore for AuditedStore {
+    async fn upsert(&self, resource: Resource) -> CoreResult<()> {
+        let actor = self.actor.clone();
+        let resource_id = resource_id_from_resource(&resource)?;
+        let detail = format!(
+            "name={} lore_repository_id={}",
+            resource.name,
+            model::ResourceID::repository_id_from_resource_id(&resource_id)
+        );
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                upsert_resource_conn(&tx, resource)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(&actor, "repository.add", "repository", resource_id, detail),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn delete(&self, resource_id: &str) -> CoreResult<()> {
+        let actor = self.actor.clone();
+        let resource_id = resource_id.to_owned();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                delete_resource_conn(&tx, &resource_id)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "repository.disable",
+                        "repository",
+                        resource_id.clone(),
+                        String::new(),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+}
+
+#[async_trait]
+impl ResourceQuery for AuditedStore {
+    async fn get_by_id(&self, id: &str) -> CoreResult<Resource> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn get_by_resource_id(&self, resource_id: &str) -> CoreResult<Resource> {
+        self.inner.get_by_resource_id(resource_id).await
+    }
+
+    async fn get_by_name(&self, name: &str) -> CoreResult<Resource> {
+        self.inner.get_by_name(name).await
+    }
+
+    async fn list(&self) -> CoreResult<Vec<Resource>> {
+        self.inner.list().await
+    }
+}
+
+#[async_trait]
+impl GroupAdmin for AuditedStore {
+    async fn add_group(&self, name: &str, description: &str) -> CoreResult<Group> {
+        let actor = self.actor.clone();
+        let name = name.trim().to_owned();
+        let description = description.to_owned();
+        self.inner
+            .conn
+            .call(move |conn| {
+                if name.is_empty() {
+                    return Err(CoreError::InvalidArgument(
+                        "group name must not be empty".to_owned(),
+                    ));
+                }
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let now = unix_now();
+                let group = Group {
+                    id: new_id(),
+                    name,
+                    description,
+                };
+                tx.execute(
+                    "INSERT INTO groups (id, name, description, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        group.id,
+                        group.name,
+                        none_if_empty(&group.description),
+                        now,
+                        now
+                    ],
+                )
+                .map_err(core_from_sql)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "group.add",
+                        "group",
+                        group.id.clone(),
+                        format!("name={}", group.name),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(group)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn add_group_member(&self, group: &str, user_email_or_id: &str) -> CoreResult<()> {
+        let actor = self.actor.clone();
+        let group = group.to_owned();
+        let user_email_or_id = user_email_or_id.to_owned();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let group_id = group_id_by_name_conn(&tx, &group)?;
+                let user_id = resolve_user_id_conn(&tx, &user_email_or_id)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO group_members (group_id, user_id, created_at)
+                     VALUES (?1, ?2, ?3)",
+                    params![group_id, user_id, unix_now()],
+                )
+                .map_err(core_from_sql)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "group.member.add",
+                        "group",
+                        group,
+                        format!("user={user_email_or_id}"),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn remove_group_member(&self, group: &str, user_email_or_id: &str) -> CoreResult<()> {
+        let actor = self.actor.clone();
+        let group = group.to_owned();
+        let user_email_or_id = user_email_or_id.to_owned();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let group_id = group_id_by_name_conn(&tx, &group)?;
+                let user_id = resolve_user_id_conn(&tx, &user_email_or_id)?;
+                let changed = tx
+                    .execute(
+                        "DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2",
+                        params![group_id, user_id],
+                    )
+                    .map_err(core_from_sql)?;
+                require_affected(changed, CoreError::NotFound)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "group.member.remove",
+                        "group",
+                        group,
+                        format!("user={user_email_or_id}"),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn add_group_group(&self, parent_group: &str, member_group: &str) -> CoreResult<()> {
+        let actor = self.actor.clone();
+        let parent_group = parent_group.to_owned();
+        let member_group = member_group.to_owned();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let parent_group_id = group_id_by_name_or_id_tx(&tx, &parent_group)?;
+                let member_group_id = group_id_by_name_or_id_tx(&tx, &member_group)?;
+                if parent_group_id == member_group_id {
+                    return Err(CoreError::InvalidArgument(
+                        "group cannot contain itself".to_owned(),
+                    ));
+                }
+                if group_group_edge_exists_tx(&tx, &parent_group_id, &member_group_id)? {
+                    tx.commit().map_err(core_from_sql)?;
+                    return Ok(());
+                }
+                if group_group_would_cycle_tx(&tx, &parent_group_id, &member_group_id)? {
+                    return Err(CoreError::InvalidArgument(
+                        "group nesting would create a cycle".to_owned(),
+                    ));
+                }
+                tx.execute(
+                    "INSERT INTO group_groups (group_id, member_group_id, created_at)
+                     VALUES (?1, ?2, ?3)",
+                    params![parent_group_id, member_group_id, unix_now()],
+                )
+                .map_err(core_from_sql)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "group.nest.add",
+                        "group",
+                        parent_group,
+                        format!("member_group={member_group}"),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn remove_group_group(&self, parent_group: &str, member_group: &str) -> CoreResult<()> {
+        let actor = self.actor.clone();
+        let parent_group = parent_group.to_owned();
+        let member_group = member_group.to_owned();
+        self.inner
+            .conn
+            .call(move |conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(core_from_sql)?;
+                let parent_group_id = group_id_by_name_or_id_conn(&tx, &parent_group)?;
+                let member_group_id = group_id_by_name_or_id_conn(&tx, &member_group)?;
+                let changed = tx
+                    .execute(
+                        "DELETE FROM group_groups
+                         WHERE group_id = ?1 AND member_group_id = ?2",
+                        params![parent_group_id, member_group_id],
+                    )
+                    .map_err(core_from_sql)?;
+                require_affected(changed, CoreError::NotFound)?;
+                insert_admin_audit_conn(
+                    &tx,
+                    admin_audit_entry(
+                        &actor,
+                        "group.nest.remove",
+                        "group",
+                        parent_group,
+                        format!("member_group={member_group}"),
+                    ),
+                )
+                .map_err(admin_audit_failed)?;
+                tx.commit().map_err(core_from_sql)?;
+                Ok(())
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+}
+
+#[async_trait]
+impl GroupQuery for AuditedStore {
+    async fn list_groups(&self) -> CoreResult<Vec<Group>> {
+        self.inner.list_groups().await
+    }
+
+    async fn list_group_members(&self, group: &str) -> CoreResult<Vec<User>> {
+        self.inner.list_group_members(group).await
+    }
+
+    async fn list_group_groups(&self, group: &str) -> CoreResult<Vec<Group>> {
+        self.inner.list_group_groups(group).await
     }
 }
 
@@ -1441,67 +2043,6 @@ impl GroupAdmin for Store {
                 )
                 .map_err(core_from_sql)?;
                 Ok(group)
-            })
-            .await
-            .map_err(core_from_driver)
-    }
-
-    async fn list_groups(&self) -> CoreResult<Vec<Group>> {
-        self.conn
-            .call(|conn| {
-                let mut stmt = conn
-                    .prepare("SELECT id, name, description FROM groups ORDER BY name")
-                    .map_err(core_from_sql)?;
-                let rows = stmt.query_map([], group_from_row).map_err(core_from_sql)?;
-                collect_rows(rows)
-            })
-            .await
-            .map_err(core_from_driver)
-    }
-
-    async fn list_group_members(&self, group: &str) -> CoreResult<Vec<User>> {
-        let group = group.to_owned();
-        self.conn
-            .call(move |conn| {
-                let group_id = group_id_by_name_or_id_conn(conn, &group)?;
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT u.id, u.primary_email, u.display_name, u.status,
-                                COALESCE(u.last_login_at, 0)
-                         FROM group_members gm
-                         JOIN users u ON u.id = gm.user_id
-                         WHERE gm.group_id = ?1
-                           AND u.status <> 'deleted'
-                         ORDER BY u.primary_email_normalized, u.id",
-                    )
-                    .map_err(core_from_sql)?;
-                let rows = stmt
-                    .query_map(params![group_id], user_from_row)
-                    .map_err(core_from_sql)?;
-                collect_rows(rows)
-            })
-            .await
-            .map_err(core_from_driver)
-    }
-
-    async fn list_group_groups(&self, group: &str) -> CoreResult<Vec<Group>> {
-        let group = group.to_owned();
-        self.conn
-            .call(move |conn| {
-                let group_id = group_id_by_name_or_id_conn(conn, &group)?;
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT g.id, g.name, g.description
-                         FROM group_groups gg
-                         JOIN groups g ON g.id = gg.member_group_id
-                         WHERE gg.group_id = ?1
-                         ORDER BY g.name",
-                    )
-                    .map_err(core_from_sql)?;
-                let rows = stmt
-                    .query_map(params![group_id], group_from_row)
-                    .map_err(core_from_sql)?;
-                collect_rows(rows)
             })
             .await
             .map_err(core_from_driver)
@@ -1604,6 +2145,70 @@ impl GroupAdmin for Store {
 }
 
 #[async_trait]
+impl GroupQuery for Store {
+    async fn list_groups(&self) -> CoreResult<Vec<Group>> {
+        self.conn
+            .call(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT id, name, description FROM groups ORDER BY name")
+                    .map_err(core_from_sql)?;
+                let rows = stmt.query_map([], group_from_row).map_err(core_from_sql)?;
+                collect_rows(rows)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn list_group_members(&self, group: &str) -> CoreResult<Vec<User>> {
+        let group = group.to_owned();
+        self.conn
+            .call(move |conn| {
+                let group_id = group_id_by_name_or_id_conn(conn, &group)?;
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT u.id, u.primary_email, u.display_name, u.status,
+                                COALESCE(u.last_login_at, 0)
+                         FROM group_members gm
+                         JOIN users u ON u.id = gm.user_id
+                         WHERE gm.group_id = ?1
+                           AND u.status <> 'deleted'
+                         ORDER BY u.primary_email_normalized, u.id",
+                    )
+                    .map_err(core_from_sql)?;
+                let rows = stmt
+                    .query_map(params![group_id], user_from_row)
+                    .map_err(core_from_sql)?;
+                collect_rows(rows)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    async fn list_group_groups(&self, group: &str) -> CoreResult<Vec<Group>> {
+        let group = group.to_owned();
+        self.conn
+            .call(move |conn| {
+                let group_id = group_id_by_name_or_id_conn(conn, &group)?;
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT g.id, g.name, g.description
+                         FROM group_groups gg
+                         JOIN groups g ON g.id = gg.member_group_id
+                         WHERE gg.group_id = ?1
+                         ORDER BY g.name",
+                    )
+                    .map_err(core_from_sql)?;
+                let rows = stmt
+                    .query_map(params![group_id], group_from_row)
+                    .map_err(core_from_sql)?;
+                collect_rows(rows)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+}
+
+#[async_trait]
 impl GrantAdmin for Store {
     async fn add_grant(
         &self,
@@ -1634,24 +2239,14 @@ impl GrantAdmin for Store {
         let repo = repo.to_owned();
         let role = role.to_owned();
         self.conn
-            .call(move |conn| {
-                let repository_id = repository_id_by_name_conn(conn, &repo)?;
-                let changed = conn
-                    .execute(
-                        "DELETE FROM grants
-                         WHERE subject_type = ?1
-                           AND subject_id = ?2
-                           AND repository_id = ?3
-                           AND role = ?4",
-                        params![subject_type, subject_id, repository_id, role],
-                    )
-                    .map_err(core_from_sql)?;
-                require_affected(changed, CoreError::NotFound)
-            })
+            .call(move |conn| remove_grant_conn(conn, &subject_type, &subject_id, &repo, &role))
             .await
             .map_err(core_from_driver)
     }
+}
 
+#[async_trait]
+impl GrantQuery for Store {
     async fn list_grants(&self, repo: &str) -> CoreResult<Vec<Grant>> {
         let repo = repo.to_owned();
         self.conn
@@ -1687,9 +2282,10 @@ struct StoredLoginState {
 
 fn add_user_conn(conn: &rusqlite::Connection, input: AddUserInput) -> CoreResult<User> {
     let now = unix_now();
+    let email = validated_account_email(&input.email)?;
     let user = User {
         id: new_id(),
-        email: input.email.trim().to_owned(),
+        email,
         display_name: input.display_name,
         status: "active".to_owned(),
         last_login_at: 0,
@@ -1717,9 +2313,19 @@ fn add_invitation_conn(
     conn: &mut rusqlite::Connection,
     input: AddInvitationInput,
 ) -> CoreResult<(User, IdentityInvitation)> {
+    let tx = conn.transaction().map_err(core_from_sql)?;
+    let out = add_invitation_db(&tx, input)?;
+    tx.commit().map_err(core_from_sql)?;
+    Ok(out)
+}
+
+fn add_invitation_db(
+    conn: &rusqlite::Connection,
+    input: AddInvitationInput,
+) -> CoreResult<(User, IdentityInvitation)> {
     let provider_id = input.provider_id.trim().to_owned();
     let issuer = input.issuer.trim().to_owned();
-    let email = input.email.trim().to_owned();
+    let email = validated_account_email(&input.email)?;
     let email_normalized = normalize_email(&email);
     if provider_id.is_empty() || issuer.is_empty() || email_normalized.is_empty() {
         return Err(CoreError::InvalidArgument(
@@ -1750,8 +2356,7 @@ fn add_invitation_conn(
         expires_at: input.expires_at,
         ..IdentityInvitation::default()
     };
-    let tx = conn.transaction().map_err(core_from_sql)?;
-    tx.execute(
+    conn.execute(
         "INSERT INTO users (
            id, primary_email, primary_email_normalized, display_name,
            status, created_at, updated_at
@@ -1767,7 +2372,7 @@ fn add_invitation_conn(
         ],
     )
     .map_err(core_from_sql)?;
-    tx.execute(
+    conn.execute(
         "INSERT INTO identity_invitations (
            id, user_id, provider_id, issuer, email, email_normalized,
            binding_policy, status, created_at, expires_at
@@ -1786,8 +2391,33 @@ fn add_invitation_conn(
         ],
     )
     .map_err(core_from_sql)?;
-    tx.commit().map_err(core_from_sql)?;
     Ok((user, invitation))
+}
+
+fn disable_user_conn(conn: &rusqlite::Connection, email_or_id: &str) -> CoreResult<()> {
+    let user_id = resolve_user_id_conn(conn, email_or_id)?;
+    let changed = conn
+        .execute(
+            "UPDATE users
+             SET status = 'disabled', updated_at = ?1
+             WHERE id = ?2 AND status <> 'deleted'",
+            params![unix_now(), user_id],
+        )
+        .map_err(core_from_sql)?;
+    require_affected(changed, CoreError::NotFound)
+}
+
+fn enable_user_conn(conn: &rusqlite::Connection, email_or_id: &str) -> CoreResult<()> {
+    let user_id = resolve_user_id_conn(conn, email_or_id)?;
+    let changed = conn
+        .execute(
+            "UPDATE users
+             SET status = 'active', updated_at = ?1
+             WHERE id = ?2 AND status <> 'deleted'",
+            params![unix_now(), user_id],
+        )
+        .map_err(core_from_sql)?;
+    require_affected(changed, CoreError::NotFound)
 }
 
 fn resolve_login_conn(
@@ -2046,6 +2676,19 @@ fn upsert_resource_conn(conn: &rusqlite::Connection, resource: Resource) -> Core
     Ok(())
 }
 
+fn delete_resource_conn(conn: &rusqlite::Connection, resource_id: &str) -> CoreResult<()> {
+    let lore_repository_id = model::ResourceID::repository_id_from_resource_id(resource_id);
+    let changed = conn
+        .execute(
+            "UPDATE repositories
+             SET status = 'deleted', updated_at = ?1
+             WHERE lore_repository_id = ?2",
+            params![unix_now(), lore_repository_id],
+        )
+        .map_err(core_from_sql)?;
+    require_affected(changed, CoreError::NotFound)
+}
+
 fn add_grant_conn(
     conn: &rusqlite::Connection,
     subject_type: &str,
@@ -2058,12 +2701,13 @@ fn add_grant_conn(
             "unknown grant role {role:?}"
         )));
     }
+    let subject_id = resolve_grant_subject_id_conn(conn, subject_type, subject_id)?;
     let repository_id = repository_id_by_name_conn(conn, repo)?;
     let now = unix_now();
     let grant = Grant {
         id: new_id(),
         subject_type: subject_type.to_owned(),
-        subject_id: subject_id.to_owned(),
+        subject_id,
         repository_id,
         role: role.to_owned(),
     };
@@ -2083,6 +2727,28 @@ fn add_grant_conn(
     )
     .map_err(core_from_sql)?;
     Ok(grant)
+}
+
+fn remove_grant_conn(
+    conn: &rusqlite::Connection,
+    subject_type: &str,
+    subject_id: &str,
+    repo: &str,
+    role: &str,
+) -> CoreResult<()> {
+    let subject_id = resolve_grant_subject_id_conn(conn, subject_type, subject_id)?;
+    let repository_id = repository_id_by_name_conn(conn, repo)?;
+    let changed = conn
+        .execute(
+            "DELETE FROM grants
+             WHERE subject_type = ?1
+               AND subject_id = ?2
+               AND repository_id = ?3
+               AND role = ?4",
+            params![subject_type, subject_id, repository_id, role],
+        )
+        .map_err(core_from_sql)?;
+    require_affected(changed, CoreError::NotFound)
 }
 
 fn list_grants_conn(conn: &rusqlite::Connection, repo: &str) -> CoreResult<Vec<Grant>> {
@@ -2331,6 +2997,22 @@ fn resolve_user_id_conn(conn: &rusqlite::Connection, email_or_id: &str) -> CoreR
     .optional()
     .map_err(core_from_sql)?
     .ok_or(CoreError::NotFound)
+}
+
+fn resolve_grant_subject_id_conn(
+    conn: &rusqlite::Connection,
+    subject_type: &str,
+    subject: &str,
+) -> CoreResult<String> {
+    match subject_type {
+        "user" => resolve_user_id_conn(conn, subject)
+            .map_err(|_| CoreError::InvalidArgument(format!("unknown grant user {subject:?}"))),
+        "group" => group_id_by_name_or_id_conn(conn, subject)
+            .map_err(|_| CoreError::InvalidArgument(format!("unknown grant group {subject:?}"))),
+        other => Err(CoreError::InvalidArgument(format!(
+            "unknown grant subject_type {other:?}"
+        ))),
+    }
 }
 
 fn list_users_conn(conn: &rusqlite::Connection, filter: &UserListFilter) -> CoreResult<Vec<User>> {
@@ -2623,10 +3305,32 @@ fn device_to_core(device: DeviceAuthorization) -> model::DeviceAuthorization {
 
 fn resource_id_from_resource(resource: &Resource) -> CoreResult<String> {
     if !resource.resource_id.trim().is_empty() {
-        return Ok(resource.resource_id.clone());
+        let repository_id =
+            model::ResourceID::repository_id_from_resource_id(resource.resource_id.trim());
+        let repository_id = validated_lore_repository_id(&repository_id)?;
+        return model::ResourceID::for_repository_id(&repository_id)
+            .ok_or_else(|| CoreError::InvalidArgument("resource_id is required".to_owned()));
     }
-    model::ResourceID::for_repository_id(&resource.lore_repository_id)
+    let repository_id = validated_lore_repository_id(&resource.lore_repository_id)?;
+    model::ResourceID::for_repository_id(&repository_id)
         .ok_or_else(|| CoreError::InvalidArgument("resource_id is required".to_owned()))
+}
+
+fn validated_lore_repository_id(value: &str) -> CoreResult<String> {
+    model::normalize_valid_lore_repository_id(value).ok_or_else(|| {
+        CoreError::InvalidArgument(
+            "lore_repository_id must be 1-128 characters of A-Z, a-z, 0-9, '-' or '_'".to_owned(),
+        )
+    })
+}
+
+fn validated_account_email(value: &str) -> CoreResult<String> {
+    let email = value.trim();
+    model::normalize_valid_account_email(email)
+        .map(|_| email.to_owned())
+        .ok_or_else(|| {
+            CoreError::InvalidArgument("email must contain '@' and no whitespace".to_owned())
+        })
 }
 
 fn allows_verified_email_invitation_binding(policy: &LoginTrustPolicy) -> bool {
@@ -2678,6 +3382,51 @@ fn bool_to_i64(value: bool) -> i64 {
 
 fn require_affected(changed: usize, not_found: CoreError) -> CoreResult<()> {
     if changed == 0 { Err(not_found) } else { Ok(()) }
+}
+
+fn admin_audit_entry(
+    actor: &str,
+    action: &str,
+    object_type: &str,
+    object_id: impl Into<String>,
+    detail: impl Into<String>,
+) -> AdminAuditEntry {
+    AdminAuditEntry {
+        id: new_id(),
+        actor: actor.to_owned(),
+        action: action.to_owned(),
+        object_type: object_type.to_owned(),
+        object_id: object_id.into(),
+        detail: detail.into(),
+        created_at: unix_now(),
+    }
+}
+
+fn insert_admin_audit_conn(conn: &rusqlite::Connection, entry: AdminAuditEntry) -> CoreResult<()> {
+    conn.execute(
+        "INSERT INTO admin_audit (
+           id, actor, action, object_type, object_id, detail, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            entry.id,
+            entry.actor,
+            entry.action,
+            entry.object_type,
+            entry.object_id,
+            entry.detail,
+            entry.created_at
+        ],
+    )
+    .map_err(core_from_sql)?;
+    Ok(())
+}
+
+fn admin_audit_failed(err: CoreError) -> CoreError {
+    CoreError::AdminAuditFailed(err.to_string())
+}
+
+fn grant_detail(subject_type: &str, subject_id: &str, repo: &str, role: &str) -> String {
+    format!("subject_type={subject_type} subject_id={subject_id} repo={repo} role={role}")
 }
 
 fn effective_limit(limit: usize) -> usize {

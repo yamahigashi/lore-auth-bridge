@@ -1,4 +1,4 @@
-use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::{
@@ -12,15 +12,14 @@ use lore_auth_core::{
     CoreError,
     model::{self, AddUserInput, ExternalIdentity, Resource, ResourceID, User},
     ports::{
-        AccountDirectory, AuthorizationPolicy, BeginAuthRequest, BeginAuthResult,
+        AccountDirectory, AccountQuery, AuthorizationPolicy, BeginAuthRequest, BeginAuthResult,
         CompleteAuthRequest, GrantAdmin, GroupAdmin, IdentityProvider, IdentityProviderDescriptor,
-        ResourceStore, StateStore,
+        ResourceQuery, ResourceStore, StateStore,
     },
     service::{
         device::{DeviceConfig, DeviceService},
         login::{LoginConfig, LoginService},
         permission::PermissionService,
-        resource::ResourceService,
         token::{TokenConfig, TokenService},
     },
 };
@@ -409,6 +408,7 @@ async fn admin_route_hides_from_disallowed_peers_before_session_check() {
         AdminConfig {
             admin_emails: vec!["admin@example.com".to_owned()],
             allowed_peer_cidrs: vec!["127.0.0.1/32".parse().expect("cidr")],
+            ..AdminConfig::default()
         },
     );
     let user = store.add_test_user(User {
@@ -440,6 +440,7 @@ async fn admin_route_renders_dashboard_for_admin_session_and_language_cookie() {
         AdminConfig {
             admin_emails: vec!["admin@example.com".to_owned()],
             allowed_peer_cidrs: vec!["127.0.0.1/32".parse().expect("cidr")],
+            ..AdminConfig::default()
         },
     );
     let user = store.add_test_user(User {
@@ -665,6 +666,7 @@ async fn admin_users_search_renders_japanese_hits_and_empty_results() {
     );
     let admin_cookie = admin_session_cookie(&store).await;
     store.add_test_user(User {
+        id: "user/a?b".to_owned(),
         email: "alice@example.com".to_owned(),
         display_name: "<Root> & Co Artist".to_owned(),
         last_login_at: 42,
@@ -691,6 +693,7 @@ async fn admin_users_search_renders_japanese_hits_and_empty_results() {
     assert!(body.contains("alice@example.com"), "{body}");
     assert!(body.contains("&#60;Root&#62; &#38; Co Artist"), "{body}");
     assert!(!body.contains("<Root> & Co Artist"), "{body}");
+    assert!(body.contains("/admin/users/user%2Fa%3Fb/access"), "{body}");
     assert!(body.contains("1970-01-01 00:00:42"), "{body}");
     assert!(!body.contains("bob@example.com"), "{body}");
 
@@ -881,6 +884,391 @@ async fn admin_user_access_returns_500_when_list_accessible_fails() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
+#[tokio::test]
+async fn admin_post_routes_hide_unauthenticated_requests_and_require_csrf() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            ..AdminConfig::default()
+        },
+    );
+    let admin_cookie = admin_session_cookie(&store).await;
+
+    let unauthenticated = app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/groups",
+            None,
+            "name=artists&description=Art",
+        ))
+        .await
+        .expect("unauthenticated group add response");
+    assert_eq!(unauthenticated.status(), StatusCode::NOT_FOUND);
+
+    let unauthenticated_empty = app
+        .clone()
+        .oneshot(post_form_request("/admin/groups", None, ""))
+        .await
+        .expect("unauthenticated empty group add response");
+    assert_eq!(unauthenticated_empty.status(), StatusCode::NOT_FOUND);
+
+    let missing = app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/groups",
+            Some(admin_cookie.clone()),
+            "name=artists&description=Art",
+        ))
+        .await
+        .expect("missing csrf response");
+    assert_eq!(missing.status(), StatusCode::FORBIDDEN);
+
+    let invalid = app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/groups",
+            Some(admin_cookie.clone()),
+            "csrf_token=wrong&name=artists&description=Art",
+        ))
+        .await
+        .expect("invalid csrf response");
+    assert_eq!(invalid.status(), StatusCode::FORBIDDEN);
+
+    let user_add_missing = app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/users",
+            Some(admin_cookie.clone()),
+            "email=alice@example.com&display_name=Alice",
+        ))
+        .await
+        .expect("user add missing csrf response");
+    assert_eq!(user_add_missing.status(), StatusCode::FORBIDDEN);
+
+    let repo_add_invalid = app
+        .clone()
+        .oneshot(post_form_request(
+            "/admin/repositories",
+            Some(admin_cookie.clone()),
+            "csrf_token=wrong&name=game-assets&remote_url=lore://manual&lore_repository_id=repo-id",
+        ))
+        .await
+        .expect("repo add invalid csrf response");
+    assert_eq!(repo_add_invalid.status(), StatusCode::FORBIDDEN);
+
+    let csrf = admin_csrf(app.clone(), &admin_cookie, "/admin/groups").await;
+    let valid = app
+        .oneshot(post_form_request(
+            "/admin/groups",
+            Some(admin_cookie),
+            &format!("csrf_token={csrf}&name=artists&description=Art"),
+        ))
+        .await
+        .expect("valid csrf response");
+    assert_eq!(valid.status(), StatusCode::OK);
+    let entries = store.admin_audit_entries();
+    let actions = audit_action_counts(&entries);
+    assert_eq!(actions.get("group.add"), Some(&1));
+}
+
+#[tokio::test]
+async fn admin_post_guard_hides_malformed_and_large_unauthenticated_bodies() {
+    let (app, _store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            ..AdminConfig::default()
+        },
+    );
+
+    let malformed = app
+        .clone()
+        .oneshot(post_form_request("/admin/groups", None, "%"))
+        .await
+        .expect("malformed unauthenticated response");
+    assert_eq!(malformed.status(), StatusCode::NOT_FOUND);
+
+    let large = format!("csrf_token={}", "x".repeat(3 * 1024 * 1024));
+    let response = app
+        .oneshot(post_form_request("/admin/groups", None, &large))
+        .await
+        .expect("large unauthenticated response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_user_disable_refuses_self_and_preserves_last_admin() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            ..AdminConfig::default()
+        },
+    );
+    let admin = store.add_test_user(User {
+        id: "admin-user".to_owned(),
+        email: "admin@example.com".to_owned(),
+        display_name: "Admin".to_owned(),
+        ..User::default()
+    });
+    let session = store
+        .create_browser_session(&admin.id, Duration::from_secs(60))
+        .await
+        .expect("session creates");
+    let admin_cookie = format!("{SESSION_COOKIE_NAME}={}", session.id);
+    let csrf = admin_csrf(app.clone(), &admin_cookie, "/admin/users").await;
+
+    let response = app
+        .oneshot(post_form_request(
+            &format!("/admin/users/{}/disable", admin.id),
+            Some(admin_cookie),
+            &format!("csrf_token={csrf}"),
+        ))
+        .await
+        .expect("self disable response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await;
+    assert!(body.contains("Error"), "{body}");
+    let admin_after = store.user_by_id(&admin.id).await.expect("admin remains");
+    assert_eq!(admin_after.status, "active");
+    assert!(store.admin_audit_entries().is_empty());
+}
+
+#[tokio::test]
+async fn admin_user_disable_allows_admin_when_another_active_admin_remains() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec![
+                "admin@example.com".to_owned(),
+                "other-admin@example.com".to_owned(),
+            ],
+            ..AdminConfig::default()
+        },
+    );
+    let admin = store.add_test_user(User {
+        id: "admin-user".to_owned(),
+        email: "admin@example.com".to_owned(),
+        display_name: "Admin".to_owned(),
+        ..User::default()
+    });
+    let other = store.add_test_user(User {
+        id: "other-admin-user".to_owned(),
+        email: "other-admin@example.com".to_owned(),
+        display_name: "Other Admin".to_owned(),
+        ..User::default()
+    });
+    let session = store
+        .create_browser_session(&admin.id, Duration::from_secs(60))
+        .await
+        .expect("session creates");
+    let admin_cookie = format!("{SESSION_COOKIE_NAME}={}", session.id);
+
+    post_admin_form(
+        app,
+        &admin_cookie,
+        "/admin/users",
+        &format!("/admin/users/{}/disable", other.id),
+        "",
+    )
+    .await;
+
+    let other_after = store
+        .user_by_id(&other.id)
+        .await
+        .expect("other admin remains");
+    assert_eq!(other_after.status, "disabled");
+    let entries = store.admin_audit_entries();
+    assert_eq!(audit_action_counts(&entries).get("user.disable"), Some(&1));
+}
+
+#[tokio::test]
+async fn admin_post_writes_record_admin_audit_with_admin_actor() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            allow_group_nesting: true,
+            ..AdminConfig::default()
+        },
+    );
+    let admin_cookie = admin_session_cookie(&store).await;
+    let alice = store.add_test_user(User {
+        id: "user-alice".to_owned(),
+        email: "alice@example.com".to_owned(),
+        display_name: "Alice".to_owned(),
+        ..User::default()
+    });
+
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/repositories",
+        "/admin/repositories",
+        "name=game-assets&remote_url=lore://manual&lore_repository_id=game-assets",
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/repositories",
+        "/admin/repositories/grants/add",
+        &format!(
+            "repo=game-assets&subject_type=user&subject_id={}&role=writer",
+            alice.id
+        ),
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/repositories",
+        "/admin/repositories/grants/remove",
+        &format!(
+            "repo=game-assets&subject_type=user&subject_id={}&role=writer",
+            alice.id
+        ),
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/users",
+        "/admin/users",
+        "email=bob@example.com&display_name=Bob",
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/users",
+        "/admin/users/invite",
+        "provider_id=google&issuer=https://accounts.google.com&email=carol@example.com&display_name=Carol",
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/groups",
+        "/admin/groups",
+        "name=artists&description=Art",
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/groups",
+        "/admin/groups",
+        "name=riggers&description=Rig",
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/groups",
+        "/admin/groups/members/add",
+        &format!("group=artists&user={}", alice.id),
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/groups",
+        "/admin/groups/members/remove",
+        &format!("group=artists&user={}", alice.id),
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/groups",
+        "/admin/groups/nests/add",
+        "parent_group=artists&member_group=riggers",
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/groups",
+        "/admin/groups/nests/remove",
+        "parent_group=artists&member_group=riggers",
+    )
+    .await;
+    post_admin_form(
+        app.clone(),
+        &admin_cookie,
+        "/admin/users",
+        &format!("/admin/users/{}/disable", alice.id),
+        "",
+    )
+    .await;
+    post_admin_form(
+        app,
+        &admin_cookie,
+        "/admin/repositories",
+        "/admin/repositories/urc-game-assets/disable",
+        "",
+    )
+    .await;
+
+    let entries = store.admin_audit_entries();
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.actor == "admin@example.com"),
+        "{entries:?}"
+    );
+    assert_eq!(
+        audit_action_counts(&entries),
+        BTreeMap::from([
+            ("grant.add", 1),
+            ("grant.remove", 1),
+            ("group.add", 2),
+            ("group.member.add", 1),
+            ("group.member.remove", 1),
+            ("group.nest.add", 1),
+            ("group.nest.remove", 1),
+            ("repository.add", 1),
+            ("repository.disable", 1),
+            ("user.add", 1),
+            ("user.disable", 1),
+            ("user.invite", 1),
+        ])
+    );
+}
+
+#[tokio::test]
+async fn admin_group_nesting_post_is_rejected_when_backend_is_not_rebac() {
+    let (app, store, _) = new_test_app_with_admin(
+        fake_idp(),
+        AdminConfig {
+            admin_emails: vec!["admin@example.com".to_owned()],
+            allow_group_nesting: false,
+            ..AdminConfig::default()
+        },
+    );
+    let admin_cookie = admin_session_cookie(&store).await;
+    store.add_group("artists", "").await.expect("add artists");
+    store.add_group("riggers", "").await.expect("add riggers");
+    let csrf = admin_csrf(app.clone(), &admin_cookie, "/admin/groups").await;
+
+    let response = app
+        .oneshot(post_form_request(
+            "/admin/groups/nests/add",
+            Some(admin_cookie),
+            &format!("csrf_token={csrf}&parent_group=artists&member_group=riggers"),
+        ))
+        .await
+        .expect("nest add response");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_text(response).await;
+    assert!(body.contains("authz.backend: rebac"), "{body}");
+    assert!(store.admin_audit_entries().is_empty());
+}
+
 #[test]
 fn admin_static_asset_hashes_match_notice() {
     assert_eq!(
@@ -1002,7 +1390,7 @@ async fn new_sqlite_rebac_admin_app() -> SqliteAdminApp {
         signer_store.clone(),
         Some(signer_store.clone()),
     ));
-    let resources = Arc::new(ResourceService::new(resource_store.clone()));
+    let resources: Arc<dyn ResourceQuery> = store.clone();
     let permissions = Arc::new(PermissionService::new(resource_store, authz_policy));
 
     let app = build_router(
@@ -1022,6 +1410,7 @@ async fn new_sqlite_rebac_admin_app() -> SqliteAdminApp {
             resources,
             permissions,
             accounts: store.clone(),
+            admin_writes: Arc::new(sqlite::AuditedStoreFactory::new((*store).clone())),
             groups: store.clone(),
             grants: store.clone(),
             state: store.clone(),
@@ -1040,7 +1429,7 @@ async fn new_sqlite_rebac_admin_app() -> SqliteAdminApp {
 
 fn admin_app_with_custom_ports(
     store: Arc<memory::Store>,
-    accounts: Arc<dyn AccountDirectory>,
+    accounts: Arc<dyn AccountQuery>,
     permissions: Arc<PermissionService>,
 ) -> Router {
     let tokens = Arc::new(TokenService::new(
@@ -1057,7 +1446,7 @@ fn admin_app_with_custom_ports(
         store.clone(),
         Some(store.clone()),
     ));
-    let resources = Arc::new(ResourceService::new(store.clone()));
+    let resources: Arc<dyn ResourceQuery> = store.clone();
     build_router(
         HttpConfig {
             public_base_url: "https://auth.example.com".to_owned(),
@@ -1075,6 +1464,7 @@ fn admin_app_with_custom_ports(
             resources,
             permissions,
             accounts,
+            admin_writes: Arc::new(memory::AuditedStoreFactory::new((*store).clone())),
             groups: store.clone(),
             grants: store.clone(),
             state: store.clone(),
@@ -1124,6 +1514,17 @@ impl AccountDirectory for FailingAccounts {
         self.inner.add_invitation(input).await
     }
 
+    async fn disable_user(&self, user_id_or_email: &str) -> Result<(), CoreError> {
+        self.inner.disable_user(user_id_or_email).await
+    }
+
+    async fn enable_user(&self, user_id_or_email: &str) -> Result<(), CoreError> {
+        self.inner.enable_user(user_id_or_email).await
+    }
+}
+
+#[async_trait]
+impl AccountQuery for FailingAccounts {
     async fn user_by_id(&self, user_id: &str) -> Result<model::User, CoreError> {
         self.inner.user_by_id(user_id).await
     }
@@ -1200,7 +1601,7 @@ fn new_test_app_with_admin(
         store.clone(),
         tokens.clone(),
     ));
-    let resources = Arc::new(ResourceService::new(store.clone()));
+    let resources: Arc<dyn ResourceQuery> = store.clone();
     let permissions = Arc::new(PermissionService::new(store.clone(), store.clone()));
     let device = Arc::new(DeviceService::new(
         DeviceConfig {
@@ -1232,6 +1633,7 @@ fn new_test_app_with_admin(
                 resources,
                 permissions,
                 accounts: store.clone(),
+                admin_writes: Arc::new(memory::AuditedStoreFactory::new((*store).clone())),
                 groups: store.clone(),
                 grants: store.clone(),
                 state: store.clone(),
@@ -1322,6 +1724,68 @@ fn peer_request(path: &str, cookie: Option<String>, ip: [u8; 4]) -> Request<Body
         .extensions_mut()
         .insert(ConnectInfo(SocketAddr::from((ip, 43_210))));
     request
+}
+
+fn post_form_request(path: &str, cookie: Option<String>, body: &str) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    let mut request = builder.body(Body::from(body.to_owned())).unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 43_210))));
+    request
+}
+
+async fn admin_csrf(app: Router, cookie: &str, path: &str) -> String {
+    let response = app
+        .oneshot(peer_request(path, Some(cookie.to_owned()), [127, 0, 0, 1]))
+        .await
+        .expect("admin csrf page response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await;
+    extract_csrf(&body)
+}
+
+async fn post_admin_form(
+    app: Router,
+    cookie: &str,
+    csrf_path: &str,
+    post_path: &str,
+    fields: &str,
+) {
+    let csrf = admin_csrf(app.clone(), cookie, csrf_path).await;
+    let separator = if fields.is_empty() { "" } else { "&" };
+    let body = format!("csrf_token={csrf}{separator}{fields}");
+    let response = app
+        .oneshot(post_form_request(post_path, Some(cookie.to_owned()), &body))
+        .await
+        .expect("admin post response");
+    assert_eq!(response.status(), StatusCode::OK, "{post_path}");
+}
+
+fn extract_csrf(body: &str) -> String {
+    let marker = "name=\"csrf_token\" value=\"";
+    let tail = body
+        .split_once(marker)
+        .unwrap_or_else(|| panic!("csrf input missing from body: {body}"))
+        .1;
+    tail.split_once('"')
+        .unwrap_or_else(|| panic!("csrf value missing from body: {body}"))
+        .0
+        .to_owned()
+}
+
+fn audit_action_counts(entries: &[model::AdminAuditEntry]) -> BTreeMap<&str, usize> {
+    let mut out = BTreeMap::new();
+    for entry in entries {
+        *out.entry(entry.action.as_str()).or_insert(0) += 1;
+    }
+    out
 }
 
 async fn decode_json<T: for<'de> Deserialize<'de>>(response: axum::response::Response) -> T {

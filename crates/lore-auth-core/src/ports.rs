@@ -6,8 +6,36 @@ use async_trait::async_trait;
 
 use crate::{CoreError, model};
 
+#[derive(Clone)]
+pub struct AdminWritePorts {
+    pub accounts: Arc<dyn AccountDirectory>,
+    pub resources: Arc<dyn ResourceStore>,
+    pub groups: Arc<dyn GroupAdmin>,
+    pub grants: Arc<dyn GrantAdmin>,
+}
+
+/// Creates actor-scoped admin write ports.
+///
+/// Implementations must make each mutating operation and its `admin_audit`
+/// record atomic. If audit recording fails, the mutation must be rolled back
+/// and reported as [`CoreError::AdminAuditFailed`].
+pub trait AdminWritePortFactory: Send + Sync {
+    fn for_actor(&self, actor: &str) -> AdminWritePorts;
+}
+
 #[async_trait]
-pub trait AccountDirectory: Send + Sync {
+pub trait AccountQuery: Send + Sync {
+    async fn user_by_id(&self, user_id: &str) -> Result<model::User, CoreError>;
+
+    /// Lists non-deleted users matching the optional query, capped by `limit`.
+    async fn list_users(
+        &self,
+        filter: model::UserListFilter,
+    ) -> Result<Vec<model::User>, CoreError>;
+}
+
+#[async_trait]
+pub trait AccountDirectory: AccountQuery {
     async fn resolve_login(
         &self,
         req: model::LoginResolutionRequest,
@@ -28,13 +56,9 @@ pub trait AccountDirectory: Send + Sync {
         input: model::AddInvitationInput,
     ) -> Result<(model::User, model::IdentityInvitation), CoreError>;
 
-    async fn user_by_id(&self, user_id: &str) -> Result<model::User, CoreError>;
+    async fn disable_user(&self, user_id_or_email: &str) -> Result<(), CoreError>;
 
-    /// Lists non-deleted users matching the optional query, capped by `limit`.
-    async fn list_users(
-        &self,
-        filter: model::UserListFilter,
-    ) -> Result<Vec<model::User>, CoreError>;
+    async fn enable_user(&self, user_id_or_email: &str) -> Result<(), CoreError>;
 }
 
 #[async_trait]
@@ -105,13 +129,17 @@ pub trait IdentityProviderRegistry: Send + Sync {
 }
 
 #[async_trait]
-pub trait ResourceStore: Send + Sync {
-    async fn upsert(&self, resource: model::Resource) -> Result<(), CoreError>;
-    async fn delete(&self, resource_id: &str) -> Result<(), CoreError>;
+pub trait ResourceQuery: Send + Sync {
     async fn get_by_id(&self, id: &str) -> Result<model::Resource, CoreError>;
     async fn get_by_resource_id(&self, resource_id: &str) -> Result<model::Resource, CoreError>;
     async fn get_by_name(&self, name: &str) -> Result<model::Resource, CoreError>;
     async fn list(&self) -> Result<Vec<model::Resource>, CoreError>;
+}
+
+#[async_trait]
+pub trait ResourceStore: ResourceQuery {
+    async fn upsert(&self, resource: model::Resource) -> Result<(), CoreError>;
+    async fn delete(&self, resource_id: &str) -> Result<(), CoreError>;
 }
 
 #[async_trait]
@@ -224,12 +252,16 @@ pub trait AdminAuditLog: Send + Sync {
 }
 
 #[async_trait]
-pub trait GroupAdmin: Send + Sync {
-    async fn add_group(&self, name: &str, description: &str) -> Result<model::Group, CoreError>;
+pub trait GroupQuery: Send + Sync {
     async fn list_groups(&self) -> Result<Vec<model::Group>, CoreError>;
     /// Lists direct user members. Deleted users must not be returned.
     async fn list_group_members(&self, group: &str) -> Result<Vec<model::User>, CoreError>;
     async fn list_group_groups(&self, group: &str) -> Result<Vec<model::Group>, CoreError>;
+}
+
+#[async_trait]
+pub trait GroupAdmin: Send + Sync {
+    async fn add_group(&self, name: &str, description: &str) -> Result<model::Group, CoreError>;
     async fn add_group_member(&self, group: &str, user_email_or_id: &str) -> Result<(), CoreError>;
     async fn remove_group_member(
         &self,
@@ -249,6 +281,11 @@ pub trait GroupAdmin: Send + Sync {
 }
 
 #[async_trait]
+pub trait GrantQuery: Send + Sync {
+    async fn list_grants(&self, repo: &str) -> Result<Vec<model::Grant>, CoreError>;
+}
+
+#[async_trait]
 pub trait GrantAdmin: Send + Sync {
     async fn add_grant(
         &self,
@@ -265,8 +302,6 @@ pub trait GrantAdmin: Send + Sync {
         repo: &str,
         role: &str,
     ) -> Result<(), CoreError>;
-
-    async fn list_grants(&self, repo: &str) -> Result<Vec<model::Grant>, CoreError>;
 }
 
 #[async_trait]

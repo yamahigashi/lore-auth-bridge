@@ -278,6 +278,7 @@ pub trait KeyAdminStore: Send + Sync {
     async fn add_signing_key_meta(
         &self,
         key: model::SigningKeyMeta,
+        bits: u32,
     ) -> std::result::Result<model::SigningKeyMeta, CoreError>;
 
     async fn signing_key_by_kid(
@@ -295,6 +296,7 @@ impl KeyAdminStore for crate::sqlite::Store {
     async fn add_signing_key_meta(
         &self,
         key: model::SigningKeyMeta,
+        _bits: u32,
     ) -> std::result::Result<model::SigningKeyMeta, CoreError> {
         crate::sqlite::Store::add_signing_key_meta(self, key).await
     }
@@ -310,6 +312,30 @@ impl KeyAdminStore for crate::sqlite::Store {
         &self,
     ) -> std::result::Result<Vec<model::SigningKeyMeta>, CoreError> {
         <crate::sqlite::Store as SigningKeyAdminPort>::list_keys(self).await
+    }
+}
+
+#[async_trait]
+impl KeyAdminStore for crate::sqlite::AuditedStore {
+    async fn add_signing_key_meta(
+        &self,
+        key: model::SigningKeyMeta,
+        bits: u32,
+    ) -> std::result::Result<model::SigningKeyMeta, CoreError> {
+        crate::sqlite::AuditedStore::add_signing_key_meta(self, key, bits).await
+    }
+
+    async fn signing_key_by_kid(
+        &self,
+        kid: &str,
+    ) -> std::result::Result<model::SigningKeyMeta, CoreError> {
+        crate::sqlite::AuditedStore::signing_key_by_kid(self, kid).await
+    }
+
+    async fn list_signing_key_meta(
+        &self,
+    ) -> std::result::Result<Vec<model::SigningKeyMeta>, CoreError> {
+        crate::sqlite::AuditedStore::list_keys(self).await
     }
 }
 
@@ -374,7 +400,7 @@ where
             private_key_path: private_path.display().to_string(),
             status: "active".to_owned(),
         };
-        match self.store.add_signing_key_meta(meta).await {
+        match self.store.add_signing_key_meta(meta, bits).await {
             Ok(meta) => Ok(meta),
             Err(err) => {
                 let _ = fs::remove_file(private_path);

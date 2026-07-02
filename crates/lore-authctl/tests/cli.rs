@@ -1,11 +1,12 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
 
 use lore_auth_adapters::{config, sqlite::Store};
-use lore_auth_core::ports::GrantAdmin;
+use lore_auth_core::ports::{AccountQuery, GrantQuery};
 
 fn authctl() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_lore-authctl"))
@@ -99,6 +100,14 @@ fn list_admin_audit(config: &Path) -> Vec<lore_auth_core::model::AdminAuditEntry
                 .expect("migrate sqlite for audit read");
             store.list_admin_audit().await.expect("list admin audit")
         })
+}
+
+fn action_counts(entries: &[lore_auth_core::model::AdminAuditEntry]) -> BTreeMap<&str, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in entries {
+        *counts.entry(entry.action.as_str()).or_default() += 1;
+    }
+    counts
 }
 
 fn install_admin_audit_failure_trigger(config: &Path) {
@@ -209,14 +218,38 @@ fn authctl_grant_add_records_admin_audit() {
             "writer",
         ],
     ));
+    assert_success(run(
+        &config,
+        &[
+            "grant",
+            "remove",
+            "user:alice@example.com",
+            "game-assets",
+            "writer",
+        ],
+    ));
 
     let entries = list_admin_audit(&config);
-
-    assert_eq!(entries.len(), 1);
-    assert!(entries[0].actor.starts_with("authctl:"), "{entries:?}");
-    assert_eq!(entries[0].action, "grant.add");
-    assert_eq!(entries[0].object_type, "grant");
-    assert!(entries[0].detail.contains("repo=game-assets"));
+    assert_eq!(
+        action_counts(&entries),
+        BTreeMap::from([
+            ("grant.add", 1),
+            ("grant.remove", 1),
+            ("repository.add", 1),
+            ("user.add", 1),
+        ])
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.actor.starts_with("authctl:"))
+    );
+    let grant = entries
+        .iter()
+        .find(|entry| entry.action == "grant.add")
+        .expect("grant audit entry");
+    assert_eq!(grant.object_type, "grant");
+    assert!(grant.detail.contains("repo=game-assets"));
 }
 
 #[test]
@@ -237,31 +270,44 @@ fn authctl_group_commands_record_admin_audit() {
         &config,
         &["group", "member", "add", "artists", "alice@example.com"],
     ));
+    assert_success(run(
+        &config,
+        &["group", "member", "remove", "artists", "alice@example.com"],
+    ));
     assert_success(run(&config, &["group", "add", "leads"]));
     assert_success(run(&config, &["group", "nest", "add", "leads", "artists"]));
+    assert_success(run(
+        &config,
+        &["group", "nest", "remove", "leads", "artists"],
+    ));
 
     let entries = list_admin_audit(&config);
-    let actions: Vec<_> = entries.iter().map(|entry| entry.action.as_str()).collect();
-
     assert_eq!(
-        actions,
-        [
-            "group.add",
-            "group.member.add",
-            "group.add",
-            "group.nest.add"
-        ]
+        action_counts(&entries),
+        BTreeMap::from([
+            ("group.add", 2),
+            ("group.member.add", 1),
+            ("group.member.remove", 1),
+            ("group.nest.add", 1),
+            ("group.nest.remove", 1),
+            ("user.add", 1),
+        ])
     );
     assert!(
         entries
             .iter()
             .all(|entry| entry.actor.starts_with("authctl:"))
     );
-    assert!(entries.iter().all(|entry| entry.object_type == "group"));
+    assert!(
+        entries
+            .iter()
+            .filter(|entry| entry.action.starts_with("group."))
+            .all(|entry| entry.object_type == "group")
+    );
 }
 
 #[test]
-fn authctl_reports_mutation_completed_when_audit_logging_fails() {
+fn authctl_rolls_back_mutation_when_audit_logging_fails() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = write_config(dir.path());
 
@@ -296,7 +342,7 @@ fn authctl_reports_mutation_completed_when_audit_logging_fails() {
     ));
 
     assert!(
-        stderr.contains("operation succeeded but audit logging failed"),
+        stderr.contains("operation rolled back because audit logging failed"),
         "{stderr}",
     );
     assert!(stderr.contains("audit offline"), "{stderr}");
@@ -307,14 +353,119 @@ fn authctl_reports_mutation_completed_when_audit_logging_fails() {
         .block_on(async {
             let store = Store::open(&cfg.database.path).await.expect("open sqlite");
             store.migrate().await.expect("migrate sqlite");
-            let user = store
-                .resolve_user("alice@example.com")
-                .await
-                .expect("resolve user");
             let grants = store.list_grants("game-assets").await.expect("list grants");
-            assert_eq!(grants.len(), 1);
-            assert_eq!(grants[0].subject_id, user.id);
+            assert!(
+                grants.is_empty(),
+                "grant mutation must roll back when audit insert fails"
+            );
         });
+}
+
+#[test]
+fn authctl_user_repo_and_signing_key_writes_record_admin_audit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config(dir.path());
+
+    assert_success(run(&config, &["init-db"]));
+    assert_success(run(
+        &config,
+        &["user", "add", "--email", "alice@example.com"],
+    ));
+    assert_success(run(
+        &config,
+        &[
+            "user",
+            "invite",
+            "--provider",
+            "google",
+            "--issuer",
+            "https://accounts.google.com",
+            "--email",
+            "bob@example.com",
+        ],
+    ));
+    assert_success(run(&config, &["user", "disable", "alice@example.com"]));
+    assert_success(run(
+        &config,
+        &[
+            "repo",
+            "add",
+            "game-assets",
+            "--remote",
+            "lore://127.0.0.1:41337",
+            "--lore-repository-id",
+            "0194b726b34e72b0b45550b88a967076",
+        ],
+    ));
+    assert_success(run(
+        &config,
+        &[
+            "signing-key",
+            "generate",
+            "--kid",
+            "audit-key",
+            "--bits",
+            "2048",
+        ],
+    ));
+
+    let entries = list_admin_audit(&config);
+    assert_eq!(
+        action_counts(&entries),
+        BTreeMap::from([
+            ("repository.add", 1),
+            ("signing_key.generate", 1),
+            ("user.add", 1),
+            ("user.disable", 1),
+            ("user.invite", 1),
+        ])
+    );
+    let signing_key = entries
+        .iter()
+        .find(|entry| entry.action == "signing_key.generate")
+        .expect("signing key audit");
+    assert_eq!(signing_key.object_type, "signing_key");
+    assert!(signing_key.detail.contains("kid=audit-key"));
+    assert!(signing_key.detail.contains("alg=RS256"));
+    assert!(signing_key.detail.contains("bits=2048"));
+    assert!(!signing_key.detail.contains("PRIVATE KEY"));
+    assert!(!signing_key.detail.contains(".pem"));
+}
+
+#[test]
+fn authctl_user_enable_reactivates_user_and_records_admin_audit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config(dir.path());
+
+    assert_success(run(&config, &["init-db"]));
+    assert_success(run(
+        &config,
+        &["user", "add", "--email", "alice@example.com"],
+    ));
+    assert_success(run(&config, &["user", "disable", "alice@example.com"]));
+    assert_success(run(&config, &["user", "enable", "alice@example.com"]));
+
+    let cfg = config::load(&config).expect("config loads");
+    tokio::runtime::Runtime::new()
+        .expect("tokio runtime")
+        .block_on(async {
+            let store = Store::open(&cfg.database.path).await.expect("open sqlite");
+            store.migrate().await.expect("migrate sqlite");
+            let users = store
+                .list_users(lore_auth_core::model::UserListFilter {
+                    query: "alice".to_owned(),
+                    limit: 10,
+                })
+                .await
+                .expect("list users");
+            assert_eq!(users[0].status, "active");
+        });
+
+    let entries = list_admin_audit(&config);
+    assert_eq!(
+        action_counts(&entries),
+        BTreeMap::from([("user.add", 1), ("user.disable", 1), ("user.enable", 1)])
+    );
 }
 
 #[test]

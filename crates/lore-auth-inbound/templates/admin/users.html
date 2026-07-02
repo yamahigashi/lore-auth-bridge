@@ -8,5 +8,25 @@
     <button type="submit">{{ self.t("admin.search.submit") }}</button>
   </form>
 </section>
+<section>
+  <h2>{{ self.t("admin.users.add") }}</h2>
+  <form method="post" action="/admin/users">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="email" name="email" placeholder='{{ self.t("admin.users.email") }}' aria-label='{{ self.t("admin.users.email") }}'>
+    <input type="text" name="display_name" placeholder='{{ self.t("admin.users.display_name") }}' aria-label='{{ self.t("admin.users.display_name") }}'>
+    <button type="submit">{{ self.t("admin.common.add") }}</button>
+  </form>
+</section>
+<section>
+  <h2>{{ self.t("admin.users.invite") }}</h2>
+  <form method="post" action="/admin/users/invite">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="provider_id" value="google" aria-label='{{ self.t("admin.users.provider_id") }}'>
+    <input type="url" name="issuer" value="https://accounts.google.com" aria-label='{{ self.t("admin.users.issuer") }}'>
+    <input type="email" name="email" placeholder='{{ self.t("admin.users.email") }}' aria-label='{{ self.t("admin.users.email") }}'>
+    <input type="text" name="display_name" placeholder='{{ self.t("admin.users.display_name") }}' aria-label='{{ self.t("admin.users.display_name") }}'>
+    <button type="submit">{{ self.t("admin.common.add") }}</button>
+  </form>
+</section>
 {% include "admin/users_table.html" %}
 {% endblock %}

@@ -13,6 +13,7 @@
         <th scope="col">{{ self.t("admin.repositories.resource_id") }}</th>
         <th scope="col">{{ self.t("admin.common.status") }}</th>
         <th scope="col">{{ self.t("admin.repositories.grants") }}</th>
+        <th scope="col">{{ self.t("admin.common.actions") }}</th>
       </tr>
     </thead>
     <tbody>
@@ -28,10 +29,26 @@
           {% else %}
           <ul>
             {% for grant in repo.grants %}
-            <li>{{ grant.subject }}: {{ grant.role }}</li>
+            <li>
+              {{ grant.subject }}: {{ grant.role }}
+              <form method="post" action="/admin/repositories/grants/remove" hx-confirm='{{ self.t("admin.common.confirm") }}'>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="repo" value="{{ repo.name }}">
+                <input type="hidden" name="subject_type" value="{{ grant.subject_type }}">
+                <input type="hidden" name="subject_id" value="{{ grant.subject_id }}">
+                <input type="hidden" name="role" value="{{ grant.role }}">
+                <button type="submit">{{ self.t("admin.common.remove") }}</button>
+              </form>
+            </li>
             {% endfor %}
           </ul>
           {% endif %}
+        </td>
+        <td>
+          <form method="post" action="/admin/repositories/{{ repo.resource_id_path }}/disable" hx-confirm='{{ self.t("admin.common.confirm") }}'>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">{{ self.t("admin.common.disable") }}</button>
+          </form>
         </td>
       </tr>
       {% endfor %}

@@ -13,6 +13,7 @@
         <th scope="col">{{ self.t("admin.common.status") }}</th>
         <th scope="col">{{ self.t("admin.users.last_login") }}</th>
         <th scope="col">{{ self.t("admin.users.access") }}</th>
+        <th scope="col">{{ self.t("admin.common.actions") }}</th>
       </tr>
     </thead>
     <tbody>
@@ -22,7 +23,15 @@
         <td>{{ user.display_name }}</td>
         <td>{{ user.status }}</td>
         <td>{{ user.last_login }}</td>
-        <td><a href="/admin/users/{{ user.id }}/access">{{ self.t("admin.users.access_link") }}</a></td>
+        <td><a href="/admin/users/{{ user.id_path }}/access">{{ self.t("admin.users.access_link") }}</a></td>
+        <td>
+          {% if user.id != current_user_id %}
+          <form method="post" action="/admin/users/{{ user.id_path }}/disable" hx-confirm='{{ self.t("admin.common.confirm") }}'>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit">{{ self.t("admin.common.disable") }}</button>
+          </form>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

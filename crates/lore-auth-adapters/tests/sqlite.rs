@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use lore_auth_adapters::sqlite::{CreateDeviceAuthorizationParams, Store};
 use lore_auth_core::{
@@ -8,10 +8,10 @@ use lore_auth_core::{
         LoginStateInput, LoginTrustPolicy, Resource, ResourceID, SigningKeyMeta, UserListFilter,
     },
     ports::{
-        AccountDirectory, AdminAuditLog, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin,
-        GroupAdmin, IssuedTokenLog, ResourceStore, SigningKeyAdmin, StateStore,
+        AccountDirectory, AccountQuery, AdminAuditLog, AuthorizationPolicy,
+        DeviceAuthorizationStore, GrantAdmin, GrantQuery, GroupAdmin, GroupQuery, IssuedTokenLog,
+        ResourceQuery, ResourceStore, SigningKeyAdmin, StateStore,
     },
-    service::admin::AuditedGrantAdmin,
 };
 
 struct TestStore {
@@ -37,7 +37,9 @@ where
         + IssuedTokenLog
         + AdminAuditLog
         + GroupAdmin
+        + GroupQuery
         + GrantAdmin
+        + GrantQuery
         + SigningKeyAdmin
         + Send
         + Sync,
@@ -52,7 +54,7 @@ fn sqlite_store_implements_requested_core_ports() {
 #[tokio::test]
 async fn audited_sqlite_grant_write_records_admin_audit() {
     let fixture = migrated_store().await;
-    let store = Arc::new(fixture.store.clone());
+    let store = fixture.store.clone();
     let user = store
         .add_user(AddUserInput {
             email: "alice@example.com".to_owned(),
@@ -70,7 +72,7 @@ async fn audited_sqlite_grant_write_records_admin_audit() {
         })
         .await
         .expect("upsert repo");
-    let grants = AuditedGrantAdmin::new(store.clone(), store.clone(), "authctl:test-user");
+    let grants = store.audited("authctl:test-user");
 
     let grant = grants
         .add_grant("user", &user.id, "game-assets", "writer")
@@ -84,6 +86,183 @@ async fn audited_sqlite_grant_write_records_admin_audit() {
     assert_eq!(entries[0].object_type, "grant");
     assert_eq!(entries[0].object_id, grant.id);
     assert!(entries[0].detail.contains("repo=game-assets"));
+}
+
+#[tokio::test]
+async fn audited_sqlite_rolls_back_mutation_when_admin_audit_insert_fails() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    store
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: ResourceID::for_repository_id("repo-id").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo");
+    rusqlite::Connection::open(fixture._dir.path().join("test.sqlite3"))
+        .expect("open sqlite fixture directly")
+        .execute_batch(
+            r#"
+            CREATE TRIGGER fail_admin_audit
+            BEFORE INSERT ON admin_audit
+            BEGIN
+              SELECT RAISE(FAIL, 'audit offline');
+            END;
+            "#,
+        )
+        .expect("install audit failure trigger");
+
+    let err = store
+        .audited("authctl:test-user")
+        .add_grant("user", &user.id, "game-assets", "writer")
+        .await
+        .expect_err("audited grant must fail closed");
+
+    assert!(matches!(err, CoreError::AdminAuditFailed(_)));
+    assert!(
+        err.to_string()
+            .contains("operation rolled back because audit logging failed"),
+        "{err}"
+    );
+    assert!(
+        store
+            .list_grants("game-assets")
+            .await
+            .expect("list grants")
+            .is_empty(),
+        "grant mutation must roll back with audit failure"
+    );
+}
+
+#[tokio::test]
+async fn audited_sqlite_rolls_back_user_disable_when_admin_audit_insert_fails() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    rusqlite::Connection::open(fixture._dir.path().join("test.sqlite3"))
+        .expect("open sqlite fixture directly")
+        .execute_batch(
+            r#"
+            CREATE TRIGGER fail_admin_audit
+            BEFORE INSERT ON admin_audit
+            BEGIN
+              SELECT RAISE(FAIL, 'audit offline');
+            END;
+            "#,
+        )
+        .expect("install audit failure trigger");
+
+    let err = store
+        .audited("admin@example.com")
+        .disable_user(&user.id)
+        .await
+        .expect_err("audit failure should fail user disable");
+
+    assert!(matches!(err, CoreError::AdminAuditFailed(_)));
+    let after = store.user_by_id(&user.id).await.expect("user remains");
+    assert_eq!(after.status, "active");
+}
+
+#[tokio::test]
+async fn audited_sqlite_rolls_back_repository_add_when_admin_audit_insert_fails() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    rusqlite::Connection::open(fixture._dir.path().join("test.sqlite3"))
+        .expect("open sqlite fixture directly")
+        .execute_batch(
+            r#"
+            CREATE TRIGGER fail_admin_audit
+            BEFORE INSERT ON admin_audit
+            BEGIN
+              SELECT RAISE(FAIL, 'audit offline');
+            END;
+            "#,
+        )
+        .expect("install audit failure trigger");
+
+    let err = store
+        .audited("admin@example.com")
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: ResourceID::for_repository_id("repo-id").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect_err("audit failure should fail repo add");
+
+    assert!(matches!(err, CoreError::AdminAuditFailed(_)));
+    assert!(matches!(
+        store.get_by_name("game-assets").await,
+        Err(CoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn sqlite_rejects_invalid_admin_write_inputs() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+
+    assert!(matches!(
+        store
+            .add_user(AddUserInput {
+                email: "alice example.com".to_owned(),
+                ..AddUserInput::default()
+            })
+            .await,
+        Err(CoreError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        store
+            .add_invitation(AddInvitationInput {
+                provider_id: "google".to_owned(),
+                issuer: "https://accounts.google.com".to_owned(),
+                email: "alice".to_owned(),
+                ..AddInvitationInput::default()
+            })
+            .await,
+        Err(CoreError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        store
+            .upsert(Resource {
+                name: "bad".to_owned(),
+                remote_url: "lore://example".to_owned(),
+                lore_repository_id: "bad/repo".to_owned(),
+                ..Resource::default()
+            })
+            .await,
+        Err(CoreError::InvalidArgument(_))
+    ));
+    store
+        .upsert(Resource {
+            name: "ok".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: " repo-id_123 ".to_owned(),
+            ..Resource::default()
+        })
+        .await
+        .expect("trimmed repository id is accepted");
+    let repo = store.get_by_name("ok").await.expect("repo exists");
+    assert_eq!(repo.lore_repository_id, "repo-id_123");
+    assert_eq!(repo.resource_id, "urc-repo-id_123");
 }
 
 #[tokio::test]
@@ -427,6 +606,81 @@ async fn group_and_grant_crud_updates_authorization() {
             .expect("list grants after remove"),
         Vec::new()
     );
+}
+
+#[tokio::test]
+async fn sqlite_grant_resolves_group_name_to_internal_id_before_authorization() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    store
+        .add_group("artists", "Art team")
+        .await
+        .expect("add group");
+    store
+        .add_group_member("artists", &user.id)
+        .await
+        .expect("add group member");
+    let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
+    store
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: resource_id.clone(),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo");
+
+    let grant = store
+        .audited("admin@example.com")
+        .add_grant("group", "artists", "game-assets", "writer")
+        .await
+        .expect("add group grant by name");
+
+    assert_ne!(grant.subject_id, "artists");
+    assert!(
+        store
+            .can_access(&user.id, &resource_id, "write")
+            .await
+            .expect("group name grant is effective")
+    );
+}
+
+#[tokio::test]
+async fn sqlite_grant_rejects_unknown_subject_type_and_missing_subject() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    store
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: ResourceID::for_repository_id("repo-id").expect("resource id"),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo");
+
+    assert!(matches!(
+        store
+            .add_grant("team", "artists", "game-assets", "writer")
+            .await,
+        Err(CoreError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        store
+            .add_grant("group", "missing", "game-assets", "writer")
+            .await,
+        Err(CoreError::InvalidArgument(_))
+    ));
 }
 
 #[tokio::test]

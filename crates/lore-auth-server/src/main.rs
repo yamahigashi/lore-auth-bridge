@@ -6,8 +6,8 @@ use lore_auth_adapters::{authz, config, device, idpregistry, oidc, rs256, sqlite
 use lore_auth_core::{
     CoreError,
     ports::{
-        AccountDirectory, AuthorizationPolicy, DeviceAuthorizationStore, GrantAdmin, GroupAdmin,
-        IssuedTokenLog, ResourceStore, StateStore, TokenSigner,
+        AccountDirectory, AccountQuery, AuthorizationPolicy, DeviceAuthorizationStore, GrantQuery,
+        GroupQuery, IssuedTokenLog, ResourceQuery, ResourceStore, StateStore, TokenSigner,
     },
     service::{
         device::{DeviceConfig, DeviceService},
@@ -141,13 +141,17 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
     let signer = Arc::new(load_signer(cfg, &store).await?);
 
     let accounts: Arc<dyn AccountDirectory> = store.clone();
+    let account_query: Arc<dyn AccountQuery> = store.clone();
+    let admin_writes: Arc<dyn lore_auth_core::ports::AdminWritePortFactory> =
+        Arc::new(sqlite::AuditedStoreFactory::new((*store).clone()));
     let resource_store: Arc<dyn ResourceStore> = store.clone();
+    let resource_query: Arc<dyn ResourceQuery> = store.clone();
     let authz = build_authorization_policy(cfg, &store)?;
     let token_log: Arc<dyn IssuedTokenLog> = store.clone();
     let state_store: Arc<dyn StateStore> = store.clone();
     let device_store: Arc<dyn DeviceAuthorizationStore> = store.clone();
-    let groups: Arc<dyn GroupAdmin> = store.clone();
-    let grants: Arc<dyn GrantAdmin> = store.clone();
+    let groups: Arc<dyn GroupQuery> = store.clone();
+    let grants: Arc<dyn GrantQuery> = store.clone();
 
     let auth_service_audience = config::public_host(&cfg.server.public_base_url)
         .context("startup: public base url host")?;
@@ -221,9 +225,10 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
     let http_services = HttpServices {
         login: Some(login.clone()),
         tokens: tokens.clone(),
-        resources: resources.clone(),
+        resources: resource_query,
         permissions: permissions.clone(),
-        accounts: accounts.clone(),
+        accounts: account_query,
+        admin_writes,
         groups,
         grants,
         state: state_store,
@@ -253,6 +258,7 @@ fn admin_config(cfg: &config::Config) -> Result<InboundAdminConfig> {
     Ok(InboundAdminConfig {
         admin_emails: cfg.admin.admin_emails.clone(),
         allowed_peer_cidrs,
+        allow_group_nesting: cfg.authz.backend == "rebac",
     })
 }
 

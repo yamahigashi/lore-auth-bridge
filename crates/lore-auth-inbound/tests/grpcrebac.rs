@@ -2,7 +2,7 @@ use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
 use http::{Request, Response};
 use lore_auth_adapters::memory;
-use lore_auth_core::{ports::ResourceStore, service::resource::ResourceService};
+use lore_auth_core::{ports::ResourceQuery, service::resource::ResourceService};
 use lore_auth_inbound::grpcrebac::{
     RebacPeerAllowlistLayer, RebacServer, default_allowed_peer_cidrs, parse_allowed_peer_cidrs,
 };

@@ -12,9 +12,10 @@ use lore_auth_core::{
         VerifiedToken, VerifyOptions,
     },
     ports::{
-        AccountDirectory, AdminAuditLog, AuthorizationPolicy, BeginAuthRequest, BeginAuthResult,
-        CompleteAuthRequest, DeviceAuthorizationStore, DeviceCodeGenerator, GrantAdmin, GroupAdmin,
-        IdentityProvider, IdentityProviderDescriptor, IdentityProviderRegistry, IssuedTokenLog,
+        AccountDirectory, AccountQuery, AdminAuditLog, AuthorizationPolicy, BeginAuthRequest,
+        BeginAuthResult, CompleteAuthRequest, DeviceAuthorizationStore, DeviceCodeGenerator,
+        GrantAdmin, GrantQuery, GroupAdmin, GroupQuery, IdentityProvider,
+        IdentityProviderDescriptor, IdentityProviderRegistry, IssuedTokenLog, ResourceQuery,
         ResourceStore, SigningKeyAdmin, StateStore, TokenSigner,
     },
 };
@@ -91,6 +92,17 @@ impl AccountDirectory for NullPorts {
         Err(CoreError::InvalidArgument("missing invitation".to_owned()))
     }
 
+    async fn disable_user(&self, _user_id_or_email: &str) -> Result<(), CoreError> {
+        Err(CoreError::NotFound)
+    }
+
+    async fn enable_user(&self, _user_id_or_email: &str) -> Result<(), CoreError> {
+        Err(CoreError::NotFound)
+    }
+}
+
+#[async_trait]
+impl AccountQuery for NullPorts {
     async fn user_by_id(&self, _user_id: &str) -> Result<User, CoreError> {
         Err(CoreError::NotFound)
     }
@@ -129,7 +141,10 @@ impl ResourceStore for NullPorts {
     async fn delete(&self, _resource_id: &str) -> Result<(), CoreError> {
         Ok(())
     }
+}
 
+#[async_trait]
+impl ResourceQuery for NullPorts {
     async fn get_by_id(&self, _id: &str) -> Result<Resource, CoreError> {
         Err(CoreError::NotFound)
     }
@@ -319,18 +334,6 @@ impl GroupAdmin for NullPorts {
         Err(CoreError::InvalidArgument("missing group".to_owned()))
     }
 
-    async fn list_groups(&self) -> Result<Vec<Group>, CoreError> {
-        Ok(Vec::new())
-    }
-
-    async fn list_group_members(&self, _group: &str) -> Result<Vec<User>, CoreError> {
-        Ok(Vec::new())
-    }
-
-    async fn list_group_groups(&self, _group: &str) -> Result<Vec<Group>, CoreError> {
-        Ok(Vec::new())
-    }
-
     async fn add_group_member(
         &self,
         _group: &str,
@@ -365,6 +368,21 @@ impl GroupAdmin for NullPorts {
 }
 
 #[async_trait]
+impl GroupQuery for NullPorts {
+    async fn list_groups(&self) -> Result<Vec<Group>, CoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn list_group_members(&self, _group: &str) -> Result<Vec<User>, CoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn list_group_groups(&self, _group: &str) -> Result<Vec<Group>, CoreError> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait]
 impl GrantAdmin for NullPorts {
     async fn add_grant(
         &self,
@@ -385,7 +403,10 @@ impl GrantAdmin for NullPorts {
     ) -> Result<(), CoreError> {
         Ok(())
     }
+}
 
+#[async_trait]
+impl GrantQuery for NullPorts {
     async fn list_grants(&self, _repo: &str) -> Result<Vec<Grant>, CoreError> {
         Ok(Vec::new())
     }
@@ -411,14 +432,18 @@ impl SigningKeyAdmin for NullPorts {
 async fn all_ports_are_dyn_compatible() {
     let ports = Arc::new(NullPorts);
     let account: Arc<dyn AccountDirectory> = ports.clone();
+    let account_query: Arc<dyn AccountQuery> = ports.clone();
     let authz: Arc<dyn AuthorizationPolicy> = ports.clone();
     let resources: Arc<dyn ResourceStore> = ports.clone();
+    let resource_query: Arc<dyn ResourceQuery> = ports.clone();
     let state: Arc<dyn StateStore> = ports.clone();
     let signer: Arc<dyn TokenSigner> = ports.clone();
     let issued: Arc<dyn IssuedTokenLog> = ports.clone();
     let admin_audit: Arc<dyn AdminAuditLog> = ports.clone();
     let groups: Arc<dyn GroupAdmin> = ports.clone();
+    let group_query: Arc<dyn GroupQuery> = ports.clone();
     let grants: Arc<dyn GrantAdmin> = ports.clone();
+    let grant_query: Arc<dyn GrantQuery> = ports.clone();
     let keys: Arc<dyn SigningKeyAdmin> = ports.clone();
     let devices: Arc<dyn DeviceAuthorizationStore> = ports.clone();
     let codes: Arc<dyn DeviceCodeGenerator> = ports;
@@ -436,24 +461,45 @@ async fn all_ports_are_dyn_compatible() {
         "null"
     );
     assert!(account.principal_by_user_id("u").await.is_err());
-    assert!(resources.list().await.expect("resource list").is_empty());
+    assert!(account_query.list_users(Default::default()).await.is_ok());
+    assert!(
+        resource_query
+            .list()
+            .await
+            .expect("resource list")
+            .is_empty()
+    );
+    assert!(resources.delete("urc-r").await.is_ok());
     assert!(state.get_auth_session_by_code("c").await.is_err());
     assert!(signer.jwks().await.is_err());
     assert!(issued.record(IssuedToken::default()).await.is_ok());
     assert!(admin_audit.record(AdminAuditEntry::default()).await.is_ok());
-    assert!(groups.list_groups().await.expect("groups").is_empty());
-    assert!(grants.list_grants("repo").await.expect("grants").is_empty());
+    assert!(groups.add_group("g", "").await.is_err());
+    assert!(group_query.list_groups().await.expect("groups").is_empty());
+    assert!(
+        grant_query
+            .list_grants("repo")
+            .await
+            .expect("grants")
+            .is_empty()
+    );
+    assert!(
+        grants
+            .remove_grant("user", "u", "repo", "reader")
+            .await
+            .is_ok()
+    );
     assert!(keys.list_keys().await.expect("keys").is_empty());
     assert!(devices.device_by_user_code("code").await.is_err());
     assert!(codes.device_code().is_err());
 }
 
 #[test]
-fn admin_audit_failure_display_says_mutation_already_succeeded() {
+fn admin_audit_failure_display_says_mutation_rolled_back() {
     let err = CoreError::AdminAuditFailed("audit offline".to_owned());
 
     assert_eq!(
         err.to_string(),
-        "operation succeeded but audit logging failed: audit offline"
+        "operation rolled back because audit logging failed: audit offline"
     );
 }
