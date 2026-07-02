@@ -98,6 +98,87 @@ func TestSignLoreClaimsCanBeDecodedInsecurely(t *testing.T) {
 	}
 }
 
+func TestSignerUsesInputNowForIssuedAndExpiryTimes(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	key, err := GenerateSigningKey("test-kid", 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(dir, "key.pem")
+	if err := key.WritePrivatePEM(privatePath); err != nil {
+		t.Fatal(err)
+	}
+	jwkJSON, err := json.Marshal(NewRSAJWK(key.Kid, key.Alg, key.Public()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := NewSigner("test-kid", signerKeyStoreStub{active: model.SigningKeyMeta{
+		Kid:            key.Kid,
+		Alg:            key.Alg,
+		PublicJWKJSON:  string(jwkJSON),
+		PrivateKeyPath: privatePath,
+		Status:         "active",
+	}})
+	now := time.Unix(1800000000, 0).UTC()
+
+	authn, err := signer.SignAuthn(ctx, model.AuthnTokenInput{
+		Issuer:            "https://auth.example.com",
+		Audience:          []string{"lore-service", "127.0.0.1"},
+		Subject:           "google:golden-user",
+		Name:              "Golden User",
+		PreferredUsername: "golden@example.com",
+		IDP:               "google",
+		TTL:               time.Hour,
+		Now:               now,
+		JTI:               "00000000-0000-4000-8000-000000000001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authn.IssuedAt != now.Unix() || authn.ExpiresAt != now.Add(time.Hour).Unix() {
+		t.Fatalf("authn times = (%d, %d), want (%d, %d)", authn.IssuedAt, authn.ExpiresAt, now.Unix(), now.Add(time.Hour).Unix())
+	}
+	_, payload, err := DecodeInsecure(authn.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["iat"] != float64(now.Unix()) || payload["exp"] != float64(now.Add(time.Hour).Unix()) {
+		t.Fatalf("authn payload times = (%#v, %#v)", payload["iat"], payload["exp"])
+	}
+
+	authz, err := signer.SignAuthz(ctx, model.AuthzTokenInput{
+		Issuer:            "https://auth.example.com",
+		Audience:          []string{"lore-service", "127.0.0.1"},
+		Subject:           "google:golden-user",
+		Name:              "Golden User",
+		PreferredUsername: "golden@example.com",
+		IDP:               "google",
+		Resources: []model.ResourcePermission{{
+			ResourceID: "urc-0194b726b34e72b0b45550b88a967076",
+			Permission: []string{"read", "write"},
+		}},
+		TTL: 15 * time.Minute,
+		Now: now,
+		JTI: "00000000-0000-4000-8000-000000000002",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.IssuedAt != now.Unix() || authz.ExpiresAt != now.Add(15*time.Minute).Unix() {
+		t.Fatalf("authz times = (%d, %d), want (%d, %d)", authz.IssuedAt, authz.ExpiresAt, now.Unix(), now.Add(15*time.Minute).Unix())
+	}
+	_, payload, err = DecodeInsecure(authz.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["iat"] != float64(now.Unix()) || payload["exp"] != float64(now.Add(15*time.Minute).Unix()) {
+		t.Fatalf("authz payload times = (%#v, %#v)", payload["iat"], payload["exp"])
+	}
+}
+
 func TestNewLoreClaimsRejectsMissingIDP(t *testing.T) {
 	t.Parallel()
 
@@ -269,11 +350,18 @@ func TestGenerateActiveKeyRejectsPathTraversalKid(t *testing.T) {
 }
 
 type signerKeyStoreStub struct {
+	active    model.SigningKeyMeta
 	activeErr error
 }
 
 func (s signerKeyStoreStub) ActiveSigningKey(ctx context.Context, kid string) (model.SigningKeyMeta, error) {
-	return model.SigningKeyMeta{}, s.activeErr
+	if s.activeErr != nil {
+		return model.SigningKeyMeta{}, s.activeErr
+	}
+	if s.active.Kid == "" {
+		return model.SigningKeyMeta{}, model.ErrNotFound
+	}
+	return s.active, nil
 }
 
 func (s signerKeyStoreStub) SigningKeyByKID(ctx context.Context, kid string) (model.SigningKeyMeta, error) {

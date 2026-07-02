@@ -57,6 +57,7 @@ func (s *Signer) SignAuthn(ctx context.Context, input model.AuthnTokenInput) (mo
 		Groups:            input.Groups,
 		IDP:               input.IDP,
 		TTL:               input.TTL,
+		Now:               input.Now,
 		JTI:               input.JTI,
 	})
 	if err != nil {
@@ -91,6 +92,7 @@ func (s *Signer) SignAuthz(ctx context.Context, input model.AuthzTokenInput) (mo
 		IDP:               input.IDP,
 		Resources:         resources,
 		TTL:               input.TTL,
+		Now:               input.Now,
 		JTI:               input.JTI,
 	})
 	if err != nil {

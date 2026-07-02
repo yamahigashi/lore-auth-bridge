@@ -541,21 +541,32 @@ func (s *Store) SignAuthn(ctx context.Context, input model.AuthnTokenInput) (mod
 		input.JTI = uuid.NewString()
 	}
 	token := "authn:" + input.Subject + ":" + uuid.NewString()
-	expires := time.Now().Add(input.TTL).Unix()
+	now := input.Now.UTC()
+	if now.IsZero() {
+		now = time.Now()
+	}
+	expires := now.Add(input.TTL).Unix()
 	if input.TTL == 0 {
-		expires = time.Now().Add(time.Hour).Unix()
+		expires = now.Add(time.Hour).Unix()
 	}
 	s.mu.Lock()
 	s.tokens[token] = model.VerifiedToken{Subject: input.Subject, JTI: input.JTI, IDP: input.IDP, ExpiresAt: expires, Audience: append([]string(nil), input.Audience...)}
 	s.mu.Unlock()
-	return model.SignedToken{Token: token, JTI: input.JTI, Kid: "memory", IssuedAt: time.Now().Unix(), ExpiresAt: expires, Audience: input.Audience}, nil
+	return model.SignedToken{Token: token, JTI: input.JTI, Kid: "memory", IssuedAt: now.Unix(), ExpiresAt: expires, Audience: input.Audience}, nil
 }
 
 func (s *Store) SignAuthz(ctx context.Context, input model.AuthzTokenInput) (model.SignedToken, error) {
+	if input.JTI == "" {
+		input.JTI = uuid.NewString()
+	}
 	token := "authz:" + input.Subject + ":" + uuid.NewString()
-	expires := time.Now().Add(input.TTL).Unix()
+	now := input.Now.UTC()
+	if now.IsZero() {
+		now = time.Now()
+	}
+	expires := now.Add(input.TTL).Unix()
 	if input.TTL == 0 {
-		expires = time.Now().Add(15 * time.Minute).Unix()
+		expires = now.Add(15 * time.Minute).Unix()
 	}
 	firstResource := ""
 	permissions := []string(nil)
@@ -563,7 +574,7 @@ func (s *Store) SignAuthz(ctx context.Context, input model.AuthzTokenInput) (mod
 		firstResource = input.Resources[0].ResourceID
 		permissions = input.Resources[0].Permission
 	}
-	return model.SignedToken{Token: token, JTI: uuid.NewString(), Kid: "memory", LoreResourceID: firstResource, IssuedAt: time.Now().Unix(), ExpiresAt: expires, Permissions: permissions, Audience: input.Audience}, nil
+	return model.SignedToken{Token: token, JTI: input.JTI, Kid: "memory", LoreResourceID: firstResource, IssuedAt: now.Unix(), ExpiresAt: expires, Permissions: permissions, Audience: input.Audience}, nil
 }
 
 func (s *Store) Verify(ctx context.Context, compact string, opts model.VerifyOptions) (model.VerifiedToken, error) {

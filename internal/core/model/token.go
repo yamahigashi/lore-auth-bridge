@@ -14,6 +14,7 @@ type AuthnTokenInput struct {
 	Groups            []string
 	IDP               string
 	TTL               time.Duration
+	Now               time.Time
 	JTI               string
 }
 
@@ -27,6 +28,7 @@ type AuthzTokenInput struct {
 	IDP               string
 	Resources         []ResourcePermission
 	TTL               time.Duration
+	Now               time.Time
 	JTI               string
 }
 
