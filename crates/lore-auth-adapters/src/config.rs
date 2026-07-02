@@ -42,6 +42,7 @@ pub enum ConfigError {
 pub struct Config {
     pub server: ServerConfig,
     pub identity_providers: IdentityProvidersConfig,
+    pub authz: AuthzConfig,
     pub database: DatabaseConfig,
     pub jwt: JwtConfig,
     pub lore: LoreConfig,
@@ -109,6 +110,12 @@ pub struct HostedDomainTrust {
 #[serde(default, deny_unknown_fields)]
 pub struct DatabaseConfig {
     pub path: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthzConfig {
+    pub backend: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -182,6 +189,9 @@ impl Config {
         if self.jwt.ttl_seconds == 0 {
             self.jwt.ttl_seconds = 3600;
         }
+        if self.authz.backend.is_empty() {
+            self.authz.backend = "sql".to_owned();
+        }
         if self.security.device_code_ttl_seconds == 0 {
             self.security.device_code_ttl_seconds = 600;
         }
@@ -218,6 +228,14 @@ impl Config {
     fn validate(&self) -> Result<(), ConfigError> {
         if self.database.path.is_empty() {
             return Err(validation("database.path is required"));
+        }
+        match self.authz.backend.as_str() {
+            "sql" | "rebac" => {}
+            value => {
+                return Err(validation(format!(
+                    "authz.backend {value:?} must be one of sql, rebac"
+                )));
+            }
         }
         if self.server.public_base_url.is_empty() {
             return Err(validation("server.public_base_url is required"));

@@ -19,6 +19,8 @@ repository = "https://github.com/yamahigashi/lore-auth-bridge"
 [workspace.dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+# ReBAC engine (ADR 0008)。0.x のため厳密固定。更新時は全 diff レビュー必須
+authz-core = "=0.1.0"
 base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
 hex = "0.4"

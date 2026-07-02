@@ -9,6 +9,10 @@ fn authctl() -> PathBuf {
 }
 
 fn write_config(dir: &Path) -> PathBuf {
+    write_config_with_authz(dir, "sql")
+}
+
+fn write_config_with_authz(dir: &Path, authz_backend: &str) -> PathBuf {
     let db = dir.join("auth.sqlite3");
     let keys = dir.join("keys");
     let config = dir.join("auth.yaml");
@@ -21,6 +25,9 @@ server:
 
 database:
   path: "{}"
+
+authz:
+  backend: {}
 
 jwt:
   issuer: "https://auth.example.com"
@@ -36,6 +43,7 @@ lore:
   auth_url: "ucs-auth://auth.example.com"
 "#,
             db.display(),
+            authz_backend,
             keys.display()
         ),
     )
@@ -121,4 +129,45 @@ fn init_invite_repo_grant_and_list_flow() {
 
     let grants = assert_success(run(&config, &["grant", "list"]));
     assert!(grants.contains("writer"), "{grants}");
+}
+
+#[test]
+fn check_uses_configured_rebac_backend() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config_with_authz(dir.path(), "rebac");
+
+    assert_success(run(&config, &["init-db"]));
+    assert_success(run(
+        &config,
+        &["user", "add", "--email", "alice@example.com"],
+    ));
+    assert_success(run(
+        &config,
+        &[
+            "repo",
+            "add",
+            "game-assets",
+            "--remote",
+            "lore://127.0.0.1:41337",
+            "--lore-repository-id",
+            "0194b726b34e72b0b45550b88a967076",
+        ],
+    ));
+    assert_success(run(
+        &config,
+        &[
+            "grant",
+            "add",
+            "user:alice@example.com",
+            "game-assets",
+            "writer",
+        ],
+    ));
+
+    let out = assert_success(run(
+        &config,
+        &["check", "alice@example.com", "game-assets", "write"],
+    ));
+
+    assert_eq!(out.trim(), "allow");
 }

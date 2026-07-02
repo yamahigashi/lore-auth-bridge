@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use lore_auth_adapters::{config, device, idpregistry, oidc, rs256, sqlite};
+use lore_auth_adapters::{authz, config, device, idpregistry, oidc, rs256, sqlite};
 use lore_auth_core::{
     CoreError,
     ports::{
@@ -141,7 +141,7 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
 
     let accounts: Arc<dyn AccountDirectory> = store.clone();
     let resource_store: Arc<dyn ResourceStore> = store.clone();
-    let authz: Arc<dyn AuthorizationPolicy> = store.clone();
+    let authz = build_authorization_policy(cfg, &store)?;
     let token_log: Arc<dyn IssuedTokenLog> = store.clone();
     let state_store: Arc<dyn StateStore> = store.clone();
     let device_store: Arc<dyn DeviceAuthorizationStore> = store.clone();
@@ -232,6 +232,21 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
         http_config,
         http_services,
     })
+}
+
+fn build_authorization_policy(
+    cfg: &config::Config,
+    store: &Arc<sqlite::Store>,
+) -> Result<Arc<dyn AuthorizationPolicy>> {
+    match cfg.authz.backend.as_str() {
+        "sql" => Ok(store.clone()),
+        "rebac" => {
+            let policy = authz::RebacAuthorizationPolicy::from_store(store.as_ref())
+                .map_err(|err| anyhow!("startup: initialize rebac authz: {err}"))?;
+            Ok(Arc::new(policy))
+        }
+        other => Err(anyhow!("startup: unknown authz.backend {other:?}")),
+    }
 }
 
 async fn build_identity_providers(
@@ -369,7 +384,7 @@ fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,authz_core=warn")),
         )
         .try_init();
 }

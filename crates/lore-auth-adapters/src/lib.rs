@@ -14,9 +14,7 @@ pub(crate) fn ensure_jti(jti: String) -> String {
 
 pub mod config;
 
-pub mod authz {
-    //! Authorization policy adapter implementations.
-}
+pub mod authz;
 
 pub mod device;
 
@@ -25,6 +23,8 @@ pub mod idpregistry;
 pub mod memory;
 
 pub mod oidc;
+
+mod permissions;
 
 pub mod rs256;
 

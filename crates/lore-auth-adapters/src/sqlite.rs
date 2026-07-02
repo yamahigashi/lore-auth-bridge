@@ -13,7 +13,7 @@ use lore_auth_core::{
     model::{
         self, AddInvitationInput, AddUserInput, AuthSession, BrowserSession, ExternalIdentity,
         Grant, Group, IdentityInvitation, IssuedToken, LoginBindingResult, LoginResolutionRequest,
-        LoginState, LoginStateInput, LoginTrustPolicy, Permission, Resource, ResourceFilter,
+        LoginState, LoginStateInput, LoginTrustPolicy, Resource, ResourceFilter,
         ResourcePermission, SigningKeyMeta, TokenPrincipal, User,
     },
     ports::{
@@ -26,6 +26,8 @@ use tokio_rusqlite::{
     Connection, params,
     rusqlite::{self, OptionalExtension, Row},
 };
+
+use crate::permissions::PermissionSet;
 
 const BASELINE_VERSION: &str = "phase2b_baseline_20260702";
 const BRIDGE_PROVIDER_ID: &str = "bridge";
@@ -355,6 +357,10 @@ impl Store {
 
     pub fn unix_now() -> i64 {
         unix_now()
+    }
+
+    pub(crate) fn connection(&self) -> Connection {
+        self.conn.clone()
     }
 
     pub async fn upsert_and_get(&self, resource: Resource) -> CoreResult<Resource> {
@@ -1479,37 +1485,6 @@ impl SigningKeyAdmin for Store {
             .call(|conn| list_signing_keys_conn(conn))
             .await
             .map_err(core_from_driver)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct PermissionSet {
-    read: bool,
-    write: bool,
-    admin: bool,
-}
-
-impl PermissionSet {
-    fn insert(&mut self, permission: Permission) {
-        match permission {
-            Permission::Read => self.read = true,
-            Permission::Write => self.write = true,
-            Permission::Admin => self.admin = true,
-        }
-    }
-
-    fn into_permissions(self) -> Vec<Permission> {
-        let mut out = Vec::new();
-        if self.read {
-            out.push(Permission::Read);
-        }
-        if self.write {
-            out.push(Permission::Write);
-        }
-        if self.admin {
-            out.push(Permission::Admin);
-        }
-        out
     }
 }
 

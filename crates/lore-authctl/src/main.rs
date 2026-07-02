@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
-use lore_auth_adapters::{config, rs256, sqlite};
+use lore_auth_adapters::{authz, config, rs256, sqlite};
 use lore_auth_core::{
     CoreError,
     model::{AddInvitationInput, AddUserInput, Resource},
@@ -479,8 +479,8 @@ async fn run_check(config_path: &Path, db: Option<&Path>, args: CheckArgs) -> Re
         .await
         .map_err(core_error)
         .with_context(|| format!("resolve repo {:?}", args.repo))?;
-    let allowed = env
-        .store
+    let authz = build_authorization_policy(&env)?;
+    let allowed = authz
         .can_access(&user.id, &repo.resource_id, &args.action)
         .await
         .map_err(core_error)?;
@@ -551,7 +551,7 @@ async fn build_token_service(env: &Env) -> Result<TokenService> {
     );
     let accounts: Arc<dyn AccountDirectory> = env.store.clone();
     let resources: Arc<dyn ResourceStore> = env.store.clone();
-    let authz: Arc<dyn AuthorizationPolicy> = env.store.clone();
+    let authz = build_authorization_policy(env)?;
     let log: Arc<dyn IssuedTokenLog> = env.store.clone();
     Ok(TokenService::new(
         TokenConfig {
@@ -568,6 +568,18 @@ async fn build_token_service(env: &Env) -> Result<TokenService> {
         signer,
         Some(log),
     ))
+}
+
+fn build_authorization_policy(env: &Env) -> Result<Arc<dyn AuthorizationPolicy>> {
+    match env.cfg.authz.backend.as_str() {
+        "sql" => Ok(env.store.clone()),
+        "rebac" => {
+            let policy = authz::RebacAuthorizationPolicy::from_store(env.store.as_ref())
+                .map_err(|err| anyhow!("initialize rebac authz: {err}"))?;
+            Ok(Arc::new(policy))
+        }
+        other => Err(anyhow!("unknown authz.backend {other:?}")),
+    }
 }
 
 fn resolve_user_idp(

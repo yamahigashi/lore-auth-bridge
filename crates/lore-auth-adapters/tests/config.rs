@@ -13,12 +13,25 @@ fn load_applies_defaults_and_derives_lore_auth_url() {
     assert_eq!(cfg.server.grpc_listen, "127.0.0.1:8081");
     assert_eq!(cfg.lore.auth_url, "ucs-auth://auth.example.com");
     assert_eq!(cfg.jwt.ttl_seconds, 3600);
+    assert_eq!(cfg.authz.backend, "sql");
     assert_eq!(cfg.security.device_code_ttl_seconds, 600);
     assert_eq!(cfg.security.device_poll_interval_seconds, 3);
     assert_eq!(
         cfg.security.auth_session_ttl_seconds,
         cfg.security.session_ttl_seconds
     );
+}
+
+#[test]
+fn load_accepts_rebac_authz_backend() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let raw =
+        default_config(dir.path()).replace("database:", "authz:\n  backend: rebac\ndatabase:");
+    let path = write_config(dir.path(), raw);
+
+    let cfg = config::load(&path).expect("config loads");
+
+    assert_eq!(cfg.authz.backend, "rebac");
 }
 
 #[test]
@@ -104,6 +117,10 @@ fn load_rejects_invalid_operational_config() {
                 "security:\n  rebac_allowed_peer_cidrs: [\"not-a-cidr\"]",
             ),
             "security.rebac_allowed_peer_cidrs",
+        ),
+        (
+            default_config(dir.path()).replace("database:", "authz:\n  backend: typo\ndatabase:"),
+            "authz.backend",
         ),
     ];
 
