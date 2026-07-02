@@ -1299,9 +1299,11 @@ name = "lore-authctl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "lore-auth-adapters",
  "lore-auth-core",
- "lore-auth-inbound",
+ "tempfile",
+ "tokio",
  "tracing",
 ]
 
@@ -1310,9 +1312,10 @@ name = "lore-claimprobe"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "lore-auth-adapters",
  "lore-auth-core",
- "lore-auth-inbound",
+ "serde_json",
  "tracing",
 ]
 

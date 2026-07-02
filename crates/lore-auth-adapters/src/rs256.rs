@@ -2,24 +2,31 @@
 
 use std::{
     fs,
-    path::Path,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Validation, decode, decode_header};
-use lore_auth_core::{CoreError, model, ports::TokenSigner};
+use lore_auth_core::{
+    CoreError, model,
+    ports::{SigningKeyAdmin as SigningKeyAdminPort, TokenSigner},
+};
 use rsa::{
     RsaPrivateKey, RsaPublicKey,
     pkcs1::{DecodeRsaPrivateKey, EncodeRsaPrivateKey},
-    pkcs8::DecodePrivateKey,
+    pkcs8::{DecodePrivateKey, EncodePrivateKey, LineEnding},
+    rand_core::OsRng,
     traits::PublicKeyParts,
 };
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_ENV: &str = "prod";
 pub const ALG_RS256: &str = "RS256";
+pub const DEFAULT_RSA_BITS: u32 = 2048;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -141,6 +148,20 @@ pub struct SigningKey {
 }
 
 impl SigningKey {
+    pub fn generate(kid: impl Into<String>, bits: u32) -> Result<Self> {
+        let kid = kid.into();
+        if kid.is_empty() {
+            return Err(Error::MissingKid);
+        }
+        let bits = if bits == 0 { DEFAULT_RSA_BITS } else { bits };
+        let private = RsaPrivateKey::new(
+            &mut OsRng,
+            usize::try_from(bits).map_err(|err| Error::Crypto(format!("invalid bits: {err}")))?,
+        )
+        .map_err(|err| Error::Crypto(format!("generate rsa key: {err}")))?;
+        Self::from_private(kid, private)
+    }
+
     pub fn load_pem(kid: impl Into<String>, path: impl AsRef<Path>) -> Result<Self> {
         let kid = kid.into();
         if kid.is_empty() {
@@ -151,6 +172,10 @@ impl SigningKey {
         let pem =
             std::str::from_utf8(&raw).map_err(|err| Error::Crypto(format!("parse pem: {err}")))?;
         let private = parse_rsa_private_key(pem)?;
+        Self::from_private(kid, private)
+    }
+
+    fn from_private(kid: String, private: RsaPrivateKey) -> Result<Self> {
         let der = private
             .to_pkcs1_der()
             .map_err(|err| Error::Crypto(format!("marshal private key: {err}")))?;
@@ -205,6 +230,161 @@ impl SigningKey {
     #[must_use]
     pub fn jwk(&self) -> RsaJwk {
         new_rsa_jwk(&self.kid, &self.alg, &self.public())
+    }
+
+    pub fn write_private_pem(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.write_private_pem_inner(path.as_ref(), false)
+    }
+
+    pub fn write_private_pem_exclusive(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.write_private_pem_inner(path.as_ref(), true)
+    }
+
+    fn write_private_pem_inner(&self, path: &Path, exclusive: bool) -> Result<()> {
+        let pem = self
+            .private
+            .to_pkcs8_pem(LineEnding::LF)
+            .map_err(|err| Error::Crypto(format!("marshal private key: {err}")))?;
+        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+            fs::create_dir_all(dir)
+                .map_err(|err| Error::Crypto(format!("create key dir: {err}")))?;
+            set_private_dir_permissions(dir)?;
+        }
+        let mut options = fs::OpenOptions::new();
+        if exclusive {
+            options.create_new(true);
+        } else {
+            options.create(true).truncate(true);
+        }
+        options.write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(path)
+            .map_err(|err| Error::Crypto(format!("create private key: {err}")))?;
+        file.write_all(pem.as_bytes())
+            .map_err(|err| Error::Crypto(format!("write private key: {err}")))?;
+        file.sync_all()
+            .map_err(|err| Error::Crypto(format!("sync private key: {err}")))?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+pub trait KeyAdminStore: Send + Sync {
+    async fn add_signing_key_meta(
+        &self,
+        key: model::SigningKeyMeta,
+    ) -> std::result::Result<model::SigningKeyMeta, CoreError>;
+
+    async fn signing_key_by_kid(
+        &self,
+        kid: &str,
+    ) -> std::result::Result<model::SigningKeyMeta, CoreError>;
+
+    async fn list_signing_key_meta(
+        &self,
+    ) -> std::result::Result<Vec<model::SigningKeyMeta>, CoreError>;
+}
+
+#[async_trait]
+impl KeyAdminStore for crate::sqlite::Store {
+    async fn add_signing_key_meta(
+        &self,
+        key: model::SigningKeyMeta,
+    ) -> std::result::Result<model::SigningKeyMeta, CoreError> {
+        crate::sqlite::Store::add_signing_key_meta(self, key).await
+    }
+
+    async fn signing_key_by_kid(
+        &self,
+        kid: &str,
+    ) -> std::result::Result<model::SigningKeyMeta, CoreError> {
+        crate::sqlite::Store::signing_key_by_kid(self, kid).await
+    }
+
+    async fn list_signing_key_meta(
+        &self,
+    ) -> std::result::Result<Vec<model::SigningKeyMeta>, CoreError> {
+        <crate::sqlite::Store as SigningKeyAdminPort>::list_keys(self).await
+    }
+}
+
+pub struct SigningKeyAdmin<S> {
+    dir: PathBuf,
+    store: Arc<S>,
+}
+
+impl<S> SigningKeyAdmin<S> {
+    #[must_use]
+    pub fn new(dir: impl Into<PathBuf>, store: Arc<S>) -> Self {
+        Self {
+            dir: dir.into(),
+            store,
+        }
+    }
+}
+
+#[async_trait]
+impl<S> SigningKeyAdminPort for SigningKeyAdmin<S>
+where
+    S: KeyAdminStore + 'static,
+{
+    async fn generate_active_key(
+        &self,
+        kid: &str,
+        alg: &str,
+        bits: u32,
+    ) -> std::result::Result<model::SigningKeyMeta, CoreError> {
+        let alg = if alg.is_empty() { ALG_RS256 } else { alg };
+        if alg != ALG_RS256 {
+            return Err(CoreError::InvalidArgument(
+                "only RS256 is supported".to_owned(),
+            ));
+        }
+        if !valid_kid(kid) {
+            return Err(CoreError::InvalidArgument(
+                "kid contains unsupported characters".to_owned(),
+            ));
+        }
+        match self.store.signing_key_by_kid(kid).await {
+            Ok(_) => {
+                return Err(CoreError::InvalidArgument(format!(
+                    "signing key kid {kid:?} already exists"
+                )));
+            }
+            Err(CoreError::NotFound) => {}
+            Err(err) => return Err(err),
+        }
+
+        let key = SigningKey::generate(kid, bits).map_err(to_core_invalid)?;
+        let private_path = self.dir.join(format!("{kid}.pem"));
+        key.write_private_pem_exclusive(&private_path)
+            .map_err(to_core_invalid)?;
+        let public_jwk_json = serde_json::to_string(&key.jwk()).map_err(|err| {
+            CoreError::InvalidArgument(format!("marshal public jwk for {kid:?}: {err}"))
+        })?;
+        let meta = model::SigningKeyMeta {
+            kid: key.kid().to_owned(),
+            alg: key.alg().to_owned(),
+            public_jwk_json,
+            private_key_path: private_path.display().to_string(),
+            status: "active".to_owned(),
+        };
+        match self.store.add_signing_key_meta(meta).await {
+            Ok(meta) => Ok(meta),
+            Err(err) => {
+                let _ = fs::remove_file(private_path);
+                Err(err)
+            }
+        }
+    }
+
+    async fn list_keys(&self) -> std::result::Result<Vec<model::SigningKeyMeta>, CoreError> {
+        self.store.list_signing_key_meta().await
     }
 }
 
@@ -391,6 +571,11 @@ pub struct JwkSet {
     pub keys: Vec<RsaJwk>,
 }
 
+pub fn marshal_jwks(set: &JwkSet) -> Result<Vec<u8>> {
+    serde_json::to_vec_pretty(set)
+        .map_err(|err| Error::Crypto(format!("marshal JWKS document: {err}")))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedInsecure {
     pub header: serde_json::Value,
@@ -479,6 +664,27 @@ fn parse_rsa_private_key(pem: &str) -> Result<RsaPrivateKey> {
     RsaPrivateKey::from_pkcs8_pem(pem)
         .or_else(|_| RsaPrivateKey::from_pkcs1_pem(pem))
         .map_err(|_| Error::UnsupportedPrivateKey)
+}
+
+fn set_private_dir_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|err| Error::Crypto(format!("chmod key dir: {err}")))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+fn valid_kid(kid: &str) -> bool {
+    !kid.is_empty()
+        && kid
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
 }
 
 fn model_resource_to_claim_resource(

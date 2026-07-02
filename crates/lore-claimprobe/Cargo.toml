@@ -7,9 +7,10 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+clap.workspace = true
 lore-auth-adapters = { path = "../lore-auth-adapters" }
 lore-auth-core = { path = "../lore-auth-core" }
-lore-auth-inbound = { path = "../lore-auth-inbound" }
+serde_json.workspace = true
 tracing.workspace = true
 
 [lints]

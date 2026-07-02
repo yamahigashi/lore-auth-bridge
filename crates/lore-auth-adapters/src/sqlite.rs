@@ -432,6 +432,71 @@ impl Store {
             .map_err(core_from_driver)
     }
 
+    pub async fn resolve_user(&self, email_or_id: &str) -> CoreResult<User> {
+        let email_or_id = email_or_id.to_owned();
+        self.conn
+            .call(move |conn| {
+                let user_id = resolve_user_id_conn(conn, &email_or_id)?;
+                user_by_id_conn(conn, &user_id)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    pub async fn list_users(&self) -> CoreResult<Vec<User>> {
+        self.conn
+            .call(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, primary_email, display_name, status
+                         FROM users
+                         WHERE status <> 'deleted'
+                         ORDER BY primary_email_normalized, id",
+                    )
+                    .map_err(core_from_sql)?;
+                let rows = stmt.query_map([], user_from_row).map_err(core_from_sql)?;
+                collect_rows(rows)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    pub async fn disable_user(&self, email_or_id: &str) -> CoreResult<()> {
+        let email_or_id = email_or_id.to_owned();
+        self.conn
+            .call(move |conn| {
+                let user_id = resolve_user_id_conn(conn, &email_or_id)?;
+                let changed = conn
+                    .execute(
+                        "UPDATE users
+                         SET status = 'disabled', updated_at = ?1
+                         WHERE id = ?2 AND status <> 'deleted'",
+                        params![unix_now(), user_id],
+                    )
+                    .map_err(core_from_sql)?;
+                require_affected(changed, CoreError::NotFound)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
+    pub async fn find_group_by_name(&self, name: &str) -> CoreResult<Group> {
+        let name = name.to_owned();
+        self.conn
+            .call(move |conn| {
+                conn.query_row(
+                    "SELECT id, name, description FROM groups WHERE name = ?1",
+                    params![name],
+                    group_from_row,
+                )
+                .optional()
+                .map_err(core_from_sql)?
+                .ok_or(CoreError::NotFound)
+            })
+            .await
+            .map_err(core_from_driver)
+    }
+
     pub async fn create_device_authorization(
         &self,
         input: CreateDeviceAuthorizationParams,
