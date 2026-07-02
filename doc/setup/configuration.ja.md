@@ -50,6 +50,23 @@ schema には `audit_events` table もありますが、現時点の実装は管
 
 監査が必要な運用では、reverse proxy、systemd journal、SQLite backup、CLI 実行ログなど別の記録を用意してください。
 
+## authz
+
+```yaml
+authz:
+  backend: rebac
+```
+
+`backend` は authorization evaluator を選びます。
+
+`rebac` が既定値です。
+
+SQLite に保存した grant と group membership（nested group を含む）を authz-core ベースの ReBAC adapter で評価します。
+
+`sql` は移行用の legacy fallback です。
+
+direct-SQL authorization adapter を 1 リリースだけ併存させ、その互換期間の後に削除する予定です。
+
 ## jwt
 
 ```yaml

@@ -190,7 +190,7 @@ impl Config {
             self.jwt.ttl_seconds = 3600;
         }
         if self.authz.backend.is_empty() {
-            self.authz.backend = "sql".to_owned();
+            self.authz.backend = "rebac".to_owned();
         }
         if self.security.device_code_ttl_seconds == 0 {
             self.security.device_code_ttl_seconds = 600;

@@ -50,6 +50,23 @@ The schema also contains an `audit_events` table, but the current implementation
 
 If an operation requires auditing, provide separate records through a reverse proxy, systemd journal, SQLite backups, CLI execution logs, or another operational log.
 
+## authz
+
+```yaml
+authz:
+  backend: rebac
+```
+
+`backend` selects the authorization evaluator.
+
+`rebac` is the default.
+
+It evaluates SQLite-backed grants and group membership, including nested groups, through the authz-core ReBAC adapter.
+
+`sql` is a legacy migration fallback.
+
+It keeps the direct-SQL authorization adapter available for one release and is planned for removal after that compatibility window.
+
 ## jwt
 
 ```yaml
