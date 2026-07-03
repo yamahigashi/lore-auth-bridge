@@ -1,0 +1,23 @@
+[package]
+name = "lore-auth-e2e"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+anyhow.workspace = true
+lore-auth-proto = { path = "../lore-auth-proto" }
+rcgen.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_yaml_ng.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+
+[lints]
+workspace = true

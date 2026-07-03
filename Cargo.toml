@@ -8,6 +8,7 @@ members = [
     "crates/lore-auth-server",
     "crates/lore-authctl",
     "crates/lore-claimprobe",
+    "crates/lore-auth-e2e",
 ]
 exclude = ["lore"]
 
@@ -32,6 +33,7 @@ percent-encoding = "2.3"
 prost = "0.13"
 protoc-bin-vendored = "3.1"
 regex = "1.11"
+rcgen = "=0.13.2"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rsa = { version = "0.9", features = ["pem"] }
 serde = { version = "1.0", features = ["derive"] }
