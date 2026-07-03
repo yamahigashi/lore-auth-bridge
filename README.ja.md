@@ -2,7 +2,13 @@
 
 [English](README.md)
 
-`lore-auth-bridge` は、Lore の認証を外部 IdP と ACL backend に接続する Rust 製 bridge です。
+認証を有効にした Lore サーバへアクセスするには、Lore CLI と `loreserver` が検証できる JWT が必要です。
+
+`lore-auth-bridge` は Google、Microsoft Entra ID、Keycloak などの IdP と Lore の間に立ち、ログイン後に必要な token を発行します。
+
+運用者は bridge 側で repository access を管理し、Lore 側は署名済みの authn token と repository authz token を受け取ります。
+
+実装としては、Lore の認証を外部 IdP と ACL backend に接続する Rust 製 bridge です。
 
 Lore CLI と `loreserver` に対して、ログイン、repository 単位の token 交換、JWKS による署名検証、repository lifecycle の同期を提供します。
 
@@ -67,6 +73,7 @@ repository 操作時、Lore はその authn token を `UrcAuthApi` で短命の 
 
 本番向けの参照ページ:
 
+- [Deployment](doc/setup/deployment.ja.md)
 - [Configuration](doc/setup/configuration.ja.md)
 - [Operations](doc/setup/operations.ja.md)
 - [TLS](doc/setup/tls.ja.md)

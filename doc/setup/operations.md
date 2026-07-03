@@ -6,12 +6,14 @@ This page is the operational reference for ports, local data, backups, logs, rec
 
 Use it with [Configuration](configuration.md), [Authctl](authctl.md), and [Admin Web UI](admin-ui.md).
 
+For choosing where the bridge, `loreserver`, and reverse proxy run, start with [Deployment](deployment.md).
+
 ## Ports
 
 | Listener | Default | What runs there | Exposure |
 | --- | --- | --- | --- |
-| HTTP `server.listen` | `127.0.0.1:8080` | `/.well-known/jwks.json`, `/healthz`, `/login`, `/auth/{provider}/*`, `/tokens`, `/device`, `/api/device/*`, and optional `/admin` | Put behind an HTTPS reverse proxy when users or `loreserver` need to reach it. Restrict `/admin` at the edge. |
-| gRPC `server.grpc_listen` | `127.0.0.1:8081` | `epic_urc.UrcAuthApi` for auth sessions and token exchange; `ucs.auth.RebacApi` for repository create/delete sync | Expose with TLS to the Lore CLI and `loreserver`. Restrict `RebacApi` to `loreserver` with `security.rebac_allowed_peer_cidrs` or an edge ACL. |
+| HTTP `server.listen` | `127.0.0.1:8080` | `/.well-known/jwks.json`, `/healthz`, `/login`, `/auth/{provider}/*`, `/tokens`, `/device`, `/api/device/*`, and optional `/admin` | Put behind an HTTPS reverse proxy when users or `loreserver` need to reach it. Restrict `/admin` at the edge. See [Deployment](deployment.md#reverse-proxy). |
+| gRPC `server.grpc_listen` | `127.0.0.1:8081` | `epic_urc.UrcAuthApi` for auth sessions and token exchange; `ucs.auth.RebacApi` for repository create/delete sync | Expose with TLS to the Lore CLI and `loreserver`. Restrict `RebacApi` to `loreserver` with `security.rebac_allowed_peer_cidrs` or an edge ACL. See [Deployment](deployment.md#placement-principles). |
 
 The HTTP and gRPC listeners are separate sockets.
 

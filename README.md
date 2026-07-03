@@ -2,7 +2,13 @@
 
 [日本語](README.ja.md)
 
-`lore-auth-bridge` is a Rust bridge that connects Lore authentication to external identity providers and ACL backends.
+Access to an authenticated Lore server requires JWTs that the Lore CLI and `loreserver` can verify.
+
+`lore-auth-bridge` stands between your identity provider and Lore, issuing those tokens after users sign in with systems such as Google, Microsoft Entra ID, or Keycloak.
+
+Operators manage repository access in the bridge, and Lore receives the signed authn and repository authz tokens it needs.
+
+The implementation is a Rust bridge that connects Lore authentication to external identity providers and ACL backends.
 
 It provides login, repository-scoped token exchange, JWKS-based signature verification, and repository lifecycle synchronization for the Lore CLI and `loreserver`.
 
@@ -67,6 +73,7 @@ Choose one track:
 
 Production reference pages:
 
+- [Deployment](doc/setup/deployment.md)
 - [Configuration](doc/setup/configuration.md)
 - [Operations](doc/setup/operations.md)
 - [TLS](doc/setup/tls.md)

@@ -4,6 +4,12 @@
 
 This page covers the extra settings to check when exposing the bridge and Lore remote through Tailscale.
 
+This deployment keeps the bridge and Lore remote off the public internet.
+
+It fits small teams, setups without fixed public IP or public DNS, and deployments that want to use Tailscale certificates for TLS.
+
+For the broader placement decision, see [Deployment](deployment.md#tailscale--vpn-mesh).
+
 Use the MagicDNS FQDN as the stable host name.
 
 ```text

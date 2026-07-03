@@ -4,6 +4,12 @@
 
 このページでは、Tailscale 越しに bridge と Lore remote を公開する場合に追加で確認する設定を扱います。
 
+この構成では、bridge と Lore remote を public internet に出しません。
+
+小規模 team、固定 public IP や public DNS が不要な構成、TLS に Tailscale certificate を使いたい構成に向いています。
+
+全体の配置判断は [Deployment](deployment.ja.md#tailscale--vpn-mesh) を参照してください。
+
 安定した host name として MagicDNS の FQDN を使います。
 
 ```text

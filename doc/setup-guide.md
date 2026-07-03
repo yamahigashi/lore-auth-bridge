@@ -20,6 +20,7 @@ Use this order:
 
 Production setup pages:
 
+- [Deployment](setup/deployment.md)
 - [Configuration](setup/configuration.md)
 - [Operations](setup/operations.md)
 - [TLS](setup/tls.md)
@@ -33,7 +34,7 @@ If you use IdP integration, also read:
 - [Identity Providers](setup/identity-providers.md)
 - [Google OIDC](setup/google-oidc.md) for the Google-specific example
 
-If you expose the bridge and Lore remote through Tailscale, also read [Tailscale](setup/tailscale.md).
+If you expose the bridge and Lore remote through Tailscale, read [Deployment](setup/deployment.md#tailscale--vpn-mesh) first, then [Tailscale](setup/tailscale.md).
 
 ## Components
 
@@ -72,11 +73,13 @@ In that mode, the administrator runs `lore-authctl --config <cfg> token mint-aut
 
 ## Operational Setup Flow
 
-In operation, align the bridge HTTP endpoint, gRPC endpoint, SQLite database, JWT issuer/audience, RS256 signing key, and `loreserver` auth settings.
+In operation, align the deployment pattern, bridge HTTP endpoint, gRPC endpoint, SQLite database, JWT issuer/audience, RS256 signing key, and `loreserver` auth settings.
 
 When IdP login is enabled, the IdP client configuration and the bridge configuration must also match.
 
 Manage users and repository permissions with `lore-authctl`.
+
+Choose the machine layout and storage pattern in [Deployment](setup/deployment.md).
 
 Keep port exposure, data placement, backups, logs, and recovery procedures in [Operations](setup/operations.md).
 

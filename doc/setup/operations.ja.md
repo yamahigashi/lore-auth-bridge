@@ -6,12 +6,14 @@
 
 [Configuration](configuration.ja.md)、[Authctl](authctl.ja.md)、[管理 Web UI](admin-ui.ja.md) と合わせて使います。
 
+bridge、`loreserver`、reverse proxy をどこで動かすかを選ぶ場合は、[Deployment](deployment.ja.md) から読んでください。
+
 ## Ports
 
 | Listener | 既定値 | 乗るもの | 公開要否 |
 | --- | --- | --- | --- |
-| HTTP `server.listen` | `127.0.0.1:8080` | `/.well-known/jwks.json`、`/healthz`、`/login`、`/auth/{provider}/*`、`/tokens`、`/device`、`/api/device/*`、任意の `/admin` | user または `loreserver` から到達させる場合は HTTPS reverse proxy の背後に置きます。`/admin` は edge で制限します。 |
-| gRPC `server.grpc_listen` | `127.0.0.1:8081` | auth session と token exchange 用の `epic_urc.UrcAuthApi`、repository create/delete sync 用の `ucs.auth.RebacApi` | Lore CLI と `loreserver` から TLS で到達させます。`RebacApi` は `security.rebac_allowed_peer_cidrs` または edge ACL で `loreserver` に制限します。 |
+| HTTP `server.listen` | `127.0.0.1:8080` | `/.well-known/jwks.json`、`/healthz`、`/login`、`/auth/{provider}/*`、`/tokens`、`/device`、`/api/device/*`、任意の `/admin` | user または `loreserver` から到達させる場合は HTTPS reverse proxy の背後に置きます。`/admin` は edge で制限します。[Deployment](deployment.ja.md#reverse-proxy) も参照してください。 |
+| gRPC `server.grpc_listen` | `127.0.0.1:8081` | auth session と token exchange 用の `epic_urc.UrcAuthApi`、repository create/delete sync 用の `ucs.auth.RebacApi` | Lore CLI と `loreserver` から TLS で到達させます。`RebacApi` は `security.rebac_allowed_peer_cidrs` または edge ACL で `loreserver` に制限します。[Deployment](deployment.ja.md#配置原則) も参照してください。 |
 
 HTTP と gRPC は別 socket です。
 
