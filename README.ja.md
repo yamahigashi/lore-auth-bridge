@@ -6,7 +6,45 @@
 
 Lore CLI と `loreserver` に対して、ログイン、repository 単位の token 交換、JWKS による署名検証、repository lifecycle の同期を提供します。
 
-現在の backend は OIDC IdP、SQLite、SQLite-backed authorization policy です。
+既定の構成では、ユーザーは OIDC IdP でログインします。
+
+bridge は user、group、repository、grant を SQLite に保存し、その関係を ReBAC authorization engine で評価します。
+
+## これは何か / どう接続するか
+
+`lore-auth-bridge` は、Lore deployment、IdP、運用者が管理する access model の間に置く Lore UCS Auth / ReBAC protocol の実装です。
+
+```text
+Browser + IdP
+    <---- OIDC login ----> bridge HTTP
+                            /login, /device, /.well-known/jwks.json
+                                      |
+                                      | signs authn/authz JWTs
+                                      v
+lore CLI <---- repository ops ----> loreserver
+    |                                  |
+    | UrcAuthApi: authn token ->       | RebacApi: repository create/delete
+    | repository authz token           | HTTP JWKS: JWT verification keys
+    +-----------> bridge gRPC <--------+
+                 epic_urc.UrcAuthApi
+                 ucs.auth.RebacApi
+```
+
+ユーザーはまず、ログイン済みであることを示す **authn token** を取得します。
+
+repository 操作時、Lore はその authn token を `UrcAuthApi` で短命の repository scoped **authz token** に交換します。
+
+`loreserver` は `RebacApi` も呼び、repository の作成と削除を bridge に同期します。
+
+運用上の構成要素は [Setup Guide](doc/setup-guide.ja.md#構成要素) を参照してください。
+
+ミニ用語集:
+
+- **UCS Auth**：Lore の認証 protocol surface です。この bridge では `epic_urc.UrcAuthApi` として提供します。
+- **ReBAC**：relationship-based access control です。bridge は user -> group -> repository のような関係を評価します。
+- **authn token / authz token**：authn token は auth service へのログイン証明です。authz token は permission 評価後に発行される短命の repository token です。
+- **resource_id**：Lore authorization resource identifier です。形式は `urc-{lore_repository_id}` で、repository 名ではありません。
+- **grant / role**：grant は user または group に対して、1 つの repository の `reader`、`writer`、`admin` role を割り当てます。この文書では通常の repository 操作に `writer` を使います。
 
 ## 機能
 
@@ -46,6 +84,28 @@ Lore CLI と `loreserver` に対して、ログイン、repository 単位の tok
 
 - Rust stable toolchain
 - 実機検証時に使用する `lore` / `loreserver` binary
+
+## lore と loreserver の入手
+
+運用対象の Lore deployment に合う `lore` と `loreserver` binary を使います。
+
+Lore の参照 checkout では、release download として <https://github.com/EpicGames/lore/releases> が案内され、install script は `scripts/install.sh` と `scripts/install.ps1` にあります。
+
+Lore を source から build する場合、確認した source は Cargo workspace を使います。
+
+Lore repository root で次を実行します。
+
+```bash
+cargo build --release -p lore-client --bin lore -p lore-server --bin loreserver
+
+export PATH="$PWD/target/release:$PATH"
+lore --version
+loreserver --help
+```
+
+Windows では、生成される binary は `target\release\lore.exe` と `target\release\loreserver.exe` です。
+
+この bridge は、実機 `lore` / `loreserver` 0.8.4+283 で検証済みです。
 
 ## 導入
 

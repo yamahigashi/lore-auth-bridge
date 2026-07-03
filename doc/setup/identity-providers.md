@@ -36,6 +36,42 @@ When `identity_providers` is configured, `user invite` requires `--idp`.
 
 See [Google OIDC](google-oidc.md) for concrete Google OIDC settings.
 
+## Microsoft Entra ID
+
+Use `profile: entra` with `subject.strategy: entra_oid_tid`.
+
+The subject is built from the ID token `tid` and `oid` claims.
+
+```yaml
+identity_providers:
+  default: entra
+  providers:
+    entra:
+      type: oidc
+      profile: entra
+      display_name: "Microsoft Entra ID"
+      issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+      client_id: "<application-client-id>"
+      client_secret_file: "/etc/lore-auth/entra_client_secret"
+      redirect_url: "https://auth.example.com/auth/entra/callback"
+      scopes:
+        - openid
+        - email
+        - profile
+      pkce: required
+      subject:
+        strategy: entra_oid_tid
+        required_tid: "<tenant-id>"
+      trust:
+        email_binding: verified_email_invitation
+        allowed_email_domains:
+          - "example.com"
+```
+
+`subject.required_tid` pins the accepted tenant because a multi-tenant Entra setup can otherwise mix subjects from different tenants.
+
+The generic verified-email invitation rules still apply: the ID token must contain the mapped `email` claim and `email_verified=true` before `user invite` can be consumed.
+
 ## Authn Tokens Issued By The Administrative CLI
 
 If IdP login is not used, an administrator can issue authn tokens with the administrative CLI.

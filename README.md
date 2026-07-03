@@ -6,7 +6,45 @@
 
 It provides login, repository-scoped token exchange, JWKS-based signature verification, and repository lifecycle synchronization for the Lore CLI and `loreserver`.
 
-The current backend set is OIDC identity providers, SQLite, and a SQLite-backed authorization policy.
+In the default deployment, users log in through an OIDC identity provider.
+
+The bridge stores users, groups, repositories, and grants in SQLite, then evaluates those relationships with its ReBAC authorization engine.
+
+## What Is This / How It Fits
+
+`lore-auth-bridge` implements the Lore UCS Auth / ReBAC protocol surface that sits between a Lore deployment, an identity provider, and the operator-managed access model.
+
+```text
+Browser + IdP
+    <---- OIDC login ----> bridge HTTP
+                            /login, /device, /.well-known/jwks.json
+                                      |
+                                      | signs authn/authz JWTs
+                                      v
+lore CLI <---- repository ops ----> loreserver
+    |                                  |
+    | UrcAuthApi: authn token ->       | RebacApi: repository create/delete
+    | repository authz token           | HTTP JWKS: JWT verification keys
+    +-----------> bridge gRPC <--------+
+                 epic_urc.UrcAuthApi
+                 ucs.auth.RebacApi
+```
+
+The user first obtains an **authn token** as proof of login.
+
+During repository operations, Lore exchanges that authn token through `UrcAuthApi` for a short-lived, repository-scoped **authz token**.
+
+`loreserver` also calls `RebacApi` so the bridge learns when repositories are created or deleted.
+
+For the operational component list, see [Setup Guide](doc/setup-guide.md#components).
+
+Mini glossary:
+
+- **UCS Auth**: Lore's authentication protocol surface, exposed here through `epic_urc.UrcAuthApi`.
+- **ReBAC**: relationship-based access control. The bridge evaluates relationships such as user -> group -> repository.
+- **authn token / authz token**: an authn token proves login to the auth service; an authz token is a short-lived repository token produced after permission evaluation.
+- **resource_id**: the Lore authorization resource identifier, in `urc-{lore_repository_id}` form. It is not the repository name.
+- **grant / role**: a grant assigns a `reader`, `writer`, or `admin` role to a user or group for one repository. This documentation uses `writer` for normal repository operations.
 
 ## Features
 
@@ -46,6 +84,28 @@ This repository builds three main binaries:
 
 - Rust stable toolchain
 - `lore` / `loreserver` binaries for real integration checks
+
+## Getting lore and loreserver
+
+Use `lore` and `loreserver` binaries from a Lore distribution that matches your deployment.
+
+The Lore reference checkout documents release downloads at <https://github.com/EpicGames/lore/releases> and install scripts under `scripts/install.sh` and `scripts/install.ps1`.
+
+If you build Lore from source, the checked source uses a Cargo workspace.
+
+From the Lore repository root:
+
+```bash
+cargo build --release -p lore-client --bin lore -p lore-server --bin loreserver
+
+export PATH="$PWD/target/release:$PATH"
+lore --version
+loreserver --help
+```
+
+On Windows, the compiled binaries are `target\release\lore.exe` and `target\release\loreserver.exe`.
+
+This bridge has been verified with real `lore` / `loreserver` 0.8.4+283 binaries.
 
 ## Installation
 

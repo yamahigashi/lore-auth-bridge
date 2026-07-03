@@ -12,6 +12,23 @@ For IdP login, see [Identity Providers](identity-providers.md).
 
 ## Prerequisites
 
+This quickstart needs `lore` and `loreserver` on `PATH`.
+
+Use the binaries from your organization's Lore distribution, or use the Lore project release and install paths documented in the Lore source tree.
+
+The referenced Lore docs list <https://github.com/EpicGames/lore/releases>, `scripts/install.sh`, and `scripts/install.ps1` as distribution entry points.
+
+To build both binaries from a Lore source checkout, run this from the Lore repository root:
+
+```bash
+cargo build --release -p lore-client --bin lore -p lore-server --bin loreserver
+export PATH="$PWD/target/release:$PATH"
+```
+
+On Windows, add the directory containing `target\release\lore.exe` and `target\release\loreserver.exe` to `PATH`.
+
+This bridge has been verified with real `lore` / `loreserver` 0.8.4+283 binaries.
+
 ```bash
 which lore
 which loreserver

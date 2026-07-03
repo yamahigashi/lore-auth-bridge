@@ -34,6 +34,8 @@ After the individual setup pages, use [Hands-on Quickstart](setup/hands-on-quick
 
 A bridge deployment mainly consists of these parts:
 
+For the high-level diagram and glossary, see [README](../README.md#what-is-this--how-it-fits).
+
 - **bridge HTTP**: serves JWKS, browser login, device flow, and health checks.
 - **bridge gRPC**: serves `UrcAuthApi` and `RebacApi` over TLS.
 - **loreserver**: runs with auth enabled and uses the bridge JWKS and auth gRPC endpoint.

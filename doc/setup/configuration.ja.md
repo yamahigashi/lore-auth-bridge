@@ -57,11 +57,11 @@ authz:
 
 `backend` は authorization evaluator を選びます。
 
-`rebac` が既定値です。
+`rebac` が唯一の supported backend であり、既定値です。
 
 SQLite に保存した grant と group membership（nested group を含む）を authz-core ベースの ReBAC adapter で評価します。
 
-`sql` はサポートされません。`authz.backend` を削除するか `rebac` にしてください。
+通常の構成では `authz.backend` を省略できます。
 
 ## jwt
 
@@ -110,9 +110,13 @@ lore:
 
 Hands-on Quickstart の構成では `https://localhost:8081` を使います。
 
-`auth_url` には HTTPS の gRPC endpoint を指定します。
+`lore.auth_url` を省略した場合、bridge は `server.public_base_url` の HTTP scheme を `ucs-auth://` に置き換えて既定値を作ります。
 
-`ucs-auth://...` はここでは使いません。
+たとえば `https://auth.example.com` からは `ucs-auth://auth.example.com` が作られます。
+
+`lore.auth_url` を明示する場合、`loreserver` integration と quickstart の例では HTTPS の gRPC endpoint を使います。
+
+config validator は `https://...` と `ucs-auth://...` を受け付けます。
 
 ## admin
 

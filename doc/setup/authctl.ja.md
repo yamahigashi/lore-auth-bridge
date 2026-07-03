@@ -93,6 +93,61 @@ lore-authctl --config "$CONFIG" user disable manual@example.com
 
 disabled user は token exchange で拒否されます。
 
+## user enable
+
+```bash
+lore-authctl --config "$CONFIG" user enable manual@example.com
+```
+
+`user enable` は disabled user を復旧するときに使います。
+
+## group add
+
+```bash
+lore-authctl --config "$CONFIG" group add artists \
+  --description "Artists with repository access"
+```
+
+group は grant subject になります。
+
+## group list
+
+```bash
+lore-authctl --config "$CONFIG" group list
+```
+
+## group member add
+
+```bash
+lore-authctl --config "$CONFIG" group member add artists alice@example.com
+```
+
+user argument には email address または user ID を指定できます。
+
+## group member remove
+
+```bash
+lore-authctl --config "$CONFIG" group member remove artists alice@example.com
+```
+
+## group nest add
+
+```bash
+lore-authctl --config "$CONFIG" group nest add all-creators artists
+```
+
+`group nest` は group-in-group membership を作ります。
+
+member group の user は、parent group に付けた grant を推移的に継承します。
+
+cycle と自己 membership は拒否されます。
+
+## group nest remove
+
+```bash
+lore-authctl --config "$CONFIG" group nest remove all-creators artists
+```
+
 ## repo add
 
 通常は `loreserver` からの ReBAC `CreateResource` で repository が登録されます。
@@ -125,7 +180,7 @@ lore-authctl --config "$CONFIG" grant add \
   writer
 ```
 
-subject は `user:<email-or-id>`、`group:<name>`、`service_account:<id>` の形式です。
+subject は `user:<email-or-id>` または `group:<name>` の形式です。
 
 この文書では repository 操作用に `writer` を使います。
 

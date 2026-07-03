@@ -72,8 +72,7 @@ database:
 authz:
   # rebac is the default authorization backend. It evaluates grants and nested
   # groups through the authz-core based ReBAC adapter.
-  # Omit this section or keep backend: rebac. The legacy sql backend has been
-  # removed.
+  # Omit this section or keep backend: rebac.
   backend: rebac
 
 jwt:

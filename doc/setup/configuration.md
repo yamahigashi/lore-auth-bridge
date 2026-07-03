@@ -57,11 +57,11 @@ authz:
 
 `backend` selects the authorization evaluator.
 
-`rebac` is the default.
+`rebac` is the only supported backend and is the default.
 
 It evaluates SQLite-backed grants and group membership, including nested groups, through the authz-core ReBAC adapter.
 
-`sql` is no longer supported. Remove `authz.backend` or set it to `rebac`.
+Most deployments can omit `authz.backend`.
 
 ## jwt
 
@@ -110,9 +110,13 @@ lore:
 
 In the Hands-on Quickstart setup, use `https://localhost:8081`.
 
-`auth_url` must be an HTTPS gRPC endpoint.
+When `lore.auth_url` is omitted, the bridge derives it from `server.public_base_url` by replacing the HTTP scheme with `ucs-auth://`.
 
-Do not use `ucs-auth://...` in this field.
+For example, `https://auth.example.com` becomes `ucs-auth://auth.example.com`.
+
+When setting `lore.auth_url` explicitly, use an HTTPS gRPC endpoint for the `loreserver` integration and the quickstart examples.
+
+The config validator accepts `https://...` and `ucs-auth://...`.
 
 ## admin
 

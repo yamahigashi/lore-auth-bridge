@@ -93,6 +93,61 @@ lore-authctl --config "$CONFIG" user disable manual@example.com
 
 Disabled users are rejected during token exchange.
 
+## user enable
+
+```bash
+lore-authctl --config "$CONFIG" user enable manual@example.com
+```
+
+Use `user enable` to restore a disabled user.
+
+## group add
+
+```bash
+lore-authctl --config "$CONFIG" group add artists \
+  --description "Artists with repository access"
+```
+
+Groups are grant subjects.
+
+## group list
+
+```bash
+lore-authctl --config "$CONFIG" group list
+```
+
+## group member add
+
+```bash
+lore-authctl --config "$CONFIG" group member add artists alice@example.com
+```
+
+The user argument accepts an email address or user ID.
+
+## group member remove
+
+```bash
+lore-authctl --config "$CONFIG" group member remove artists alice@example.com
+```
+
+## group nest add
+
+```bash
+lore-authctl --config "$CONFIG" group nest add all-creators artists
+```
+
+`group nest` creates group-in-group membership.
+
+Users in the member group inherit grants assigned to the parent group transitively.
+
+Cycles and self-membership are rejected.
+
+## group nest remove
+
+```bash
+lore-authctl --config "$CONFIG" group nest remove all-creators artists
+```
+
 ## repo add
 
 Repositories are normally registered through ReBAC `CreateResource` calls from `loreserver`.
@@ -125,7 +180,7 @@ lore-authctl --config "$CONFIG" grant add \
   writer
 ```
 
-Subjects use the form `user:<email-or-id>`, `group:<name>`, or `service_account:<id>`.
+Subjects use the form `user:<email-or-id>` or `group:<name>`.
 
 This documentation uses `writer` for repository operations.
 

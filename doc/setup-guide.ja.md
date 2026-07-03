@@ -34,6 +34,8 @@ Tailscale 越しに bridge と Lore remote を公開する場合は、[Tailscale
 
 bridge を使う構成は、主に次の要素で成り立ちます。
 
+全体図と用語集は [README](../README.ja.md#これは何か--どう接続するか) を参照してください。
+
 - **bridge HTTP**：JWKS、ブラウザログイン、device flow、health check を提供する。
 - **bridge gRPC**：`UrcAuthApi` と `RebacApi` を TLS で提供する。
 - **loreserver**：auth 有効化状態で bridge の JWKS と auth gRPC endpoint を使う。

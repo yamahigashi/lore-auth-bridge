@@ -36,6 +36,46 @@ provider が `trust.email_binding: verified_email_invitation` を設定してお
 
 Google OIDC を使う場合の具体的な設定は [Google OIDC](google-oidc.ja.md) を参照してください。
 
+## Microsoft Entra ID
+
+`profile: entra` と `subject.strategy: entra_oid_tid` を使います。
+
+subject は ID token の `tid` claim と `oid` claim から作られます。
+
+```yaml
+identity_providers:
+  default: entra
+  providers:
+    entra:
+      type: oidc
+      profile: entra
+      display_name: "Microsoft Entra ID"
+      issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+      client_id: "<application-client-id>"
+      client_secret_file: "/etc/lore-auth/entra_client_secret"
+      redirect_url: "https://auth.example.com/auth/entra/callback"
+      scopes:
+        - openid
+        - email
+        - profile
+      pkce: required
+      subject:
+        strategy: entra_oid_tid
+        required_tid: "<tenant-id>"
+      trust:
+        email_binding: verified_email_invitation
+        allowed_email_domains:
+          - "example.com"
+```
+
+`subject.required_tid` は accepted tenant を固定します。
+
+multi-tenant Entra setup では tenant が混ざると subject が衝突し得るためです。
+
+generic verified-email invitation rule も適用されます。
+
+`user invite` を消費するには、ID token に mapped `email` claim と `email_verified=true` が含まれている必要があります。
+
 ## 管理 CLI で発行する authn token
 
 IdP login を使わない場合は、管理 CLI で authn token を発行できます。
