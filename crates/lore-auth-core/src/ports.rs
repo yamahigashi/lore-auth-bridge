@@ -293,14 +293,11 @@ pub trait GrantQuery: Send + Sync {
     ///
     /// `resource_id` must be the already resolved `urc-*` ID used for
     /// `AuthorizationPolicy::can_access`; implementations must not reinterpret
-    /// ambiguous user input here. When `include_nested_groups` is false, only
-    /// direct `group_members` memberships are considered, matching the SQL
-    /// authorization backend.
+    /// ambiguous user input here. Nested group memberships are included.
     async fn grants_for_user_on_repository(
         &self,
         user_id: &str,
         resource_id: &str,
-        include_nested_groups: bool,
     ) -> Result<Vec<model::GrantEvidence>, CoreError>;
 }
 

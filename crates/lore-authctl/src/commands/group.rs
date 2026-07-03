@@ -2,8 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{Result, bail};
-use lore_auth_adapters::config;
+use anyhow::Result;
 use lore_auth_core::ports::{GroupAdmin, GroupQuery};
 
 use crate::{
@@ -48,7 +47,6 @@ pub(crate) async fn run(
         },
         GroupCommand::Nest { command } => match command {
             GroupNestCommand::Add(args) => {
-                require_rebac_for_nested_group(&env.cfg)?;
                 groups
                     .add_group_group(&args.parent_group, &args.member_group)
                     .await
@@ -56,7 +54,6 @@ pub(crate) async fn run(
                 println!("ok");
             }
             GroupNestCommand::Remove(args) => {
-                require_rebac_for_nested_group(&env.cfg)?;
                 groups
                     .remove_group_group(&args.parent_group, &args.member_group)
                     .await
@@ -66,13 +63,4 @@ pub(crate) async fn run(
         },
     }
     Ok(())
-}
-
-fn require_rebac_for_nested_group(cfg: &config::Config) -> Result<()> {
-    if cfg.authz.backend == "rebac" {
-        return Ok(());
-    }
-    bail!(
-        "nested group is evaluated only when authz.backend: rebac is configured; set config authz.backend to rebac or do not perform this operation"
-    )
 }

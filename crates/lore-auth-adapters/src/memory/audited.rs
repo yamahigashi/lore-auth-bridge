@@ -283,10 +283,9 @@ impl GrantQuery for AuditedStore {
         &self,
         user_id: &str,
         resource_id: &str,
-        include_nested_groups: bool,
     ) -> Result<Vec<GrantEvidence>, CoreError> {
         self.inner
-            .grants_for_user_on_repository(user_id, resource_id, include_nested_groups)
+            .grants_for_user_on_repository(user_id, resource_id)
             .await
     }
 }

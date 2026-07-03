@@ -26,7 +26,6 @@
     <button type="submit">{{ self.t("admin.common.add") }}</button>
   </form>
 </section>
-{% if allow_group_nesting %}
 <section>
   <h2>{{ self.t("admin.groups.nest_add") }}</h2>
   <form method="post" action="/admin/groups/nests/add">
@@ -36,7 +35,6 @@
     <button type="submit">{{ self.t("admin.common.add") }}</button>
   </form>
 </section>
-{% endif %}
 <section>
   {% if rows.len() >= limit %}
   <p>{{ self.t("admin.list.limit_note") }} {{ limit }}</p>
@@ -82,14 +80,12 @@
         {% for nested in group.nested_groups %}
         <li>
           {{ nested.name }} {{ nested.description }}
-          {% if allow_group_nesting %}
           <form method="post" action="/admin/groups/nests/remove" hx-confirm='{{ self.t("admin.common.confirm") }}'>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="parent_group" value="{{ group.name }}">
             <input type="hidden" name="member_group" value="{{ nested.name }}">
             <button type="submit">{{ self.t("admin.common.remove") }}</button>
           </form>
-          {% endif %}
         </li>
         {% endfor %}
       </ul>

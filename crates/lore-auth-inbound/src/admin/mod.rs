@@ -67,7 +67,6 @@ const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
 pub struct AdminConfig {
     pub admin_emails: Vec<String>,
     pub allowed_peer_cidrs: Vec<IpNet>,
-    pub allow_group_nesting: bool,
 }
 
 impl AdminConfig {

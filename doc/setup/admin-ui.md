@@ -58,13 +58,13 @@ On the Users page, invitation is the primary onboarding action.
 
 Adding a user directly is an advanced operation that creates an account without login binding.
 
-Nested group operations are available only when `authz.backend: rebac` is configured.
+Nested group operations are always available.
 
 The check simulator at `/admin/simulator` runs the configured authorization policy for a user, repository, and action.
 
-The simulator also shows SQL-based grant evidence as helper information.
+The simulator also shows grant evidence, including nested group paths, as helper information.
 
-The policy result is authoritative; the evidence list can diverge from the policy backend in unusual cases.
+The policy result is authoritative.
 
 Admin mutations are recorded in `admin_audit`.
 

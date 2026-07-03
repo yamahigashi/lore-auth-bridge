@@ -169,7 +169,6 @@ impl GrantQuery for Store {
         &self,
         user_id: &str,
         resource_id: &str,
-        include_nested_groups: bool,
     ) -> Result<Vec<GrantEvidence>, CoreError> {
         let state = self.lock();
         let resource_id = resolve_exact_resource_id(&state, resource_id)?;
@@ -195,7 +194,7 @@ impl GrantQuery for Store {
                 path: format!("user:{user_label} -> grant"),
             });
         }
-        for (group_id, group_path) in group_paths_for_user(&state, user_id, include_nested_groups) {
+        for (group_id, group_path) in group_paths_for_user(&state, user_id) {
             if let Some(resources) = state.grants.get(&("group".to_owned(), group_id.clone()))
                 && let Some(role) = resources.get(&resource_id)
             {

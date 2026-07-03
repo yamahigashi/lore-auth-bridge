@@ -242,11 +242,14 @@ impl Config {
             return Err(validation("database.path is required"));
         }
         match self.authz.backend.as_str() {
-            "sql" | "rebac" => {}
+            "rebac" => {}
+            "sql" => {
+                return Err(validation(
+                    "authz.backend sql backend has been removed; remove authz.backend or set it to rebac",
+                ));
+            }
             value => {
-                return Err(validation(format!(
-                    "authz.backend {value:?} must be one of sql, rebac"
-                )));
+                return Err(validation(format!("authz.backend {value:?} must be rebac")));
             }
         }
         if self.server.public_base_url.is_empty() {

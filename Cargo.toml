@@ -31,7 +31,6 @@ openidconnect = "4.0.1"
 percent-encoding = "2.3"
 prost = "0.13"
 protoc-bin-vendored = "3.1"
-proptest = "1.6"
 regex = "1.11"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rsa = { version = "0.9", features = ["pem"] }

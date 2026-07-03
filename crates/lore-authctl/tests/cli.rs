@@ -13,7 +13,7 @@ fn authctl() -> PathBuf {
 }
 
 fn write_config(dir: &Path) -> PathBuf {
-    write_config_with_authz(dir, "sql")
+    write_config_with_authz(dir, "rebac")
 }
 
 fn write_config_with_authz(dir: &Path, authz_backend: &str) -> PathBuf {
@@ -469,7 +469,7 @@ fn authctl_user_enable_reactivates_user_and_records_admin_audit() {
 }
 
 #[test]
-fn check_uses_configured_rebac_backend() {
+fn check_uses_rebac_authorization() {
     let dir = tempfile::tempdir().expect("tempdir");
     let config = write_config_with_authz(dir.path(), "rebac");
 
@@ -529,23 +529,6 @@ fn group_nest_add_and_remove_commands_update_group_edges() {
         &["group", "nest", "remove", "artists", "riggers"],
     ));
     assert_eq!(out.trim(), "ok");
-}
-
-#[test]
-fn group_nest_commands_are_rejected_with_sql_backend() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let config = write_config(dir.path());
-
-    assert_success(run(&config, &["init-db"]));
-    assert_success(run(&config, &["group", "add", "artists"]));
-    assert_success(run(&config, &["group", "add", "riggers"]));
-
-    let (_stdout, stderr) = assert_failure(run(
-        &config,
-        &["group", "nest", "add", "artists", "riggers"],
-    ));
-    assert!(stderr.contains("authz.backend: rebac"), "{stderr}");
-    assert!(stderr.contains("nested group"), "{stderr}");
 }
 
 #[test]

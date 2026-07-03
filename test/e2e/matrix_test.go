@@ -120,11 +120,8 @@ func TestLookupUserPermissions(t *testing.T) {
 	}
 }
 
-func TestNestedGroupGrantWithRebacBackend(t *testing.T) {
+func TestNestedGroupGrant(t *testing.T) {
 	requireE2E(t)
-	if authzBackend() != "rebac" {
-		t.Skip("nested group authorization is evaluated only with LORE_E2E_AUTHZ_BACKEND=rebac")
-	}
 	h := newHarness(t)
 	registerUser(t, h)
 	repo := h.addRepository(t, "nested-group", "33333333333333333333333333333333")

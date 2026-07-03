@@ -120,7 +120,6 @@ pub(super) struct GroupsTemplate<'a> {
     pub(super) limit: usize,
     pub(super) csrf_token: &'a str,
     pub(super) flash: &'a str,
-    pub(super) allow_group_nesting: bool,
 }
 
 impl GroupsTemplate<'_> {

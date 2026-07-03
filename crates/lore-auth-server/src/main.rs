@@ -6,8 +6,8 @@ use lore_auth_adapters::{authz, config, device, idpregistry, oidc, rs256, sqlite
 use lore_auth_core::{
     CoreError,
     ports::{
-        AccountDirectory, AccountQuery, AuthorizationPolicy, DeviceAuthorizationStore, GrantQuery,
-        GroupQuery, IssuedTokenLog, ResourceQuery, ResourceStore, StateStore, TokenSigner,
+        AccountDirectory, AccountQuery, DeviceAuthorizationStore, GrantQuery, GroupQuery,
+        IssuedTokenLog, ResourceQuery, ResourceStore, StateStore, TokenSigner,
     },
     service::{
         device::{DeviceConfig, DeviceService},
@@ -146,7 +146,10 @@ async fn build_graph(cfg: &config::Config) -> Result<ServiceGraph> {
         Arc::new(sqlite::AuditedStoreFactory::new((*store).clone()));
     let resource_store: Arc<dyn ResourceStore> = store.clone();
     let resource_query: Arc<dyn ResourceQuery> = store.clone();
-    let authz = build_authorization_policy(cfg, &store)?;
+    let authz = Arc::new(
+        authz::RebacAuthorizationPolicy::from_store(store.as_ref())
+            .map_err(|err| anyhow!("startup: initialize rebac authz: {err}"))?,
+    );
     let token_log: Arc<dyn IssuedTokenLog> = store.clone();
     let state_store: Arc<dyn StateStore> = store.clone();
     let device_store: Arc<dyn DeviceAuthorizationStore> = store.clone();
@@ -258,23 +261,7 @@ fn admin_config(cfg: &config::Config) -> Result<InboundAdminConfig> {
     Ok(InboundAdminConfig {
         admin_emails: cfg.admin.admin_emails.clone(),
         allowed_peer_cidrs,
-        allow_group_nesting: cfg.authz.backend == "rebac",
     })
-}
-
-fn build_authorization_policy(
-    cfg: &config::Config,
-    store: &Arc<sqlite::Store>,
-) -> Result<Arc<dyn AuthorizationPolicy>> {
-    match cfg.authz.backend.as_str() {
-        "sql" => Ok(store.clone()),
-        "rebac" => {
-            let policy = authz::RebacAuthorizationPolicy::from_store(store.as_ref())
-                .map_err(|err| anyhow!("startup: initialize rebac authz: {err}"))?;
-            Ok(Arc::new(policy))
-        }
-        other => Err(anyhow!("startup: unknown authz.backend {other:?}")),
-    }
 }
 
 async fn build_identity_providers(

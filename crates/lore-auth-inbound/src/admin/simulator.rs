@@ -133,7 +133,7 @@ async fn simulator_result(
     match state
         .services
         .grants
-        .grants_for_user_on_repository(&user.id, &resource_id, state.cfg.admin.allow_group_nesting)
+        .grants_for_user_on_repository(&user.id, &resource_id)
         .await
     {
         Ok(rows) => {

@@ -357,15 +357,9 @@ pub(crate) async fn build_token_service(env: &Env) -> Result<TokenService> {
 }
 
 pub(crate) fn build_authorization_policy(env: &Env) -> Result<Arc<dyn AuthorizationPolicy>> {
-    match env.cfg.authz.backend.as_str() {
-        "sql" => Ok(env.store.clone()),
-        "rebac" => {
-            let policy = authz::RebacAuthorizationPolicy::from_store(env.store.as_ref())
-                .map_err(|err| anyhow!("initialize rebac authz: {err}"))?;
-            Ok(Arc::new(policy))
-        }
-        other => Err(anyhow!("unknown authz.backend {other:?}")),
-    }
+    let policy = authz::RebacAuthorizationPolicy::from_store(env.store.as_ref())
+        .map_err(|err| anyhow!("initialize rebac authz: {err}"))?;
+    Ok(Arc::new(policy))
 }
 
 pub(crate) fn resolve_user_idp(

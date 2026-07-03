@@ -250,7 +250,6 @@ type bridgeConfig struct {
 	JWT               bridgeJWTConfig               `yaml:"jwt"`
 	Lore              bridgeLoreConfig              `yaml:"lore"`
 	Security          bridgeSecurityConfig          `yaml:"security"`
-	Authz             bridgeAuthzConfig             `yaml:"authz"`
 }
 
 type bridgeServerConfig struct {
@@ -291,15 +290,6 @@ type bridgeSecurityConfig struct {
 	SessionTTLSeconds         int      `yaml:"session_ttl_seconds"`
 	AuthSessionTTLSeconds     int      `yaml:"auth_session_ttl_seconds"`
 	RebacAllowedPeerCIDRs     []string `yaml:"rebac_allowed_peer_cidrs"`
-}
-
-type bridgeAuthzConfig struct {
-	Backend string `yaml:"backend"`
-}
-
-// authzBackend returns LORE_E2E_AUTHZ_BACKEND if set, defaulting to "sql".
-func authzBackend() string {
-	return envOr("LORE_E2E_AUTHZ_BACKEND", "sql")
 }
 
 func (h *harness) prepareBroker(httpListen, grpcListen string, writeTLSFiles bool) {
@@ -359,9 +349,6 @@ func (h *harness) prepareBroker(httpListen, grpcListen string, writeTLSFiles boo
 			DeviceCodeTTLSeconds:      600,
 			DevicePollIntervalSeconds: 1,
 			RebacAllowedPeerCIDRs:     []string{"127.0.0.1/32", "::1/128"},
-		},
-		Authz: bridgeAuthzConfig{
-			Backend: authzBackend(),
 		},
 	}
 	if writeTLSFiles {
@@ -539,9 +526,6 @@ func (h *harness) writeTokenMintConfig(audience []string) string {
 			AuthSessionTTLSeconds:     600,
 			DeviceCodeTTLSeconds:      600,
 			DevicePollIntervalSeconds: 1,
-		},
-		Authz: bridgeAuthzConfig{
-			Backend: authzBackend(),
 		},
 	}
 	raw, err := yaml.Marshal(cfg)

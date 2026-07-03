@@ -60,13 +60,13 @@ Users 画面では、招待がオンボーディングの主動線です。
 
 user の直接追加は、ログイン binding を持たない account を作る advanced 操作です。
 
-nested group 操作は `authz.backend: rebac` の場合だけ使えます。
+nested group 操作は常に使えます。
 
 `/admin/simulator` の check simulator は、user、repository、action を入力して、設定済み authorization policy を実行します。
 
-simulator は SQL による grant 根拠も補助情報として表示します。
+simulator は nested group path を含む grant 根拠も補助情報として表示します。
 
-policy の結果が正であり、根拠一覧は例外的な状況では policy backend と乖離する可能性があります。
+policy の結果が正です。
 
 admin mutation は `admin_audit` に記録されます。
 

@@ -287,11 +287,7 @@ fn grant_subject_keys_for_user(state: &State, user_id: &str) -> Vec<(String, Str
     out
 }
 
-fn group_paths_for_user(
-    state: &State,
-    user_id: &str,
-    include_nested_groups: bool,
-) -> HashMap<String, String> {
+fn group_paths_for_user(state: &State, user_id: &str) -> HashMap<String, String> {
     let mut paths = HashMap::<String, String>::new();
     let mut queue = VecDeque::new();
     for group_id in direct_group_ids_for_user(state, user_id) {
@@ -299,9 +295,6 @@ fn group_paths_for_user(
         if paths.insert(group_id.clone(), label).is_none() {
             queue.push_back(group_id);
         }
-    }
-    if !include_nested_groups {
-        return paths;
     }
     while let Some(child_group_id) = queue.pop_front() {
         let Some(child_path) = paths.get(&child_group_id).cloned() else {

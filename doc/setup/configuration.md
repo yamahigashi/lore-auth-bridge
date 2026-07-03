@@ -61,9 +61,7 @@ authz:
 
 It evaluates SQLite-backed grants and group membership, including nested groups, through the authz-core ReBAC adapter.
 
-`sql` is a legacy migration fallback.
-
-It keeps the direct-SQL authorization adapter available for one release and is planned for removal after that compatibility window.
+`sql` is no longer supported. Remove `authz.backend` or set it to `rebac`.
 
 ## jwt
 

@@ -572,8 +572,8 @@ async fn admin_read_pages_share_guard_and_render_for_admin() {
 }
 
 #[tokio::test]
-async fn admin_simulator_posts_real_policy_result_and_sql_evidence() {
-    let fixture = new_sqlite_rebac_admin_app().await;
+async fn admin_simulator_posts_real_policy_result_and_grant_evidence() {
+    let fixture = new_sqlite_admin_app().await;
     let store = fixture.store.clone();
     let artists = store
         .add_group("artists", "Art team")
@@ -709,51 +709,27 @@ async fn admin_simulator_posts_real_policy_result_and_sql_evidence() {
 }
 
 #[tokio::test]
-async fn admin_simulator_evidence_matches_configured_backend_nesting() {
-    let sql_fixture = new_sqlite_sql_admin_app().await;
-    add_nested_only_fixture(&sql_fixture).await;
+async fn admin_simulator_evidence_includes_nested_groups() {
+    let fixture = new_sqlite_admin_app().await;
+    add_nested_only_fixture(&fixture).await;
     let csrf = admin_csrf(
-        sql_fixture.app.clone(),
-        &sql_fixture.admin_cookie,
+        fixture.app.clone(),
+        &fixture.admin_cookie,
         "/admin/simulator",
     )
     .await;
-    let sql_response = sql_fixture
+    let response = fixture
         .app
         .clone()
         .oneshot(post_form_request(
             "/admin/simulator",
-            Some(sql_fixture.admin_cookie.clone()),
+            Some(fixture.admin_cookie.clone()),
             &format!("csrf_token={csrf}&user=alice@example.com&resource=nested-only&action=read"),
         ))
         .await
-        .expect("sql simulator response");
-    assert_eq!(sql_response.status(), StatusCode::OK);
-    let body = response_text(sql_response).await;
-    assert!(body.contains("Deny"), "{body}");
-    assert!(!body.contains("artists"), "{body}");
-    assert!(!body.contains("riggers"), "{body}");
-
-    let rebac_fixture = new_sqlite_rebac_admin_app().await;
-    add_nested_only_fixture(&rebac_fixture).await;
-    let csrf = admin_csrf(
-        rebac_fixture.app.clone(),
-        &rebac_fixture.admin_cookie,
-        "/admin/simulator",
-    )
-    .await;
-    let rebac_response = rebac_fixture
-        .app
-        .clone()
-        .oneshot(post_form_request(
-            "/admin/simulator",
-            Some(rebac_fixture.admin_cookie.clone()),
-            &format!("csrf_token={csrf}&user=alice@example.com&resource=nested-only&action=read"),
-        ))
-        .await
-        .expect("rebac simulator response");
-    assert_eq!(rebac_response.status(), StatusCode::OK);
-    let body = response_text(rebac_response).await;
+        .expect("simulator response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await;
     assert!(body.contains("Allow"), "{body}");
     assert!(body.contains("reader"), "{body}");
     assert!(body.contains("artists"), "{body}");
@@ -762,7 +738,7 @@ async fn admin_simulator_evidence_matches_configured_backend_nesting() {
 
 #[tokio::test]
 async fn admin_simulator_uses_resolved_resource_for_evidence_when_names_collide() {
-    let fixture = new_sqlite_sql_admin_app().await;
+    let fixture = new_sqlite_admin_app().await;
     let store = fixture.store.clone();
     store
         .upsert(Resource {
@@ -819,7 +795,7 @@ async fn admin_simulator_uses_resolved_resource_for_evidence_when_names_collide(
 
 #[tokio::test]
 async fn admin_simulator_localizes_missing_user_error() {
-    let fixture = new_sqlite_sql_admin_app().await;
+    let fixture = new_sqlite_admin_app().await;
     let cookie = format!("{}; admin_lang=ja", fixture.admin_cookie);
     let csrf = admin_csrf(fixture.app.clone(), &cookie, "/admin/simulator").await;
     let response = fixture
@@ -1012,7 +988,7 @@ async fn admin_groups_render_direct_members_and_nested_groups() {
 
 #[tokio::test]
 async fn admin_user_access_renders_rebac_accessible_permissions() {
-    let fixture = new_sqlite_rebac_admin_app().await;
+    let fixture = new_sqlite_admin_app().await;
 
     let response = fixture
         .app
@@ -1309,12 +1285,7 @@ async fn admin_user_disable_allows_admin_when_another_active_admin_remains() {
 
 #[tokio::test]
 async fn admin_post_writes_record_admin_audit_with_admin_actor() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        admin_config_with(|admin| {
-            admin.allow_group_nesting = true;
-        }),
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let admin_cookie = admin_session_cookie(&store).await;
     let alice = store.add_test_user(User {
         id: "user-alice".to_owned(),
@@ -1460,34 +1431,6 @@ async fn admin_post_writes_record_admin_audit_with_admin_actor() {
     );
 }
 
-#[tokio::test]
-async fn admin_group_nesting_post_is_rejected_when_backend_is_not_rebac() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        admin_config_with(|admin| {
-            admin.allow_group_nesting = false;
-        }),
-    );
-    let admin_cookie = admin_session_cookie(&store).await;
-    store.add_group("artists", "").await.expect("add artists");
-    store.add_group("riggers", "").await.expect("add riggers");
-    let csrf = admin_csrf(app.clone(), &admin_cookie, "/admin/groups").await;
-
-    let response = app
-        .oneshot(post_form_request(
-            "/admin/groups/nests/add",
-            Some(admin_cookie),
-            &format!("csrf_token={csrf}&parent_group=artists&member_group=riggers"),
-        ))
-        .await
-        .expect("nest add response");
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = response_text(response).await;
-    assert!(body.contains("authz.backend: rebac"), "{body}");
-    assert!(store.admin_audit_entries().is_empty());
-}
-
 #[test]
 fn admin_static_asset_hashes_match_notice() {
     assert_eq!(
@@ -1569,15 +1512,7 @@ impl Drop for TestDir {
     }
 }
 
-async fn new_sqlite_rebac_admin_app() -> SqliteAdminApp {
-    new_sqlite_admin_app(true).await
-}
-
-async fn new_sqlite_sql_admin_app() -> SqliteAdminApp {
-    new_sqlite_admin_app(false).await
-}
-
-async fn new_sqlite_admin_app(use_rebac: bool) -> SqliteAdminApp {
+async fn new_sqlite_admin_app() -> SqliteAdminApp {
     let dir = TestDir::new();
     let path = dir.path.join("auth.sqlite3");
     let store = Arc::new(sqlite::Store::open(&path).await.expect("open sqlite"));
@@ -1616,11 +1551,8 @@ async fn new_sqlite_admin_app(use_rebac: bool) -> SqliteAdminApp {
         .expect("add grant");
 
     let resource_store: Arc<dyn ResourceStore> = store.clone();
-    let authz_policy: Arc<dyn AuthorizationPolicy> = if use_rebac {
-        Arc::new(authz::RebacAuthorizationPolicy::from_store(store.as_ref()).expect("rebac authz"))
-    } else {
-        store.clone()
-    };
+    let authz_policy: Arc<dyn AuthorizationPolicy> =
+        Arc::new(authz::RebacAuthorizationPolicy::from_store(store.as_ref()).expect("rebac authz"));
     let signer_store = Arc::new(memory::Store::new());
     let tokens = Arc::new(TokenService::new(
         TokenConfig {
@@ -1645,9 +1577,7 @@ async fn new_sqlite_admin_app(use_rebac: bool) -> SqliteAdminApp {
             lore_auth_url: "ucs-auth://auth.example.com".to_owned(),
             default_remote_url: "lore://lore.example.com:41337".to_owned(),
             session_ttl: Duration::from_secs(60 * 60),
-            admin: admin_config_with(|admin| {
-                admin.allow_group_nesting = use_rebac;
-            }),
+            admin: admin_config(),
         },
         Services {
             login: None,

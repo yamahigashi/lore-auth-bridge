@@ -72,14 +72,11 @@ impl GrantQuery for Store {
         &self,
         user_id: &str,
         resource_id: &str,
-        include_nested_groups: bool,
     ) -> CoreResult<Vec<GrantEvidence>> {
         let user_id = user_id.to_owned();
         let resource_id = resource_id.to_owned();
         self.conn
-            .call(move |conn| {
-                grant_evidence_conn(conn, &user_id, &resource_id, include_nested_groups)
-            })
+            .call(move |conn| grant_evidence_conn(conn, &user_id, &resource_id))
             .await
             .map_err(core_from_driver)
     }
@@ -178,7 +175,6 @@ fn grant_evidence_conn(
     conn: &rusqlite::Connection,
     user_id: &str,
     resource_id: &str,
-    include_nested_groups: bool,
 ) -> CoreResult<Vec<GrantEvidence>> {
     let repository_id = repository_id_by_resource_conn(conn, resource_id)?;
     let user_label = user_label_conn(conn, user_id)?;
@@ -212,9 +208,9 @@ fn grant_evidence_conn(
         out.push(evidence);
     }
 
-    let group_ids = reachable_group_ids_conn(conn, user_id, include_nested_groups)?;
+    let group_ids = reachable_group_ids_conn(conn, user_id)?;
     if !group_ids.is_empty() {
-        let group_paths = group_paths_conn(conn, user_id, include_nested_groups, &group_ids)?;
+        let group_paths = group_paths_conn(conn, user_id, &group_ids)?;
         let mut group_stmt = conn
             .prepare_cached(
                 "SELECT g.subject_type,
@@ -303,21 +299,19 @@ fn repository_id_by_resource_conn(
 fn reachable_group_ids_conn(
     conn: &rusqlite::Connection,
     user_id: &str,
-    include_nested_groups: bool,
 ) -> CoreResult<HashSet<String>> {
-    let sql = if include_nested_groups {
-        "WITH RECURSIVE user_groups(group_id) AS (
+    let mut stmt = conn
+        .prepare_cached(
+            "WITH RECURSIVE user_groups(group_id) AS (
            SELECT group_id FROM group_members WHERE user_id = ?1
            UNION
            SELECT gg.group_id
            FROM group_groups gg
            JOIN user_groups ug ON gg.member_group_id = ug.group_id
          )
-         SELECT group_id FROM user_groups"
-    } else {
-        "SELECT group_id FROM group_members WHERE user_id = ?1"
-    };
-    let mut stmt = conn.prepare_cached(sql).map_err(core_from_sql)?;
+         SELECT group_id FROM user_groups",
+        )
+        .map_err(core_from_sql)?;
     let rows = stmt
         .query_map(params![user_id], |row| row.get::<_, String>(0))
         .map_err(core_from_sql)?;
@@ -331,7 +325,6 @@ fn reachable_group_ids_conn(
 fn group_paths_conn(
     conn: &rusqlite::Connection,
     user_id: &str,
-    include_nested_groups: bool,
     reachable_group_ids: &HashSet<String>,
 ) -> CoreResult<HashMap<String, String>> {
     let mut labels = HashMap::new();
@@ -371,10 +364,6 @@ fn group_paths_conn(
         {
             queue.push_back(group_id);
         }
-    }
-
-    if !include_nested_groups {
-        return Ok(paths);
     }
 
     let mut parents_by_member = HashMap::<String, Vec<String>>::new();

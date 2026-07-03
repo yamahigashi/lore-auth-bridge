@@ -2,11 +2,10 @@
 //!
 //! Seeds a temporary SQLite database with a deterministic universe of
 //! users / groups / repositories / grants, then times `can_access` and
-//! `list_accessible` against one of the two policy backends:
+//! `list_accessible` against the ReBAC policy backend:
 //!
 //! ```text
 //! cargo build -p lore-auth-adapters --release --example authz_bench
-//! target/release/examples/authz_bench --backend sql   --iters 2000
 //! target/release/examples/authz_bench --backend rebac --iters 2000
 //! ```
 //!
@@ -76,14 +75,14 @@ struct Cli {
 }
 
 fn parse_cli() -> Cli {
-    let mut backend = "sql".to_owned();
+    let mut backend = "rebac".to_owned();
     let mut iters = 2000_usize;
     let mut scale = Scale::new(1);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--backend" => {
-                backend = args.next().expect("--backend requires a value (sql|rebac)");
+                backend = args.next().expect("--backend requires a value (rebac)");
             }
             "--iters" => {
                 iters = args
@@ -100,13 +99,13 @@ fn parse_cli() -> Cli {
                         .expect("--scale must be a positive integer"),
                 );
             }
-            other => panic!(
-                "unknown argument: {other} (expected --backend sql|rebac, --iters N, --scale N)"
-            ),
+            other => {
+                panic!("unknown argument: {other} (expected --backend rebac, --iters N, --scale N)")
+            }
         }
     }
-    if backend != "sql" && backend != "rebac" {
-        panic!("--backend must be 'sql' or 'rebac', got '{backend}'");
+    if backend != "rebac" {
+        panic!("--backend must be 'rebac', got '{backend}'");
     }
     Cli {
         backend,
@@ -245,11 +244,8 @@ async fn main() {
     store.migrate().await.expect("migrate sqlite");
     seed(&path, cli.scale);
 
-    let policy: Arc<dyn AuthorizationPolicy> = match cli.backend.as_str() {
-        "sql" => Arc::new(store.clone()),
-        "rebac" => Arc::new(RebacAuthorizationPolicy::from_store(&store).expect("rebac policy")),
-        _ => unreachable!(),
-    };
+    let policy: Arc<dyn AuthorizationPolicy> =
+        Arc::new(RebacAuthorizationPolicy::from_store(&store).expect("rebac policy"));
 
     let user_count = cli.scale.users();
     let repo_count = cli.scale.repos();

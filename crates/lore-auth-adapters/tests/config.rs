@@ -23,14 +23,21 @@ fn load_applies_defaults_and_derives_lore_auth_url() {
 }
 
 #[test]
-fn load_accepts_explicit_sql_authz_backend() {
+fn load_rejects_removed_sql_authz_backend() {
     let dir = tempfile::tempdir().expect("tempdir");
     let raw = default_config(dir.path()).replace("database:", "authz:\n  backend: sql\ndatabase:");
     let path = write_config(dir.path(), raw);
 
-    let cfg = config::load(&path).expect("config loads");
+    let err = config::load(&path).expect_err("removed sql backend is rejected");
 
-    assert_eq!(cfg.authz.backend, "sql");
+    assert!(
+        err.to_string().contains("sql backend has been removed"),
+        "unexpected error: {err:?}",
+    );
+    assert!(
+        err.to_string().contains("authz.backend"),
+        "unexpected error: {err:?}",
+    );
 }
 
 #[test]

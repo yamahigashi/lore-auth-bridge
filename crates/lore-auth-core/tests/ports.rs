@@ -415,7 +415,6 @@ impl GrantQuery for NullPorts {
         &self,
         _user_id: &str,
         _resource_id: &str,
-        _include_nested_groups: bool,
     ) -> Result<Vec<lore_auth_core::model::GrantEvidence>, CoreError> {
         Ok(Vec::new())
     }
@@ -494,7 +493,7 @@ async fn all_ports_are_dyn_compatible() {
     );
     assert!(
         grant_query
-            .grants_for_user_on_repository("u", "urc-repo", true)
+            .grants_for_user_on_repository("u", "urc-repo")
             .await
             .expect("grant evidence")
             .is_empty()

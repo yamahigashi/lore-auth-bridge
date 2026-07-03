@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use lore_auth_adapters::sqlite::{CreateDeviceAuthorizationParams, Store};
+use lore_auth_adapters::{
+    authz::RebacAuthorizationPolicy,
+    sqlite::{CreateDeviceAuthorizationParams, Store},
+};
 use lore_auth_core::{
     CoreError,
     model::{
@@ -35,7 +38,6 @@ fn install_admin_audit_failure_trigger(fixture: &TestStore) {
 fn assert_core_ports<T>()
 where
     T: AccountDirectory
-        + AuthorizationPolicy
         + ResourceStore
         + DeviceAuthorizationStore
         + StateStore
@@ -596,8 +598,9 @@ async fn group_and_grant_crud_updates_authorization() {
         .await
         .expect("add grant");
     assert_eq!(grant.role, "writer");
+    let policy = RebacAuthorizationPolicy::from_store(store).expect("rebac policy");
     assert!(
-        store
+        policy
             .can_access(&user.id, &resource_id, "write")
             .await
             .expect("group grant works")
@@ -615,7 +618,7 @@ async fn group_and_grant_crud_updates_authorization() {
         .await
         .expect("remove member");
     assert!(
-        !store
+        !policy
             .can_access(&user.id, &resource_id, "write")
             .await
             .expect("group grant removed by membership")
@@ -678,7 +681,7 @@ async fn sqlite_grant_query_lists_direct_and_nested_group_evidence() {
 
     let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
     let evidence = store
-        .grants_for_user_on_repository(&user.id, &resource_id, true)
+        .grants_for_user_on_repository(&user.id, &resource_id)
         .await
         .expect("list grant evidence");
 
@@ -699,22 +702,10 @@ async fn sqlite_grant_query_lists_direct_and_nested_group_evidence() {
     );
     assert!(matches!(
         store
-            .grants_for_user_on_repository(&user.id, "urc-missing", true)
+            .grants_for_user_on_repository(&user.id, "urc-missing")
             .await,
         Err(CoreError::NotFound)
     ));
-
-    let sql_evidence = store
-        .grants_for_user_on_repository(&user.id, &resource_id, false)
-        .await
-        .expect("list sql-compatible grant evidence");
-    assert_eq!(sql_evidence.len(), 1);
-    assert!(
-        sql_evidence
-            .iter()
-            .all(|grant| grant.subject_type != "group"),
-        "{sql_evidence:?}"
-    );
 }
 
 #[tokio::test]
@@ -758,7 +749,7 @@ async fn sqlite_grant_evidence_uses_exact_resolved_resource_id() {
         .expect("add repo b grant by name");
 
     let evidence = store
-        .grants_for_user_on_repository(&user.id, "urc-repo-a", true)
+        .grants_for_user_on_repository(&user.id, "urc-repo-a")
         .await
         .expect("list repo a evidence");
 
@@ -819,7 +810,7 @@ async fn sqlite_grant_evidence_bounds_diamond_group_paths_to_groups() {
     }
 
     let evidence = store
-        .grants_for_user_on_repository(&user.id, "urc-repo-id", true)
+        .grants_for_user_on_repository(&user.id, "urc-repo-id")
         .await
         .expect("list diamond evidence");
 
@@ -864,8 +855,9 @@ async fn sqlite_grant_resolves_group_name_to_internal_id_before_authorization() 
         .expect("add group grant by name");
 
     assert_ne!(grant.subject_id, "artists");
+    let policy = RebacAuthorizationPolicy::from_store(store).expect("rebac policy");
     assert!(
-        store
+        policy
             .can_access(&user.id, &resource_id, "write")
             .await
             .expect("group name grant is effective")

@@ -49,7 +49,6 @@ pub(super) async fn handle_groups(
         limit: ADMIN_LIST_LIMIT,
         csrf_token: &csrf_token,
         flash: "",
-        allow_group_nesting: state.cfg.admin.allow_group_nesting,
     })
 }
 
@@ -165,12 +164,6 @@ async fn mutate_group_nest(
     if let Err(response) = require_admin_csrf(&state, &session, &form.csrf_token).await {
         return response;
     }
-    if !state.cfg.admin.allow_group_nesting {
-        return text_response(
-            StatusCode::BAD_REQUEST,
-            "nested group operations require authz.backend: rebac",
-        );
-    }
     let writes = state
         .services
         .admin_writes
@@ -233,7 +226,6 @@ async fn render_groups_page(
         limit: ADMIN_LIST_LIMIT,
         csrf_token: &csrf_token,
         flash,
-        allow_group_nesting: state.cfg.admin.allow_group_nesting,
     })
 }
 

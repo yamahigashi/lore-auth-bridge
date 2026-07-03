@@ -3,7 +3,6 @@
 
 mod accounts;
 mod audited;
-mod authz_sql;
 mod devices;
 mod grants;
 mod groups;

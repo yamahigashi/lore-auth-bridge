@@ -61,9 +61,7 @@ authz:
 
 SQLite に保存した grant と group membership（nested group を含む）を authz-core ベースの ReBAC adapter で評価します。
 
-`sql` は移行用の legacy fallback です。
-
-direct-SQL authorization adapter を 1 リリースだけ併存させ、その互換期間の後に削除する予定です。
+`sql` はサポートされません。`authz.backend` を削除するか `rebac` にしてください。
 
 ## jwt
 

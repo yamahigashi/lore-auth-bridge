@@ -364,7 +364,7 @@ async fn memory_grant_query_lists_direct_and_nested_group_evidence() {
 
     let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
     let evidence = store
-        .grants_for_user_on_repository(&user.id, &resource_id, true)
+        .grants_for_user_on_repository(&user.id, &resource_id)
         .await
         .expect("list grant evidence");
 
@@ -385,22 +385,10 @@ async fn memory_grant_query_lists_direct_and_nested_group_evidence() {
     );
     assert!(matches!(
         store
-            .grants_for_user_on_repository(&user.id, "urc-missing", true)
+            .grants_for_user_on_repository(&user.id, "urc-missing")
             .await,
         Err(CoreError::NotFound)
     ));
-
-    let sql_evidence = store
-        .grants_for_user_on_repository(&user.id, &resource_id, false)
-        .await
-        .expect("list sql-compatible grant evidence");
-    assert_eq!(sql_evidence.len(), 1);
-    assert!(
-        sql_evidence
-            .iter()
-            .all(|grant| grant.subject_type != "group"),
-        "{sql_evidence:?}"
-    );
 }
 
 #[tokio::test]
