@@ -275,6 +275,55 @@ async fn memory_grant_resolves_user_and_group_subjects_like_sqlite() {
 }
 
 #[tokio::test]
+async fn memory_grants_use_repository_name_not_lore_repository_id() {
+    let store = Store::new();
+    let user = store.add_test_user(User {
+        id: "user-1".to_owned(),
+        email: "alice@example.com".to_owned(),
+        status: "active".to_owned(),
+        ..User::default()
+    });
+    let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
+    store.add_test_resource(Resource {
+        name: "game-assets".to_owned(),
+        lore_repository_id: "repo-id".to_owned(),
+        resource_id: resource_id.clone(),
+        status: "active".to_owned(),
+        ..Resource::default()
+    });
+    store
+        .add_grant("user", &user.id, "game-assets", "writer")
+        .await
+        .expect("add grant by name");
+
+    let by_name = store
+        .list_grants("game-assets")
+        .await
+        .expect("list grants by repository name");
+    assert_eq!(by_name.len(), 1);
+    assert_eq!(by_name[0].role, "writer");
+
+    assert!(matches!(
+        store.list_grants("repo-id").await,
+        Err(CoreError::NotFound)
+    ));
+    assert!(matches!(
+        store.list_grants(&resource_id).await,
+        Err(CoreError::NotFound)
+    ));
+    assert!(matches!(
+        store.add_grant("user", &user.id, "repo-id", "reader").await,
+        Err(CoreError::NotFound)
+    ));
+    assert!(matches!(
+        store
+            .remove_grant("user", &user.id, "repo-id", "writer")
+            .await,
+        Err(CoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
 async fn memory_grant_query_lists_direct_and_nested_group_evidence() {
     let store = Store::new();
     let user = store.add_test_user(User {

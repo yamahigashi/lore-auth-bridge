@@ -282,6 +282,11 @@ pub trait GroupAdmin: Send + Sync {
 
 #[async_trait]
 pub trait GrantQuery: Send + Sync {
+    /// Lists grants for a repository name.
+    ///
+    /// `repo` is the repository `name`, not `lore_repository_id` or `resource_id`;
+    /// implementations must return `CoreError::NotFound` when the repository name
+    /// does not exist.
     async fn list_grants(&self, repo: &str) -> Result<Vec<model::Grant>, CoreError>;
 
     /// Lists grants that can affect `user_id` on an active resolved resource ID.
@@ -301,6 +306,11 @@ pub trait GrantQuery: Send + Sync {
 
 #[async_trait]
 pub trait GrantAdmin: Send + Sync {
+    /// Adds a grant for a repository name.
+    ///
+    /// `repo` is the repository `name`, not `lore_repository_id` or `resource_id`;
+    /// implementations must return `CoreError::NotFound` when the repository name
+    /// does not exist.
     async fn add_grant(
         &self,
         subject_type: &str,
@@ -309,6 +319,11 @@ pub trait GrantAdmin: Send + Sync {
         role: &str,
     ) -> Result<model::Grant, CoreError>;
 
+    /// Removes a grant for a repository name.
+    ///
+    /// `repo` is the repository `name`, not `lore_repository_id` or `resource_id`;
+    /// implementations must return `CoreError::NotFound` when the repository name
+    /// does not exist.
     async fn remove_grant(
         &self,
         subject_type: &str,

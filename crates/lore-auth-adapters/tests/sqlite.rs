@@ -180,6 +180,60 @@ async fn audited_sqlite_rolls_back_user_disable_when_admin_audit_insert_fails() 
 }
 
 #[tokio::test]
+async fn sqlite_grants_use_repository_name_not_lore_repository_id() {
+    let fixture = migrated_store().await;
+    let store = &fixture.store;
+    let user = store
+        .add_user(AddUserInput {
+            email: "alice@example.com".to_owned(),
+            ..AddUserInput::default()
+        })
+        .await
+        .expect("add user");
+    let resource_id = ResourceID::for_repository_id("repo-id").expect("resource id");
+    store
+        .upsert(Resource {
+            name: "game-assets".to_owned(),
+            remote_url: "lore://example".to_owned(),
+            lore_repository_id: "repo-id".to_owned(),
+            resource_id: resource_id.clone(),
+            ..Resource::default()
+        })
+        .await
+        .expect("upsert repo");
+    store
+        .add_grant("user", &user.id, "game-assets", "writer")
+        .await
+        .expect("add grant by name");
+
+    let by_name = store
+        .list_grants("game-assets")
+        .await
+        .expect("list grants by repository name");
+    assert_eq!(by_name.len(), 1);
+    assert_eq!(by_name[0].role, "writer");
+
+    assert!(matches!(
+        store.list_grants("repo-id").await,
+        Err(CoreError::NotFound)
+    ));
+    assert!(matches!(
+        store.list_grants(&resource_id).await,
+        Err(CoreError::NotFound)
+    ));
+    assert!(matches!(
+        store.add_grant("user", &user.id, "repo-id", "reader").await,
+        Err(CoreError::NotFound)
+    ));
+    assert!(matches!(
+        store
+            .remove_grant("user", &user.id, "repo-id", "writer")
+            .await,
+        Err(CoreError::NotFound)
+    ));
+}
+
+#[tokio::test]
 async fn audited_sqlite_rolls_back_repository_add_when_admin_audit_insert_fails() {
     let fixture = migrated_store().await;
     let store = &fixture.store;
