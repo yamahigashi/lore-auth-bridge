@@ -2,7 +2,10 @@
 
 Rust integration-test harness for the Lore end-to-end suite.
 
-Run the E1 suite with the real Lore binaries available on `PATH`:
+This crate replaces the former Go harness.
+It contains the full 12-scenario Rust port and is the only maintained end-to-end harness.
+
+Run the suite with the real Lore binaries available on `PATH`:
 
 ```bash
 LORE_E2E=1 \

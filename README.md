@@ -46,7 +46,6 @@ This repository builds three main binaries:
 
 - Rust stable toolchain
 - `lore` / `loreserver` binaries for real integration checks
-- Go toolchain for the end-to-end harness under `test/e2e`
 
 ## Installation
 
@@ -87,14 +86,14 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-The end-to-end harness is Go-based and runs only when explicitly enabled.
+The Rust end-to-end harness runs only when explicitly enabled.
 
 ```bash
 cargo build -p lore-auth-server -p lore-authctl
 LORE_E2E=1 \
 LORE_E2E_BRIDGE_BIN=target/debug/lore-auth-server \
 LORE_E2E_AUTHCTL_BIN=target/debug/lore-authctl \
-go test -tags e2e -count=1 -v ./test/e2e/...
+cargo test -p lore-auth-e2e -- --test-threads=1
 ```
 
 ## Configuration And Startup

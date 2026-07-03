@@ -8,22 +8,6 @@ permissions:
   contents: read
 
 jobs:
-  # The Go toolchain only compiles the black-box e2e harness; the e2e
-  # suite itself needs real lore/loreserver binaries and runs locally.
-  e2e-harness:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - run: go vet ./test/e2e/
-      - run: go vet -tags e2e ./test/e2e/
-      - run: go build -tags e2e ./test/e2e/
-
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -37,4 +21,5 @@ jobs:
 
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build -p lore-auth-e2e --tests
       - run: cargo test

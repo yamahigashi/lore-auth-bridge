@@ -46,7 +46,6 @@ Lore CLI と `loreserver` に対して、ログイン、repository 単位の tok
 
 - Rust stable toolchain
 - 実機検証時に使用する `lore` / `loreserver` binary
-- `test/e2e` 配下の end-to-end harness を実行する場合は Go toolchain
 
 ## 導入
 
@@ -87,14 +86,14 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-end-to-end harness は Go 製で、明示的に有効にした場合だけ実行します。
+Rust 製 end-to-end harness は、明示的に有効にした場合だけ実行します。
 
 ```bash
 cargo build -p lore-auth-server -p lore-authctl
 LORE_E2E=1 \
 LORE_E2E_BRIDGE_BIN=target/debug/lore-auth-server \
 LORE_E2E_AUTHCTL_BIN=target/debug/lore-authctl \
-go test -tags e2e -count=1 -v ./test/e2e/...
+cargo test -p lore-auth-e2e -- --test-threads=1
 ```
 
 ## 設定と起動
