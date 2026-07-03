@@ -12,23 +12,28 @@ Google OIDC is one concrete example covered by this documentation set.
 
 ## Reading Order
 
-Read these pages first to understand the full setup:
+Use this order:
 
-1. [Configuration](setup/configuration.md)
-2. [TLS](setup/tls.md)
-3. [Signing Keys](setup/signing-keys.md)
-4. [Loreserver](setup/loreserver.md)
-5. [Authctl](setup/authctl.md)
-6. [Admin Web UI](setup/admin-ui.md)
+1. Read [Components](#components) to understand how the bridge, `loreserver`, and the Lore CLI fit together.
+2. Run [Hands-on Quickstart](setup/hands-on-quickstart.md) to experience the full flow in a self-contained no-IdP setup.
+3. Finish the production shape with the individual setup pages.
+
+Production setup pages:
+
+- [Configuration](setup/configuration.md)
+- [Operations](setup/operations.md)
+- [TLS](setup/tls.md)
+- [Signing Keys](setup/signing-keys.md)
+- [Loreserver](setup/loreserver.md)
+- [Authctl](setup/authctl.md)
+- [Admin Web UI](setup/admin-ui.md)
 
 If you use IdP integration, also read:
 
-1. [Identity Providers](setup/identity-providers.md)
-2. [Google OIDC](setup/google-oidc.md) for the Google-specific example
+- [Identity Providers](setup/identity-providers.md)
+- [Google OIDC](setup/google-oidc.md) for the Google-specific example
 
 If you expose the bridge and Lore remote through Tailscale, also read [Tailscale](setup/tailscale.md).
-
-After the individual setup pages, use [Hands-on Quickstart](setup/hands-on-quickstart.md) to check the full bridge, `loreserver`, and `lore` CLI flow.
 
 ## Components
 
@@ -73,6 +78,8 @@ When IdP login is enabled, the IdP client configuration and the bridge configura
 
 Manage users and repository permissions with `lore-authctl`.
 
+Keep port exposure, data placement, backups, logs, and recovery procedures in [Operations](setup/operations.md).
+
 ## Full Flow Check
 
-The repository creation and clone flow is covered in [Hands-on Quickstart](setup/hands-on-quickstart.md).
+The repository creation and clone flow is covered by the self-contained [Hands-on Quickstart](setup/hands-on-quickstart.md).

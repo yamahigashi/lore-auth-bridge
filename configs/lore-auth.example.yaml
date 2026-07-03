@@ -1,3 +1,6 @@
+# Unknown keys are parse errors. Remove typos or unsupported keys instead of
+# leaving them in this file.
+
 server:
   # This example assumes a reverse proxy or load balancer exposes
   # https://auth.example.com and forwards to these loopback listeners.

@@ -4,6 +4,8 @@
 
 `lore-auth.yaml` configures the bridge HTTP server, gRPC server, DB, JWT settings, Lore integration, login method, and admin UI.
 
+Unknown keys are parse errors at every config object level; remove typos or unsupported keys instead of leaving them in the file.
+
 This page explains each setting.
 
 See [Hands-on Quickstart](hands-on-quickstart.md) for the full flow check.
@@ -35,6 +37,8 @@ See [TLS](tls.md) for certificate generation and trust configuration.
 
 Keeping it aligned with `jwt.issuer` makes verification easier.
 
+See [Operations](operations.md#ports) for default ports and exposure guidance.
+
 ## database
 
 ```yaml
@@ -44,9 +48,7 @@ database:
 
 `path` is the SQLite database path.
 
-The database stores users, groups, repositories, grants, auth sessions, issued tokens, signing key metadata, and admin audit entries.
-
-Admin UI and `lore-authctl` mutations are recorded in `admin_audit`.
+See [Operations](operations.md#data-layout) for file placement, WAL behavior, permissions, and backup guidance.
 
 ## authz
 
@@ -95,6 +97,8 @@ Authz token TTL is configured at server and CLI startup and is currently 15 minu
 `active_kid` is the key ID used for signing.
 
 See [Signing Keys](signing-keys.md) for key generation.
+
+See [Operations](operations.md#data-layout) for private key directory permissions and backup guidance.
 
 ## lore
 
@@ -154,6 +158,10 @@ security:
 
 `device_poll_interval_seconds` is the device flow polling interval.
 
+Device flow uses `/api/device/start`, `/device`, and `/api/device/token` so a browserless Lore CLI or helper can request a repository token that a logged-in user approves in a browser.
+
+See [Operations](operations.md#device-flow) for endpoint behavior and token handling.
+
 `session_ttl_seconds` is the TTL for browser sessions.
 
 `auth_session_ttl_seconds` can be set when interactive auth sessions need a different TTL.
@@ -193,12 +201,7 @@ The bridge also applies a small per-peer in-process rate limit to these public e
 That limit is defense in depth.
 Behind a reverse proxy, the bridge sees the proxy as the peer unless a trusted proxy policy is implemented, so the app-level limiter is not a replacement for edge rate limiting.
 
-Configure access logs so URL query strings and sensitive path values are not recorded.
-
-For NGINX, prefer a log format based on `$uri` instead of `$request_uri`.
-For Caddy or another reverse proxy, omit or redact query strings.
-
-Do not log OAuth callback `code` values, device `user_code` values, `/login/session/{nonce}` nonces, or token bodies.
+See [Operations](operations.md#logs) for `RUST_LOG`, default filters, token display handling, and reverse-proxy log redaction.
 
 ## identity_providers
 
@@ -249,6 +252,8 @@ identity_providers:
 
 `identity_providers` configures one or more login identity provider instances.
 
+This section is the primary reference for `trust.email_binding`.
+
 `default` must reference a key under `providers`.
 
 The provider key, such as `google` or `keycloak-prod`, is stored as the bridge identity provider instance ID.
@@ -269,17 +274,19 @@ When set, logins whose `hd` claim is not in the list are rejected.
 
 If `trust.hosted_domain.allowed` is empty and `trust.personal_accounts` is not `deny`, the bridge allows both registered Workspace accounts and registered personal Google accounts.
 
-`trust.allowed_email_domains` is an additional condition for consuming a verified-email invitation.
+`trust.email_binding` controls whether a pending invitation can be consumed during first login.
 
-It is checked only when `trust.email_binding: verified_email_invitation` is about to bind a pending invitation.
+`verified_email_invitation` means the IdP login can create an external identity binding only when the ID token contains a verified email matching a pending invitation for the same provider and issuer.
+
+`disabled` means `lore-authctl user invite` still creates pending invitations, but login will not consume them.
+
+An existing external identity binding resolves by `provider_id`, `issuer`, and `subject` regardless of email.
+
+`trust.allowed_email_domains` is an additional condition for consuming a verified-email invitation.
 
 It is not a global login allowlist.
 
-If `trust.email_binding` is `disabled`, `lore-authctl user invite` still creates pending invitations, but login will not consume them.
-
-An existing external identity binding continues to resolve by `provider_id`, `issuer`, and `subject`.
-
-When `trust.allowed_email_domains` is set for invitation binding, the ID token email must be verified and its domain must be in the configured list.
+When it is set, the ID token email must be verified and its domain must be in the configured list before the invitation can be consumed.
 
 `subject.strategy: oidc_sub` uses the ID token `sub` claim as the persistent subject.
 

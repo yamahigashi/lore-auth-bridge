@@ -77,12 +77,4 @@ sqlite3 /var/lib/lore-auth/auth.sqlite3 \
 
 ## Recovery
 
-If an admin user is disabled by mistake, re-enable the account with `authctl`.
-
-```bash
-lore-authctl --config /etc/lore-auth/lore-auth.yaml user enable admin@example.com
-```
-
-If the IdP is unavailable, continue operational changes with `lore-authctl`.
-
-The CLI uses the same audited write adapters as the UI for administrative mutations.
+For admin re-enable and IdP-outage procedures, see [Operations](operations.md#recovery).

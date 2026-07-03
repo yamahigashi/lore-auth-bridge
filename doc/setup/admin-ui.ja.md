@@ -79,12 +79,4 @@ sqlite3 /var/lib/lore-auth/auth.sqlite3 \
 
 ## 復旧
 
-admin user を誤って disable した場合は、`authctl` で account を有効化します。
-
-```bash
-lore-authctl --config /etc/lore-auth/lore-auth.yaml user enable admin@example.com
-```
-
-IdP が利用できない場合は、`lore-authctl` で運用を継続します。
-
-CLI は、UI と同じ audited write adapter で管理 mutation を実行します。
+admin の再有効化と IdP 障害時の手順は [Operations](operations.ja.md#recovery) を参照してください。

@@ -4,11 +4,15 @@
 
 This page walks through a no-IdP setup that runs the bridge, `loreserver`, and the `lore` CLI, then verifies repository creation and clone.
 
+This no-IdP path is self-contained; the prerequisites are listed below and no other setup page is required first.
+
 It does not use an external IdP.
 
 Instead, it issues an authn token with `lore-authctl token mint-authn`.
 
 For IdP login, see [Identity Providers](identity-providers.md).
+
+For production port exposure, backups, logs, and recovery, read [Operations](operations.md) after completing the quickstart.
 
 ## Prerequisites
 

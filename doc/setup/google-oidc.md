@@ -159,7 +159,7 @@ Even after Google login succeeds, the bridge does not issue a token unless the c
 
 Usually, an administrator registers the target user's email.
 
-The examples above set `trust.email_binding: verified_email_invitation`, so the first verified-email login can consume that invitation and create the external identity binding.
+The examples above use `trust.email_binding: verified_email_invitation`; see [Configuration](configuration.md#identity_providers) for the exact binding and email-domain rules.
 
 ```bash
 lore-authctl --config .quickstart/lore-auth.yaml user invite \
@@ -170,11 +170,7 @@ lore-authctl --config .quickstart/lore-auth.yaml user invite \
 
 At this point, linkage with the Google account is not complete, so no token is issued.
 
-When the user opens `/login` and Google returns the same `email_verified=true` email, that login completes the browser session or CLI auth session.
-
 If the user is not invited, no token is issued.
-
-Invite the verified Google email, then retry login.
 
 After the invitation is created, open `/login` again to create the bridge browser session.
 
@@ -190,7 +186,7 @@ After verification, it resolves the provider ID, issuer, and subject against `ex
 
 If an active binding exists, the browser session or CLI auth session completes.
 
-If no binding exists but an `email_verified=true` email matches a pending invitation for the same provider and issuer, the bridge creates the binding and completes the login.
+If no active binding exists, the generic invitation-binding policy from [Configuration](configuration.md#identity_providers) applies.
 
 If no binding or invitation matches, the bridge does not issue a token and displays the whoami page.
 

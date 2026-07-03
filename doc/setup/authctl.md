@@ -262,3 +262,5 @@ lore-authctl --config "$CONFIG" token mint \
 Without `--out`, `token mint` prints the token to stdout.
 
 It prints a login command only when `--print-login-command` is set.
+
+For browser-issued repository tokens from `/tokens` and `/tokens/mint`, see [Operations](operations.md#web-token-page).

@@ -58,19 +58,25 @@ The end-to-end path for login, repository creation, token exchange, and clone ha
 
 ## Start Here
 
-Start with the [Setup Guide](doc/setup-guide.md) for configuration and operations.
+Choose one track:
 
-Main procedure pages:
+1. **Run it first**: use the [Hands-on Quickstart](doc/setup/hands-on-quickstart.md).
+   It is a self-contained no-IdP path that starts the bridge, `loreserver`, and the `lore` CLI.
+2. **Prepare production setup**: read the [Setup Guide](doc/setup-guide.md).
+   It starts with the component overview, then points back to the quickstart before the production configuration pages.
+
+Production reference pages:
 
 - [Configuration](doc/setup/configuration.md)
+- [Operations](doc/setup/operations.md)
 - [TLS](doc/setup/tls.md)
 - [Tailscale](doc/setup/tailscale.md)
 - [Signing Keys](doc/setup/signing-keys.md)
 - [Loreserver](doc/setup/loreserver.md)
 - [Authctl](doc/setup/authctl.md)
+- [Admin Web UI](doc/setup/admin-ui.md)
 - [Identity Providers](doc/setup/identity-providers.md)
 - [Google OIDC](doc/setup/google-oidc.md)
-- [Hands-on Quickstart](doc/setup/hands-on-quickstart.md)
 
 ## Binaries
 
@@ -192,10 +198,9 @@ When pairing the bridge with a new Lore binary, use `lore-claimprobe` to validat
 
 ## Security Notes
 
-- Store private keys on the filesystem with mode `0600`. Do not store private keys in the DB or JWKS.
 - Do not leave JWTs, Google client secrets, or private keys in logs or in the repository.
-- `lore-authctl token mint-authn --print-login-command` and the web token page display token bodies.
-  Do not use them in shared terminals, CI logs, or browser histories.
+- Some CLI and browser token flows display token bodies.
+  See [Operations](doc/setup/operations.md#logs) for log handling and [Operations](doc/setup/operations.md#web-token-page) for the web token page.
 - See [Signing Keys](doc/setup/signing-keys.md) for signing key and token rotation.
 
 ## License

@@ -262,3 +262,5 @@ lore-authctl --config "$CONFIG" token mint \
 `--out` を指定しない場合、`token mint` は token を stdout に表示します。
 
 token 入り login command を表示するのは、`--print-login-command` を付けた場合だけです。
+
+`/tokens` と `/tokens/mint` で browser から repository token を発行する場合は、[Operations](operations.ja.md#web-token-page) を参照してください。

@@ -48,11 +48,7 @@ jwt:
 
 ## 権限
 
-private key file は `0600` で書き出されます。
-
-directory は運用ユーザーだけが読める権限にしてください。
-
-検証用の `.quickstart/keys` や `.probe/` はコミットしないでください。
+private key directory と file の permission、SQLite database と揃える backup、運用上の保存規則は [Operations](operations.ja.md#data-layout) を参照してください。
 
 ## JWKS
 

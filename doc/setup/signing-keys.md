@@ -48,11 +48,7 @@ jwt:
 
 ## Permissions
 
-Private key files are written with mode `0600`.
-
-Make the directory readable only by the operating user.
-
-Do not commit verification directories such as `.quickstart/keys` or `.probe/`.
+For private key directory and file permissions, backup pairing with the SQLite database, and operational storage rules, see [Operations](operations.md#data-layout).
 
 ## JWKS
 

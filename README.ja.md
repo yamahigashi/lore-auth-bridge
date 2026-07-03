@@ -58,19 +58,25 @@ repository 操作時、Lore はその authn token を `UrcAuthApi` で短命の 
 
 ## はじめに読むもの
 
-設定と運用手順は [Setup Guide](doc/setup-guide.ja.md) から読み始めてください。
+次の 2 つの track から選びます。
 
-主な個別手順:
+1. **まず動かす**：[Hands-on Quickstart](doc/setup/hands-on-quickstart.ja.md) を使います。
+   IdP を使わず、bridge、`loreserver`、`lore` CLI を起動する単体完結の手順です。
+2. **本番構成を整える**：[Setup Guide](doc/setup-guide.ja.md) を読みます。
+   構成要素の概要から入り、quickstart で全体を体験してから本番向けの個別設定に進みます。
+
+本番向けの参照ページ:
 
 - [Configuration](doc/setup/configuration.ja.md)
+- [Operations](doc/setup/operations.ja.md)
 - [TLS](doc/setup/tls.ja.md)
 - [Tailscale](doc/setup/tailscale.ja.md)
 - [Signing Keys](doc/setup/signing-keys.ja.md)
 - [Loreserver](doc/setup/loreserver.ja.md)
 - [Authctl](doc/setup/authctl.ja.md)
+- [管理 Web UI](doc/setup/admin-ui.ja.md)
 - [Identity Providers](doc/setup/identity-providers.ja.md)
 - [Google OIDC](doc/setup/google-oidc.ja.md)
-- [Hands-on Quickstart](doc/setup/hands-on-quickstart.ja.md)
 
 ## 実行ファイル
 
@@ -192,10 +198,9 @@ target/release/lore-authctl --config configs/lore-auth.example.yaml user invite 
 
 ## セキュリティ上の注意
 
-- private key は filesystem に `0600` で置き、DB や JWKS には出しません。
 - JWT、Google client secret、private key をログや repository に残さないでください。
-- `lore-authctl token mint-authn --print-login-command` と Web token page は token 本文を表示します。
-  共有 terminal、CI log、browser history に残さない運用にしてください。
+- CLI と browser の一部 token flow は token 本文を表示します。
+  log handling は [Operations](doc/setup/operations.ja.md#logs)、Web token page は [Operations](doc/setup/operations.ja.md#web-token-page) を参照してください。
 - signing key と token の rotation 手順は [Signing Keys](doc/setup/signing-keys.ja.md) を参照してください。
 
 ## ライセンス

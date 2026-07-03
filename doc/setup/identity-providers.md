@@ -28,9 +28,7 @@ If the user is not registered, no token is issued and the whoami page displays t
 
 When the IdP returns verified email addresses, an administrator can preregister a user with `lore-authctl --config <cfg> user invite --idp <provider-id> --email <address>`.
 
-If the provider has `trust.email_binding: verified_email_invitation` and the invited user's first login returns a matching verified email from the IdP, the bridge creates the external identity binding and completes that login.
-
-If `trust.allowed_email_domains` is set, the email domain must also match that list before the invitation is consumed.
+With `trust.email_binding: verified_email_invitation`, first login can bind the invited verified email; see [Configuration](configuration.md#identity_providers) for the exact binding and `trust.allowed_email_domains` rules.
 
 When `identity_providers` is configured, `user invite` requires `--idp`.
 
@@ -70,7 +68,7 @@ identity_providers:
 
 `subject.required_tid` pins the accepted tenant because a multi-tenant Entra setup can otherwise mix subjects from different tenants.
 
-The generic verified-email invitation rules still apply: the ID token must contain the mapped `email` claim and `email_verified=true` before `user invite` can be consumed.
+The same verified-email invitation rules from [Configuration](configuration.md#identity_providers) apply.
 
 ## Authn Tokens Issued By The Administrative CLI
 
