@@ -112,6 +112,10 @@ lore-authctl --config "$CONFIG" user add \
   --name "Manual User"
 ```
 
+この quickstart では IdP を設定せず、後で `token mint-authn` によって authn token を発行するため、意図的に `user add` を使います。
+
+IdP onboarding では `user invite` を使います。
+
 ## bridge 起動
 
 別のターミナルで起動します。

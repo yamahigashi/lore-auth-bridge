@@ -9,15 +9,6 @@
   </form>
 </section>
 <section>
-  <h2>{{ self.t("admin.users.add") }}</h2>
-  <form method="post" action="/admin/users">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <input type="email" name="email" placeholder='{{ self.t("admin.users.email") }}' aria-label='{{ self.t("admin.users.email") }}'>
-    <input type="text" name="display_name" placeholder='{{ self.t("admin.users.display_name") }}' aria-label='{{ self.t("admin.users.display_name") }}'>
-    <button type="submit">{{ self.t("admin.common.add") }}</button>
-  </form>
-</section>
-<section>
   <h2>{{ self.t("admin.users.invite") }}</h2>
   <form method="post" action="/admin/users/invite">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -25,8 +16,20 @@
     <input type="url" name="issuer" value="https://accounts.google.com" aria-label='{{ self.t("admin.users.issuer") }}'>
     <input type="email" name="email" placeholder='{{ self.t("admin.users.email") }}' aria-label='{{ self.t("admin.users.email") }}'>
     <input type="text" name="display_name" placeholder='{{ self.t("admin.users.display_name") }}' aria-label='{{ self.t("admin.users.display_name") }}'>
-    <button type="submit">{{ self.t("admin.common.add") }}</button>
+    <button type="submit">{{ self.t("admin.users.invite") }}</button>
   </form>
+</section>
+<section>
+  <details>
+    <summary>{{ self.t("admin.users.add_advanced") }}</summary>
+    <p>{{ self.t("admin.users.add_warning") }}</p>
+    <form method="post" action="/admin/users">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="email" name="email" placeholder='{{ self.t("admin.users.email") }}' aria-label='{{ self.t("admin.users.email") }}'>
+      <input type="text" name="display_name" placeholder='{{ self.t("admin.users.display_name") }}' aria-label='{{ self.t("admin.users.display_name") }}'>
+      <button class="secondary" type="submit">{{ self.t("admin.common.add") }}</button>
+    </form>
+  </details>
 </section>
 {% include "admin/users_table.html" %}
 {% endblock %}

@@ -114,6 +114,10 @@ lore-authctl --config "$CONFIG" user add \
   --name "Manual User"
 ```
 
+This quickstart intentionally uses `user add` because it does not configure an IdP and later issues an authn token with `token mint-authn`.
+
+For IdP onboarding, use `user invite` instead.
+
 ## Start bridge
 
 Start the bridge in another terminal.

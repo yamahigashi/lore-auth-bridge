@@ -38,7 +38,11 @@ lore-authctl --config "$CONFIG" key list
 
 ## user invite
 
-When IdP login is enabled, an administrator can preregister a user by provider ID and email.
+Use `user invite` as the normal onboarding command for IdP login.
+
+It creates the bridge account and a pending invitation that reserves identity binding for verified email login in one operation.
+
+This flow assumes the provider uses `trust.email_binding: verified_email_invitation`.
 
 ```bash
 PROVIDER_ID=company-sso
@@ -59,17 +63,21 @@ When `identity_providers` is configured, `user invite` requires `--idp`.
 
 ## user add
 
+`user add` is a low-level escape hatch.
+
+It creates only an active bridge principal.
+
+It does not create an external IdP binding, so the account cannot log in through an IdP as-is.
+
+Normally, use `user invite` for onboarding.
+
+Use `user add` for pre-provisioning or for deployments that use a subject strategy without email binding.
+
 ```bash
 lore-authctl --config "$CONFIG" user add \
   --email manual@example.com \
   --name "Manual User"
 ```
-
-`user add` creates an active bridge principal.
-
-It does not create an external IdP binding.
-
-Use `user invite` for IdP login.
 
 ## user list
 

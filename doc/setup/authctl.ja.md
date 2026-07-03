@@ -38,7 +38,11 @@ lore-authctl --config "$CONFIG" key list
 
 ## user invite
 
-IdP login を使う場合、管理者は provider ID と email でユーザーを事前登録できます。
+IdP login の通常のオンボーディングには `user invite` を使います。
+
+このコマンドは、bridge account の作成と、確認済み email login による identity binding 予約（pending invitation）を 1 操作で行います。
+
+この流れは、provider が `trust.email_binding: verified_email_invitation` を使う前提です。
 
 ```bash
 PROVIDER_ID=company-sso
@@ -59,17 +63,21 @@ lore-authctl --config "$CONFIG" user invite \
 
 ## user add
 
+`user add` は低レベルの escape hatch です。
+
+active な bridge principal だけを作成します。
+
+external IdP binding は作成しないため、そのままでは IdP 経由で login できません。
+
+通常のオンボーディングには `user invite` を使います。
+
+`user add` は、事前プロビジョニングや、email binding を使わない subject strategy の環境で使います。
+
 ```bash
 lore-authctl --config "$CONFIG" user add \
   --email manual@example.com \
   --name "Manual User"
 ```
-
-`user add` は active な bridge principal を作成します。
-
-external IdP binding は作成しません。
-
-IdP login には `user invite` を使います。
 
 ## user list
 

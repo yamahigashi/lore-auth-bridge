@@ -42,6 +42,10 @@ If IdP login is not used, an administrator can issue authn tokens with the admin
 
 Register a user with the CLI, then issue an authn token with `lore-authctl --config <cfg> token mint-authn <email>`.
 
+This section intentionally uses `user add` because it is the no-IdP escape hatch.
+
+For IdP onboarding with verified email binding, use `user invite` from the previous section.
+
 ```bash
 lore-authctl --config .quickstart/lore-auth.yaml user add \
   --email manual@example.com \

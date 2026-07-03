@@ -81,8 +81,18 @@ pub(crate) struct SigningKeyGenerate {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum UserCommand {
-    Add(UserAdd),
+    #[command(
+        about = "Invite a user for IdP onboarding",
+        long_about = "Invite a user for IdP onboarding.\n\nThis is the primary onboarding path. It creates the bridge account and a pending invitation that reserves identity binding for verified email login. It assumes the provider uses trust.email_binding: verified_email_invitation.",
+        after_help = "Use this for normal IdP onboarding. When identity_providers is configured, pass --idp so the provider ID and issuer are taken from the configured provider."
+    )]
     Invite(UserInvite),
+    #[command(
+        about = "Add a low-level user account without login binding",
+        long_about = "Add a low-level user account without login binding.\n\nThis creates only a bridge account. It does not create an external identity binding, so the account cannot log in through an IdP as-is. Normally use `user invite` for onboarding.",
+        after_help = "This command is an escape hatch for pre-provisioning or deployments that use a subject strategy without email binding."
+    )]
+    Add(UserAdd),
     List,
     Disable(UserDisable),
     Enable(UserEnable),

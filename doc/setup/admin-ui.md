@@ -54,6 +54,10 @@ The UI can browse and search repositories, users, groups, grants, and user acces
 
 It can add and disable users, create invitations, add and disable manual repositories, manage grants, and manage groups.
 
+On the Users page, invitation is the primary onboarding action.
+
+Adding a user directly is an advanced operation that creates an account without login binding.
+
 Nested group operations are available only when `authz.backend: rebac` is configured.
 
 The check simulator at `/admin/simulator` runs the configured authorization policy for a user, repository, and action.

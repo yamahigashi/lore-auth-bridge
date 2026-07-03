@@ -53,6 +53,10 @@ The bridge does not issue tokens to unregistered users.
 
 With IdP login, an administrator can preregister a user email with `lore-authctl --config <cfg> user invite --idp <provider-id> --email <email>`.
 
+Use `user invite` for this onboarding path.
+
+`user add` is only a low-level escape hatch for accounts that do not rely on email-binding login.
+
 When that user logs in for the first time and the IdP returns the same verified email, the login becomes usable.
 
 When IdP login is not used, an administrator can issue an authn token with the CLI.
