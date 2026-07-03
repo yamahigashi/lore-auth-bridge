@@ -1,3 +1,5 @@
+mod commands;
+
 use std::{
     env, fs,
     io::Write,
@@ -11,11 +13,7 @@ use clap::{Args, Parser, Subcommand};
 use lore_auth_adapters::{authz, config, rs256, sqlite};
 use lore_auth_core::{
     CoreError,
-    model::{AddInvitationInput, AddUserInput, Resource, ResourceID, UserListFilter},
-    ports::{
-        AccountDirectory, AccountQuery, AuthorizationPolicy, GrantAdmin, GrantQuery, GroupAdmin,
-        GroupQuery, IssuedTokenLog, ResourceQuery, ResourceStore, SigningKeyAdmin, TokenSigner,
-    },
+    ports::{AccountDirectory, AuthorizationPolicy, IssuedTokenLog, ResourceStore, TokenSigner},
     service::token::{TokenConfig, TokenService},
 };
 
@@ -23,7 +21,7 @@ const DEFAULT_CONFIG: &str = "configs/lore-auth.example.yaml";
 
 #[derive(Debug, Parser)]
 #[command(name = "lore-authctl", about = "Manage lore-auth-bridge")]
-struct Cli {
+pub(crate) struct Cli {
     #[arg(long, global = true, default_value = DEFAULT_CONFIG)]
     config: PathBuf,
 
@@ -35,7 +33,7 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
-enum Command {
+pub(crate) enum Command {
     InitDb,
     #[command(alias = "key")]
     SigningKey {
@@ -66,23 +64,23 @@ enum Command {
 }
 
 #[derive(Debug, Subcommand)]
-enum SigningKeyCommand {
+pub(crate) enum SigningKeyCommand {
     Generate(SigningKeyGenerate),
     List,
 }
 
 #[derive(Debug, Args)]
-struct SigningKeyGenerate {
+pub(crate) struct SigningKeyGenerate {
     #[arg(long)]
-    kid: String,
+    pub(crate) kid: String,
     #[arg(long, default_value = rs256::ALG_RS256)]
-    alg: String,
+    pub(crate) alg: String,
     #[arg(long, default_value_t = rs256::DEFAULT_RSA_BITS)]
-    bits: u32,
+    pub(crate) bits: u32,
 }
 
 #[derive(Debug, Subcommand)]
-enum UserCommand {
+pub(crate) enum UserCommand {
     Add(UserAdd),
     Invite(UserInvite),
     List,
@@ -91,39 +89,39 @@ enum UserCommand {
 }
 
 #[derive(Debug, Args)]
-struct UserAdd {
+pub(crate) struct UserAdd {
     #[arg(long)]
-    email: String,
+    pub(crate) email: String,
     #[arg(long, default_value = "")]
-    name: String,
+    pub(crate) name: String,
 }
 
 #[derive(Debug, Args)]
-struct UserInvite {
+pub(crate) struct UserInvite {
     #[arg(long)]
-    idp: Option<String>,
+    pub(crate) idp: Option<String>,
     #[arg(long, default_value = "google")]
-    provider: String,
+    pub(crate) provider: String,
     #[arg(long, default_value = "https://accounts.google.com")]
-    issuer: String,
+    pub(crate) issuer: String,
     #[arg(long)]
-    email: String,
+    pub(crate) email: String,
     #[arg(long, default_value = "")]
-    name: String,
+    pub(crate) name: String,
 }
 
 #[derive(Debug, Args)]
-struct UserDisable {
-    user: String,
+pub(crate) struct UserDisable {
+    pub(crate) user: String,
 }
 
 #[derive(Debug, Args)]
-struct UserEnable {
-    user: String,
+pub(crate) struct UserEnable {
+    pub(crate) user: String,
 }
 
 #[derive(Debug, Subcommand)]
-enum GroupCommand {
+pub(crate) enum GroupCommand {
     Add(GroupAdd),
     List,
     Member {
@@ -137,112 +135,112 @@ enum GroupCommand {
 }
 
 #[derive(Debug, Args)]
-struct GroupAdd {
-    name: String,
+pub(crate) struct GroupAdd {
+    pub(crate) name: String,
     #[arg(long, default_value = "")]
-    description: String,
+    pub(crate) description: String,
 }
 
 #[derive(Debug, Subcommand)]
-enum GroupMemberCommand {
+pub(crate) enum GroupMemberCommand {
     Add(GroupMember),
     Remove(GroupMember),
 }
 
 #[derive(Debug, Args)]
-struct GroupMember {
-    group: String,
-    user: String,
+pub(crate) struct GroupMember {
+    pub(crate) group: String,
+    pub(crate) user: String,
 }
 
 #[derive(Debug, Subcommand)]
-enum GroupNestCommand {
+pub(crate) enum GroupNestCommand {
     Add(GroupNest),
     Remove(GroupNest),
 }
 
 #[derive(Debug, Args)]
-struct GroupNest {
-    parent_group: String,
-    member_group: String,
+pub(crate) struct GroupNest {
+    pub(crate) parent_group: String,
+    pub(crate) member_group: String,
 }
 
 #[derive(Debug, Subcommand)]
-enum RepoCommand {
+pub(crate) enum RepoCommand {
     Add(RepoAdd),
     List,
 }
 
 #[derive(Debug, Args)]
-struct RepoAdd {
-    name: String,
+pub(crate) struct RepoAdd {
+    pub(crate) name: String,
     #[arg(long)]
-    remote: String,
+    pub(crate) remote: String,
     #[arg(long)]
-    lore_repository_id: String,
+    pub(crate) lore_repository_id: String,
 }
 
 #[derive(Debug, Subcommand)]
-enum GrantCommand {
+pub(crate) enum GrantCommand {
     Add(GrantChange),
     Remove(GrantChange),
     List(GrantList),
 }
 
 #[derive(Debug, Args)]
-struct GrantChange {
-    subject: String,
-    repo: String,
-    role: String,
+pub(crate) struct GrantChange {
+    pub(crate) subject: String,
+    pub(crate) repo: String,
+    pub(crate) role: String,
 }
 
 #[derive(Debug, Args)]
-struct GrantList {
-    repo: Option<String>,
+pub(crate) struct GrantList {
+    pub(crate) repo: Option<String>,
 }
 
 #[derive(Debug, Args)]
-struct CheckArgs {
-    user: String,
-    repo: String,
-    action: String,
+pub(crate) struct CheckArgs {
+    pub(crate) user: String,
+    pub(crate) repo: String,
+    pub(crate) action: String,
 }
 
 #[derive(Debug, Subcommand)]
-enum TokenCommand {
+pub(crate) enum TokenCommand {
     Mint(TokenMint),
     MintAuthn(TokenMintAuthn),
 }
 
 #[derive(Debug, Args)]
-struct TokenMint {
-    user: String,
-    repo: String,
+pub(crate) struct TokenMint {
+    pub(crate) user: String,
+    pub(crate) repo: String,
     #[arg(long, default_value = "writer")]
-    role: String,
+    pub(crate) role: String,
     #[arg(long, value_parser = parse_duration)]
-    ttl: Option<Duration>,
+    pub(crate) ttl: Option<Duration>,
     #[arg(long)]
-    out: Option<PathBuf>,
+    pub(crate) out: Option<PathBuf>,
     #[arg(long)]
-    print_login_command: bool,
+    pub(crate) print_login_command: bool,
 }
 
 #[derive(Debug, Args)]
-struct TokenMintAuthn {
-    user: String,
+pub(crate) struct TokenMintAuthn {
+    pub(crate) user: String,
     #[arg(long, value_parser = parse_duration)]
-    ttl: Option<Duration>,
+    pub(crate) ttl: Option<Duration>,
     #[arg(long)]
-    out: Option<PathBuf>,
+    pub(crate) out: Option<PathBuf>,
     #[arg(long)]
-    print_login_command: bool,
+    pub(crate) print_login_command: bool,
 }
 
-struct Env {
-    cfg: config::Config,
-    db_path: PathBuf,
-    store: Arc<sqlite::Store>,
+pub(crate) struct Env {
+    pub(crate) cfg: config::Config,
+    pub(crate) db_path: PathBuf,
+    pub(crate) store: Arc<sqlite::Store>,
 }
 
 #[tokio::main]
@@ -257,24 +255,31 @@ async fn run(cli: Cli) -> Result<()> {
     let config_path = cli.config;
     let db = cli.db;
     match cli.command {
-        Command::InitDb => {
-            let env = open_env(&config_path, db.as_deref()).await?;
-            println!("database initialized: {}", env.db_path.display());
-        }
+        Command::InitDb => commands::init_db::run(&config_path, db.as_deref()).await?,
         Command::SigningKey { command } => {
-            run_signing_key(&config_path, db.as_deref(), command).await?
+            commands::signing_key::run(&config_path, db.as_deref(), command).await?
         }
-        Command::User { command } => run_user(&config_path, db.as_deref(), command).await?,
-        Command::Group { command } => run_group(&config_path, db.as_deref(), command).await?,
-        Command::Repo { command } => run_repo(&config_path, db.as_deref(), command).await?,
-        Command::Grant { command } => run_grant(&config_path, db.as_deref(), command).await?,
-        Command::Check(args) => run_check(&config_path, db.as_deref(), args).await?,
-        Command::Token { command } => run_token(&config_path, db.as_deref(), command).await?,
+        Command::User { command } => {
+            commands::user::run(&config_path, db.as_deref(), command).await?
+        }
+        Command::Group { command } => {
+            commands::group::run(&config_path, db.as_deref(), command).await?
+        }
+        Command::Repo { command } => {
+            commands::repo::run(&config_path, db.as_deref(), command).await?
+        }
+        Command::Grant { command } => {
+            commands::grant::run(&config_path, db.as_deref(), command).await?
+        }
+        Command::Check(args) => commands::check::run(&config_path, db.as_deref(), args).await?,
+        Command::Token { command } => {
+            commands::token::run(&config_path, db.as_deref(), command).await?
+        }
     }
     Ok(())
 }
 
-async fn open_env(config_path: &Path, db_override: Option<&Path>) -> Result<Env> {
+pub(crate) async fn open_env(config_path: &Path, db_override: Option<&Path>) -> Result<Env> {
     let mut cfg =
         config::load(config_path).with_context(|| format!("load config {:?}", config_path))?;
     let db_path = db_override
@@ -299,238 +304,7 @@ async fn open_env(config_path: &Path, db_override: Option<&Path>) -> Result<Env>
     })
 }
 
-async fn run_signing_key(
-    config_path: &Path,
-    db: Option<&Path>,
-    command: SigningKeyCommand,
-) -> Result<()> {
-    let env = open_env(config_path, db).await?;
-    let audited = Arc::new(env.store.audited(authctl_actor()));
-    let keys = rs256::SigningKeyAdmin::new(&env.cfg.jwt.signing_key_dir, audited);
-    match command {
-        SigningKeyCommand::Generate(args) => {
-            let key = keys
-                .generate_active_key(&args.kid, &args.alg, args.bits)
-                .await
-                .map_err(core_error)?;
-            println!(
-                "kid: {}\nprivate_key: {}\nstatus: {}",
-                key.kid, key.private_key_path, key.status
-            );
-        }
-        SigningKeyCommand::List => {
-            for key in keys.list_keys().await.map_err(core_error)? {
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    key.kid, key.alg, key.status, key.private_key_path
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn run_user(config_path: &Path, db: Option<&Path>, command: UserCommand) -> Result<()> {
-    let env = open_env(config_path, db).await?;
-    let audited = env.store.audited(authctl_actor());
-    match command {
-        UserCommand::Add(args) => {
-            let user = audited
-                .add_user(AddUserInput {
-                    email: args.email,
-                    display_name: args.name,
-                })
-                .await
-                .map_err(core_error)?;
-            println!("{}\t{}\t{}", user.id, value(&user.email), user.status);
-        }
-        UserCommand::Invite(args) => {
-            let (provider_id, issuer) =
-                resolve_user_idp(&env.cfg, args.idp.as_deref(), &args.provider, &args.issuer)?;
-            let (user, _) = audited
-                .add_invitation(AddInvitationInput {
-                    provider_id,
-                    issuer,
-                    email: args.email,
-                    display_name: args.name,
-                    binding_policy: "verified_email_invitation".to_owned(),
-                    expires_at: 0,
-                })
-                .await
-                .map_err(core_error)?;
-            println!("{}\t{}\t{}", user.id, value(&user.email), user.status);
-        }
-        UserCommand::List => {
-            for user in env
-                .store
-                .list_users(UserListFilter {
-                    query: String::new(),
-                    limit: usize::MAX,
-                })
-                .await
-                .map_err(core_error)?
-            {
-                let subject = if user.status == "pending" {
-                    String::new()
-                } else {
-                    user.bridge_subject()
-                };
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    user.id,
-                    value(&user.email),
-                    subject,
-                    user.status
-                );
-            }
-        }
-        UserCommand::Disable(args) => {
-            audited.disable_user(&args.user).await.map_err(core_error)?;
-            println!("disabled");
-        }
-        UserCommand::Enable(args) => {
-            audited.enable_user(&args.user).await.map_err(core_error)?;
-            println!("enabled");
-        }
-    }
-    Ok(())
-}
-
-async fn run_group(config_path: &Path, db: Option<&Path>, command: GroupCommand) -> Result<()> {
-    let env = open_env(config_path, db).await?;
-    let groups = env.store.audited(authctl_actor());
-    match command {
-        GroupCommand::Add(args) => {
-            let group = groups
-                .add_group(&args.name, &args.description)
-                .await
-                .map_err(core_error)?;
-            println!("{}\t{}", group.id, group.name);
-        }
-        GroupCommand::List => {
-            for group in env.store.list_groups().await.map_err(core_error)? {
-                println!("{}\t{}", group.id, group.name);
-            }
-        }
-        GroupCommand::Member { command } => match command {
-            GroupMemberCommand::Add(args) => {
-                groups
-                    .add_group_member(&args.group, &args.user)
-                    .await
-                    .map_err(core_error)?;
-                println!("ok");
-            }
-            GroupMemberCommand::Remove(args) => {
-                groups
-                    .remove_group_member(&args.group, &args.user)
-                    .await
-                    .map_err(core_error)?;
-                println!("ok");
-            }
-        },
-        GroupCommand::Nest { command } => match command {
-            GroupNestCommand::Add(args) => {
-                require_rebac_for_nested_group(&env.cfg)?;
-                groups
-                    .add_group_group(&args.parent_group, &args.member_group)
-                    .await
-                    .map_err(core_error)?;
-                println!("ok");
-            }
-            GroupNestCommand::Remove(args) => {
-                require_rebac_for_nested_group(&env.cfg)?;
-                groups
-                    .remove_group_group(&args.parent_group, &args.member_group)
-                    .await
-                    .map_err(core_error)?;
-                println!("ok");
-            }
-        },
-    }
-    Ok(())
-}
-
-fn require_rebac_for_nested_group(cfg: &config::Config) -> Result<()> {
-    if cfg.authz.backend == "rebac" {
-        return Ok(());
-    }
-    bail!(
-        "nested group is evaluated only when authz.backend: rebac is configured; set config authz.backend to rebac or do not perform this operation"
-    )
-}
-
-async fn run_repo(config_path: &Path, db: Option<&Path>, command: RepoCommand) -> Result<()> {
-    let env = open_env(config_path, db).await?;
-    let audited = env.store.audited(authctl_actor());
-    match command {
-        RepoCommand::Add(args) => {
-            let lore_repository_id = args.lore_repository_id;
-            let resource = Resource {
-                name: args.name,
-                remote_url: args.remote,
-                lore_repository_id: lore_repository_id.clone(),
-                ..Resource::default()
-            };
-            audited.upsert(resource).await.map_err(core_error)?;
-            let repo = env
-                .store
-                .get_by_resource_id(
-                    &ResourceID::for_repository_id(&lore_repository_id)
-                        .ok_or_else(|| anyhow!("lore_repository_id must not be empty"))?,
-                )
-                .await
-                .map_err(core_error)?;
-            println!("{}\t{}\t{}", repo.id, repo.name, repo.lore_repository_id);
-        }
-        RepoCommand::List => {
-            for repo in env.store.list().await.map_err(core_error)? {
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    repo.id, repo.name, repo.lore_repository_id, repo.remote_url
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn run_grant(config_path: &Path, db: Option<&Path>, command: GrantCommand) -> Result<()> {
-    let env = open_env(config_path, db).await?;
-    let grants = env.store.audited(authctl_actor());
-    match command {
-        GrantCommand::Add(args) => {
-            let (subject_type, subject_id) = resolve_grant_subject(&args.subject)?;
-            let grant = grants
-                .add_grant(&subject_type, &subject_id, &args.repo, &args.role)
-                .await
-                .map_err(core_error)?;
-            println!(
-                "{}\t{}:{}\t{}",
-                grant.id, grant.subject_type, grant.subject_id, grant.role
-            );
-        }
-        GrantCommand::Remove(args) => {
-            let (subject_type, subject_id) = resolve_grant_subject(&args.subject)?;
-            grants
-                .remove_grant(&subject_type, &subject_id, &args.repo, &args.role)
-                .await
-                .map_err(core_error)?;
-            println!("removed");
-        }
-        GrantCommand::List(args) => {
-            let repo = args.repo.unwrap_or_default();
-            for grant in env.store.list_grants(&repo).await.map_err(core_error)? {
-                println!(
-                    "{}\t{}:{}\t{}\t{}",
-                    grant.id, grant.subject_type, grant.subject_id, grant.repository_id, grant.role
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn authctl_actor() -> String {
+pub(crate) fn authctl_actor() -> String {
     let user = env::var("USER")
         .or_else(|_| env::var("USERNAME"))
         .ok()
@@ -540,80 +314,7 @@ fn authctl_actor() -> String {
     format!("authctl:{user}")
 }
 
-async fn run_check(config_path: &Path, db: Option<&Path>, args: CheckArgs) -> Result<()> {
-    let env = open_env(config_path, db).await?;
-    let user = env
-        .store
-        .resolve_user(&args.user)
-        .await
-        .map_err(core_error)
-        .with_context(|| format!("resolve user {:?}", args.user))?;
-    let repo = env
-        .store
-        .get_by_name(&args.repo)
-        .await
-        .map_err(core_error)
-        .with_context(|| format!("resolve repo {:?}", args.repo))?;
-    let authz = build_authorization_policy(&env)?;
-    let allowed = authz
-        .can_access(&user.id, &repo.resource_id, &args.action)
-        .await
-        .map_err(core_error)?;
-    if allowed {
-        println!("allow");
-    } else {
-        println!("deny");
-    }
-    Ok(())
-}
-
-async fn run_token(config_path: &Path, db: Option<&Path>, command: TokenCommand) -> Result<()> {
-    let env = open_env(config_path, db).await?;
-    let tokens = build_token_service(&env).await?;
-    match command {
-        TokenCommand::Mint(args) => {
-            let user = env
-                .store
-                .resolve_user(&args.user)
-                .await
-                .map_err(core_error)
-                .with_context(|| format!("resolve user {:?}", args.user))?;
-            let signed = tokens
-                .manual_mint_authz(&user.id, &args.repo, &args.role, args.ttl)
-                .await
-                .map_err(core_error)?;
-            emit_token(
-                "token",
-                &signed.token,
-                args.out.as_deref(),
-                args.print_login_command,
-                &env.cfg,
-            )?;
-        }
-        TokenCommand::MintAuthn(args) => {
-            let user = env
-                .store
-                .resolve_user(&args.user)
-                .await
-                .map_err(core_error)
-                .with_context(|| format!("resolve user {:?}", args.user))?;
-            let (signed, _) = tokens
-                .mint_authn(&user.id, args.ttl)
-                .await
-                .map_err(core_error)?;
-            emit_token(
-                "authn token",
-                &signed.token,
-                args.out.as_deref(),
-                args.print_login_command,
-                &env.cfg,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-async fn build_token_service(env: &Env) -> Result<TokenService> {
+pub(crate) async fn build_token_service(env: &Env) -> Result<TokenService> {
     let meta = env
         .store
         .active_signing_key(&env.cfg.jwt.active_kid)
@@ -645,7 +346,7 @@ async fn build_token_service(env: &Env) -> Result<TokenService> {
     ))
 }
 
-fn build_authorization_policy(env: &Env) -> Result<Arc<dyn AuthorizationPolicy>> {
+pub(crate) fn build_authorization_policy(env: &Env) -> Result<Arc<dyn AuthorizationPolicy>> {
     match env.cfg.authz.backend.as_str() {
         "sql" => Ok(env.store.clone()),
         "rebac" => {
@@ -657,7 +358,7 @@ fn build_authorization_policy(env: &Env) -> Result<Arc<dyn AuthorizationPolicy>>
     }
 }
 
-fn resolve_user_idp(
+pub(crate) fn resolve_user_idp(
     cfg: &config::Config,
     idp: Option<&str>,
     provider: &str,
@@ -681,7 +382,7 @@ fn resolve_user_idp(
     Ok((idp.to_owned(), provider_cfg.issuer.clone()))
 }
 
-fn resolve_grant_subject(value: &str) -> Result<(String, String)> {
+pub(crate) fn resolve_grant_subject(value: &str) -> Result<(String, String)> {
     let (subject_type, id) = subject_parts(value)?;
     match subject_type {
         "user" | "group" => Ok((subject_type.to_owned(), id.to_owned())),
@@ -689,7 +390,7 @@ fn resolve_grant_subject(value: &str) -> Result<(String, String)> {
     }
 }
 
-fn subject_parts(value: &str) -> Result<(&str, &str)> {
+pub(crate) fn subject_parts(value: &str) -> Result<(&str, &str)> {
     let Some((subject_type, id)) = value.split_once(':') else {
         bail!("want type:id");
     };
@@ -699,7 +400,7 @@ fn subject_parts(value: &str) -> Result<(&str, &str)> {
     Ok((subject_type, id))
 }
 
-fn emit_token(
+pub(crate) fn emit_token(
     label: &str,
     token: &str,
     out: Option<&Path>,
@@ -722,7 +423,7 @@ fn emit_token(
     Ok(())
 }
 
-fn write_secret_file(path: &Path, value: &str) -> Result<()> {
+pub(crate) fn write_secret_file(path: &Path, value: &str) -> Result<()> {
     if let Some(parent) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
         fs::create_dir_all(parent).with_context(|| format!("create directory {:?}", parent))?;
     }
@@ -743,7 +444,7 @@ fn write_secret_file(path: &Path, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn parse_duration(value: &str) -> Result<Duration, String> {
+pub(crate) fn parse_duration(value: &str) -> Result<Duration, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err("duration must not be empty".to_owned());
@@ -763,15 +464,15 @@ fn parse_duration(value: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs(amount.saturating_mul(multiplier)))
 }
 
-fn duration_secs(value: i64, field: &str) -> Result<Duration> {
+pub(crate) fn duration_secs(value: i64, field: &str) -> Result<Duration> {
     let seconds = u64::try_from(value).with_context(|| format!("{field} must be positive"))?;
     Ok(Duration::from_secs(seconds))
 }
 
-fn value(value: &str) -> &str {
+pub(crate) fn value(value: &str) -> &str {
     if value.is_empty() { "-" } else { value }
 }
 
-fn core_error(err: CoreError) -> anyhow::Error {
+pub(crate) fn core_error(err: CoreError) -> anyhow::Error {
     anyhow!("{err}")
 }

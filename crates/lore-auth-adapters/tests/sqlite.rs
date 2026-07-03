@@ -14,17 +14,22 @@ use lore_auth_core::{
     },
 };
 
-struct TestStore {
-    store: Store,
-    _dir: tempfile::TempDir,
-}
+mod support;
 
-async fn migrated_store() -> TestStore {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("test.sqlite3");
-    let store = Store::open(&path).await.expect("open sqlite");
-    store.migrate().await.expect("migrate sqlite");
-    TestStore { store, _dir: dir }
+use support::{TestStore, migrated_store, raw_connection};
+
+fn install_admin_audit_failure_trigger(fixture: &TestStore) {
+    raw_connection(&fixture.path)
+        .execute_batch(
+            r#"
+            CREATE TRIGGER fail_admin_audit
+            BEFORE INSERT ON admin_audit
+            BEGIN
+              SELECT RAISE(FAIL, 'audit offline');
+            END;
+            "#,
+        )
+        .expect("install audit failure trigger");
 }
 
 fn assert_core_ports<T>()
@@ -109,18 +114,7 @@ async fn audited_sqlite_rolls_back_mutation_when_admin_audit_insert_fails() {
         })
         .await
         .expect("upsert repo");
-    rusqlite::Connection::open(fixture._dir.path().join("test.sqlite3"))
-        .expect("open sqlite fixture directly")
-        .execute_batch(
-            r#"
-            CREATE TRIGGER fail_admin_audit
-            BEFORE INSERT ON admin_audit
-            BEGIN
-              SELECT RAISE(FAIL, 'audit offline');
-            END;
-            "#,
-        )
-        .expect("install audit failure trigger");
+    install_admin_audit_failure_trigger(&fixture);
 
     let err = store
         .audited("authctl:test-user")
@@ -155,18 +149,7 @@ async fn audited_sqlite_rolls_back_user_disable_when_admin_audit_insert_fails() 
         })
         .await
         .expect("add user");
-    rusqlite::Connection::open(fixture._dir.path().join("test.sqlite3"))
-        .expect("open sqlite fixture directly")
-        .execute_batch(
-            r#"
-            CREATE TRIGGER fail_admin_audit
-            BEFORE INSERT ON admin_audit
-            BEGIN
-              SELECT RAISE(FAIL, 'audit offline');
-            END;
-            "#,
-        )
-        .expect("install audit failure trigger");
+    install_admin_audit_failure_trigger(&fixture);
 
     let err = store
         .audited("admin@example.com")
@@ -237,18 +220,7 @@ async fn sqlite_grants_use_repository_name_not_lore_repository_id() {
 async fn audited_sqlite_rolls_back_repository_add_when_admin_audit_insert_fails() {
     let fixture = migrated_store().await;
     let store = &fixture.store;
-    rusqlite::Connection::open(fixture._dir.path().join("test.sqlite3"))
-        .expect("open sqlite fixture directly")
-        .execute_batch(
-            r#"
-            CREATE TRIGGER fail_admin_audit
-            BEFORE INSERT ON admin_audit
-            BEGIN
-              SELECT RAISE(FAIL, 'audit offline');
-            END;
-            "#,
-        )
-        .expect("install audit failure trigger");
+    install_admin_audit_failure_trigger(&fixture);
 
     let err = store
         .audited("admin@example.com")
@@ -522,8 +494,7 @@ async fn sqlite_admin_read_ports_list_users_and_group_edges() {
         .disable_user(&deleted.id)
         .await
         .expect("mark deleted fixture inactive");
-    rusqlite::Connection::open(fixture._dir.path().join("test.sqlite3"))
-        .expect("open sqlite fixture directly")
+    raw_connection(&fixture.path)
         .execute(
             "UPDATE users SET status = 'deleted' WHERE id = ?1",
             rusqlite::params![deleted.id],

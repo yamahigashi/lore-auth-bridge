@@ -1,10 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    fmt::Debug,
-    mem,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, fmt::Debug, mem, path::Path, sync::Arc};
 
 use authz_core::traits::{TupleFilter, TupleReader};
 use lore_auth_adapters::{
@@ -20,30 +14,12 @@ use proptest::prelude::*;
 use rusqlite::{Connection as RawConnection, params};
 use tokio_rusqlite::Connection as AsyncConnection;
 
-struct TestStore {
-    store: Store,
-    path: PathBuf,
-    _dir: tempfile::TempDir,
-}
+mod support;
 
-async fn migrated_store() -> TestStore {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("test.sqlite3");
-    let store = Store::open(&path).await.expect("open sqlite");
-    store.migrate().await.expect("migrate sqlite");
-    TestStore {
-        store,
-        path,
-        _dir: dir,
-    }
-}
+use support::{TestStore, migrated_store, raw_connection};
 
 fn rebac(store: &Store) -> RebacAuthorizationPolicy {
     RebacAuthorizationPolicy::from_store(store).expect("rebac policy")
-}
-
-fn raw_connection(path: &Path) -> RawConnection {
-    RawConnection::open(path).expect("open raw sqlite")
 }
 
 fn repository_pk(conn: &RawConnection, repo: &str) -> String {

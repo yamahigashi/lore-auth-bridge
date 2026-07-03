@@ -325,13 +325,7 @@ async fn admin_routes_are_not_mounted_when_admin_emails_are_empty() {
 
 #[tokio::test]
 async fn admin_route_hides_unauthenticated_admin_probe() {
-    let (app, _store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, _store, _) = new_test_app_with_admin(fake_idp(), admin_config());
 
     let response = app
         .oneshot(peer_request("/admin", None, [127, 0, 0, 1]))
@@ -344,13 +338,7 @@ async fn admin_route_hides_unauthenticated_admin_probe() {
 
 #[tokio::test]
 async fn admin_route_hides_from_non_admin_browser_sessions() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let user = add_alice(&store);
     let session = store
         .create_browser_session(&user.id, Duration::from_secs(60))
@@ -371,15 +359,9 @@ async fn admin_route_hides_from_non_admin_browser_sessions() {
 
 #[tokio::test]
 async fn admin_route_hides_disabled_admin_browser_sessions() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let user = store.add_test_user(User {
-        email: "admin@example.com".to_owned(),
+        email: ADMIN_EMAIL.to_owned(),
         display_name: "Admin".to_owned(),
         ..User::default()
     });
@@ -405,14 +387,12 @@ async fn admin_route_hides_disabled_admin_browser_sessions() {
 async fn admin_route_hides_from_disallowed_peers_before_session_check() {
     let (app, store, _) = new_test_app_with_admin(
         fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            allowed_peer_cidrs: vec!["127.0.0.1/32".parse().expect("cidr")],
-            ..AdminConfig::default()
-        },
+        admin_config_with(|admin| {
+            admin.allowed_peer_cidrs = vec!["127.0.0.1/32".parse().expect("cidr")];
+        }),
     );
     let user = store.add_test_user(User {
-        email: "admin@example.com".to_owned(),
+        email: ADMIN_EMAIL.to_owned(),
         display_name: "Admin".to_owned(),
         ..User::default()
     });
@@ -437,11 +417,9 @@ async fn admin_route_hides_from_disallowed_peers_before_session_check() {
 async fn admin_route_renders_dashboard_for_admin_session_and_language_cookie() {
     let (app, store, _) = new_test_app_with_admin(
         fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            allowed_peer_cidrs: vec!["127.0.0.1/32".parse().expect("cidr")],
-            ..AdminConfig::default()
-        },
+        admin_config_with(|admin| {
+            admin.allowed_peer_cidrs = vec!["127.0.0.1/32".parse().expect("cidr")];
+        }),
     );
     let user = store.add_test_user(User {
         email: "Admin@Example.com".to_owned(),
@@ -495,15 +473,9 @@ async fn admin_route_renders_dashboard_for_admin_session_and_language_cookie() {
 
 #[tokio::test]
 async fn admin_static_assets_share_admin_guard_and_content_types() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let user = store.add_test_user(User {
-        email: "admin@example.com".to_owned(),
+        email: ADMIN_EMAIL.to_owned(),
         display_name: "Admin".to_owned(),
         ..User::default()
     });
@@ -555,13 +527,7 @@ async fn admin_static_assets_share_admin_guard_and_content_types() {
 
 #[tokio::test]
 async fn admin_read_pages_share_guard_and_render_for_admin() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let admin_cookie = admin_session_cookie(&store).await;
     let user = store.add_test_user(User {
         id: "user-alice".to_owned(),
@@ -702,13 +668,7 @@ async fn admin_simulator_posts_real_policy_result_and_sql_evidence() {
         "simulator must not write admin_audit"
     );
 
-    let (_unused_app, invalid_store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (_unused_app, invalid_store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let invalid_cookie = admin_session_cookie(&invalid_store).await;
     let invalid_user = invalid_store.add_test_user(User {
         email: "alice@example.com".to_owned(),
@@ -881,13 +841,7 @@ async fn admin_simulator_localizes_missing_user_error() {
 
 #[tokio::test]
 async fn admin_repositories_search_renders_hits_grants_and_empty_results() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let admin_cookie = admin_session_cookie(&store).await;
     let alice = store.add_test_user(User {
         id: "user-alice".to_owned(),
@@ -946,13 +900,7 @@ async fn admin_repositories_search_renders_hits_grants_and_empty_results() {
 
 #[tokio::test]
 async fn admin_users_search_renders_japanese_hits_and_empty_results() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let admin_cookie = admin_session_cookie(&store).await;
     store.add_test_user(User {
         id: "user/a?b".to_owned(),
@@ -1000,13 +948,7 @@ async fn admin_users_search_renders_japanese_hits_and_empty_results() {
 
 #[tokio::test]
 async fn admin_boosted_navigation_returns_full_page_not_results_fragment() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let admin_cookie = admin_session_cookie(&store).await;
     store.add_test_user(User {
         email: "alice@example.com".to_owned(),
@@ -1032,13 +974,7 @@ async fn admin_boosted_navigation_returns_full_page_not_results_fragment() {
 
 #[tokio::test]
 async fn admin_groups_render_direct_members_and_nested_groups() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let admin_cookie = admin_session_cookie(&store).await;
     let alice = store.add_test_user(User {
         email: "alice@example.com".to_owned(),
@@ -1099,13 +1035,7 @@ async fn admin_user_access_renders_rebac_accessible_permissions() {
 
 #[tokio::test]
 async fn admin_user_access_returns_404_for_missing_user() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let admin_cookie = admin_session_cookie(&store).await;
 
     let response = app
@@ -1175,13 +1105,7 @@ async fn admin_user_access_returns_500_when_list_accessible_fails() {
 
 #[tokio::test]
 async fn admin_post_routes_hide_unauthenticated_requests_and_require_csrf() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let admin_cookie = admin_session_cookie(&store).await;
 
     let unauthenticated = app
@@ -1285,13 +1209,7 @@ async fn admin_post_routes_hide_unauthenticated_requests_and_require_csrf() {
 
 #[tokio::test]
 async fn admin_post_guard_hides_malformed_and_large_unauthenticated_bodies() {
-    let (app, _store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, _store, _) = new_test_app_with_admin(fake_idp(), admin_config());
 
     let malformed = app
         .clone()
@@ -1310,16 +1228,10 @@ async fn admin_post_guard_hides_malformed_and_large_unauthenticated_bodies() {
 
 #[tokio::test]
 async fn admin_user_disable_refuses_self_and_preserves_last_admin() {
-    let (app, store, _) = new_test_app_with_admin(
-        fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            ..AdminConfig::default()
-        },
-    );
+    let (app, store, _) = new_test_app_with_admin(fake_idp(), admin_config());
     let admin = store.add_test_user(User {
         id: "admin-user".to_owned(),
-        email: "admin@example.com".to_owned(),
+        email: ADMIN_EMAIL.to_owned(),
         display_name: "Admin".to_owned(),
         ..User::default()
     });
@@ -1361,7 +1273,7 @@ async fn admin_user_disable_allows_admin_when_another_active_admin_remains() {
     );
     let admin = store.add_test_user(User {
         id: "admin-user".to_owned(),
-        email: "admin@example.com".to_owned(),
+        email: ADMIN_EMAIL.to_owned(),
         display_name: "Admin".to_owned(),
         ..User::default()
     });
@@ -1399,11 +1311,9 @@ async fn admin_user_disable_allows_admin_when_another_active_admin_remains() {
 async fn admin_post_writes_record_admin_audit_with_admin_actor() {
     let (app, store, _) = new_test_app_with_admin(
         fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            allow_group_nesting: true,
-            ..AdminConfig::default()
-        },
+        admin_config_with(|admin| {
+            admin.allow_group_nesting = true;
+        }),
     );
     let admin_cookie = admin_session_cookie(&store).await;
     let alice = store.add_test_user(User {
@@ -1554,11 +1464,9 @@ async fn admin_post_writes_record_admin_audit_with_admin_actor() {
 async fn admin_group_nesting_post_is_rejected_when_backend_is_not_rebac() {
     let (app, store, _) = new_test_app_with_admin(
         fake_idp(),
-        AdminConfig {
-            admin_emails: vec!["admin@example.com".to_owned()],
-            allow_group_nesting: false,
-            ..AdminConfig::default()
-        },
+        admin_config_with(|admin| {
+            admin.allow_group_nesting = false;
+        }),
     );
     let admin_cookie = admin_session_cookie(&store).await;
     store.add_group("artists", "").await.expect("add artists");
@@ -1604,9 +1512,24 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+const ADMIN_EMAIL: &str = "admin@example.com";
+
+fn admin_config() -> AdminConfig {
+    admin_config_with(|_| {})
+}
+
+fn admin_config_with(configure: impl FnOnce(&mut AdminConfig)) -> AdminConfig {
+    let mut admin = AdminConfig {
+        admin_emails: vec![ADMIN_EMAIL.to_owned()],
+        ..AdminConfig::default()
+    };
+    configure(&mut admin);
+    admin
+}
+
 async fn admin_session_cookie(store: &memory::Store) -> String {
     let admin = store.add_test_user(User {
-        email: "admin@example.com".to_owned(),
+        email: ADMIN_EMAIL.to_owned(),
         display_name: "Admin".to_owned(),
         ..User::default()
     });
@@ -1661,7 +1584,7 @@ async fn new_sqlite_admin_app(use_rebac: bool) -> SqliteAdminApp {
     store.migrate().await.expect("migrate sqlite");
     let admin = store
         .add_user(AddUserInput {
-            email: "admin@example.com".to_owned(),
+            email: ADMIN_EMAIL.to_owned(),
             display_name: "Admin".to_owned(),
         })
         .await
@@ -1722,11 +1645,9 @@ async fn new_sqlite_admin_app(use_rebac: bool) -> SqliteAdminApp {
             lore_auth_url: "ucs-auth://auth.example.com".to_owned(),
             default_remote_url: "lore://lore.example.com:41337".to_owned(),
             session_ttl: Duration::from_secs(60 * 60),
-            admin: AdminConfig {
-                admin_emails: vec!["admin@example.com".to_owned()],
-                allow_group_nesting: use_rebac,
-                ..AdminConfig::default()
-            },
+            admin: admin_config_with(|admin| {
+                admin.allow_group_nesting = use_rebac;
+            }),
         },
         Services {
             login: None,
@@ -1809,10 +1730,7 @@ fn admin_app_with_custom_ports(
             lore_auth_url: "ucs-auth://auth.example.com".to_owned(),
             default_remote_url: "lore://lore.example.com:41337".to_owned(),
             session_ttl: Duration::from_secs(60 * 60),
-            admin: AdminConfig {
-                admin_emails: vec!["admin@example.com".to_owned()],
-                ..AdminConfig::default()
-            },
+            admin: admin_config(),
         },
         Services {
             login: None,
