@@ -366,6 +366,29 @@ path = "{data_dir}"
         self.mint_authn_token_with_config(&self.bridge_config_path, user_email_or_id, None)
     }
 
+    pub fn mint_authn_token_ttl(&self, user_email_or_id: &str, ttl_seconds: i64) -> Result<String> {
+        if ttl_seconds < 0 {
+            let token = self.mint_authn_token_with_config(
+                &self.bridge_config_path,
+                user_email_or_id,
+                Some(Duration::from_secs(1)),
+            )?;
+            thread::sleep(Duration::from_secs(2));
+            return Ok(token);
+        }
+        let ttl = (ttl_seconds > 0).then(|| Duration::from_secs(ttl_seconds as u64));
+        self.mint_authn_token_with_config(&self.bridge_config_path, user_email_or_id, ttl)
+    }
+
+    pub fn mint_authn_token_audience(
+        &self,
+        user_email_or_id: &str,
+        audience: Vec<String>,
+    ) -> Result<String> {
+        let cfg_path = self.write_token_mint_config(audience)?;
+        self.mint_authn_token_with_config(&cfg_path, user_email_or_id, None)
+    }
+
     pub fn mint_authn_token_with_config(
         &self,
         config_path: &Path,
@@ -398,6 +421,47 @@ path = "{data_dir}"
             bail!("authctl token mint-authn returned an empty token");
         }
         Ok(token)
+    }
+
+    fn write_token_mint_config(&self, audience: Vec<String>) -> Result<PathBuf> {
+        let cfg = BridgeConfig {
+            server: BridgeServerConfig {
+                listen: "127.0.0.1:0".to_owned(),
+                grpc_listen: self.grpc_addr.clone(),
+                grpc_tls_cert_file: String::new(),
+                grpc_tls_key_file: String::new(),
+                public_base_url: "http://mint-audience-override.invalid".to_owned(),
+            },
+            identity_providers: BridgeIdentityProvidersConfig {
+                default: String::new(),
+                providers: std::collections::BTreeMap::new(),
+            },
+            database: BridgeDatabaseConfig {
+                path: self.db_path.display().to_string(),
+            },
+            jwt: BridgeJwtConfig {
+                issuer: self.http_url.clone(),
+                audience,
+                ttl_seconds: 3600,
+                signing_key_dir: self.key_dir.display().to_string(),
+                active_kid: ACTIVE_KID.to_owned(),
+            },
+            lore: BridgeLoreConfig {
+                default_remote_url: String::new(),
+                auth_url: self.auth_url.clone(),
+            },
+            security: BridgeSecurityConfig {
+                device_code_ttl_seconds: 600,
+                device_poll_interval_seconds: 1,
+                session_ttl_seconds: 600,
+                auth_session_ttl_seconds: 600,
+                rebac_allowed_peer_cidrs: Vec::new(),
+            },
+        };
+        let raw = serde_yaml_ng::to_string(&cfg).context("marshal token mint config")?;
+        let path = self.dir.path().join("token-mint.yaml");
+        fs::write(&path, raw).context("write token mint config")?;
+        Ok(path)
     }
 
     fn authctl_bin(&self) -> Result<PathBuf> {
