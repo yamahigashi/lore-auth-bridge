@@ -2,38 +2,49 @@
 
 [日本語](README.ja.md)
 
-Access to an authenticated Lore server requires JWTs that the Lore CLI and `loreserver` can verify.
+[Lore](https://lore.org/) is Epic Games' next-generation open source version control system.
 
-`lore-auth-bridge` stands between your identity provider and Lore, issuing those tokens after users sign in with systems such as Google, Microsoft Entra ID, or Keycloak.
+Sharing a Lore server with a team raises a question that Lore leaves to an external service: who may log in, and who may touch which repository. Lore ships both ends of the client side — the `lore auth login` flow in the CLI and JWT verification in `loreserver` — but nothing that issues those tokens: no identity provider integration, no user directory, no permission management.
 
-Operators manage repository access in the bridge, and Lore receives the signed authn and repository authz tokens it needs.
+`lore-auth-bridge` fills that gap. Team members sign in with the identity provider you already use — Google, Microsoft Entra ID, Keycloak, or any other OIDC provider — and the bridge issues the tokens Lore expects, while you manage users, groups, and per-repository permissions in one place.
 
-The implementation is a Rust bridge that connects Lore authentication to external identity providers and ACL backends.
-
-It provides login, repository-scoped token exchange, JWKS-based signature verification, and repository lifecycle synchronization for the Lore CLI and `loreserver`.
-
-In the default deployment, users log in through an OIDC identity provider.
-
-The bridge stores users, groups, repositories, and grants in SQLite, then evaluates those relationships with its ReBAC authorization engine.
+Under the hood, it is a single Rust service that implements Lore's UCS Auth / ReBAC protocol: OIDC login, repository-scoped token exchange, JWKS publication, and repository lifecycle synchronization, backed by SQLite and a ReBAC authorization engine.
 
 ## What Is This / How It Fits
 
-`lore-auth-bridge` implements the Lore UCS Auth / ReBAC protocol surface that sits between a Lore deployment, an identity provider, and the operator-managed access model.
+In one sentence: the bridge is the auth service standing between three parties — the **browser** where people log in, the **lore CLI** that uses tokens, and **`loreserver`** that verifies them.
+
+From a user's point of view, the whole system is two steps:
 
 ```text
-Browser + IdP
-    <---- OIDC login ----> bridge HTTP
-                            /login, /device, /.well-known/jwks.json
-                                      |
-                                      | signs authn/authz JWTs
-                                      v
-lore CLI <---- repository ops ----> loreserver
-    |                                  |
-    | UrcAuthApi: authn token ->       | RebacApi: repository create/delete
-    | repository authz token           | HTTP JWKS: JWT verification keys
-    +-----------> bridge gRPC <--------+
-                 epic_urc.UrcAuthApi
-                 ucs.auth.RebacApi
+ (1) Run lore auth login, then approve the sign-in
+     in the browser (Google or another IdP)
+      │
+      ▼
+ (2) Work as usual: lore clone / push
+     (tokens are obtained, exchanged, and renewed automatically
+      by the CLI and the bridge — users never handle them)
+```
+
+The next figure is the technical view behind those steps — how the components connect through Lore's UCS Auth / ReBAC protocol. Users only ever touch steps (1)-(2) above.
+
+```text
+ Browser ◄──── (1) OIDC login ────► IdP (Google / Entra ID / Keycloak)
+    │
+    │ (2) login completes; the bridge issues an authn token
+    ▼
+ ┌──────────────────────────────────────────────────┐
+ │ bridge                                           │
+ │   HTTP: /login, /device, /.well-known/jwks.json  │
+ │   gRPC: epic_urc.UrcAuthApi, ucs.auth.RebacApi   │
+ └──────────────────────────────────────────────────┘
+    ▲                            ▲
+    │ (3) exchange authn token   │ (4) sync repository create/delete
+    │     for a repository-      │     (RebacApi)
+    │     scoped authz token     │ (5) fetch JWT verification keys
+    │     (UrcAuthApi)           │     (JWKS)
+    │                            │
+ lore CLI ◄─── (6) clone / push with the authz token ───► loreserver
 ```
 
 The user first obtains an **authn token** as proof of login.
@@ -56,6 +67,7 @@ Mini glossary:
 
 - Browser login with OIDC identity providers
 - Administrative CLI for users, groups, repositories, grants, and signing keys
+- Optional [admin Web UI](doc/setup/admin-ui.md): browse and search the access model, manage grants / groups / users / repositories, test decisions with the check simulator, with every write recorded in the audit log
 - RS256 signing for authn tokens and repository-scoped authz tokens
 - Public key distribution through a JWKS endpoint
 - Token exchange and resource synchronization through Lore's UCS Auth / ReBAC protocol
@@ -83,7 +95,9 @@ Production reference pages:
 - [Authctl](doc/setup/authctl.md)
 - [Admin Web UI](doc/setup/admin-ui.md)
 - [Identity Providers](doc/setup/identity-providers.md)
-- [Google OIDC](doc/setup/google-oidc.md)
+  - [Google OIDC](doc/setup/google-oidc.md)
+  - [Microsoft Entra ID](doc/setup/entra-id.md)
+  - [Keycloak](doc/setup/keycloak.md)
 
 ## Binaries
 

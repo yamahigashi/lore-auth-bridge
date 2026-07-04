@@ -2,38 +2,49 @@
 
 [English](README.md)
 
-認証を有効にした Lore サーバへアクセスするには、Lore CLI と `loreserver` が検証できる JWT が必要です。
+[Lore](https://lore.org/) は、Epic Games による次世代のオープンソースバージョン管理システムです。
 
-`lore-auth-bridge` は Google、Microsoft Entra ID、Keycloak などの IdP と Lore の間に立ち、ログイン後に必要な token を発行します。
+Lore サーバをチームで共有しようとすると、Lore が外部サービスに委ねている問題に突き当たります — 誰がログインでき、誰がどの repository に触れてよいのか。Lore には CLI の `lore auth login` フローと `loreserver` の JWT 検証、つまり利用する側の両端は備わっていますが、その token を**発行する側** — IdP 連携、ユーザー管理、権限管理 — は含まれていません。
 
-運用者は bridge 側で repository access を管理し、Lore 側は署名済みの authn token と repository authz token を受け取ります。
+`lore-auth-bridge` はその隙間を埋めます。チームメンバーは普段使っている認証基盤(Google、Microsoft Entra ID、Keycloak などの OIDC IdP)でログインし、bridge が Lore の要求する token を発行します。ユーザー・グループ・repository ごとの権限は bridge で一元管理します。
 
-実装としては、Lore の認証を外部 IdP と ACL backend に接続する Rust 製 bridge です。
-
-Lore CLI と `loreserver` に対して、ログイン、repository 単位の token 交換、JWKS による署名検証、repository lifecycle の同期を提供します。
-
-既定の構成では、ユーザーは OIDC IdP でログインします。
-
-bridge は user、group、repository、grant を SQLite に保存し、その関係を ReBAC authorization engine で評価します。
+実装は、Lore の UCS Auth / ReBAC protocol を実装する単一の Rust サービスです。OIDC ログイン、repository 単位の token exchange、JWKS 配信、repository lifecycle の同期を提供し、SQLite と ReBAC 認可エンジンの上で動作します。
 
 ## これは何か / どう接続するか
 
-`lore-auth-bridge` は、Lore deployment、IdP、運用者が管理する access model の間に置く Lore UCS Auth / ReBAC protocol の実装です。
+一言でいえば、bridge は 3 つの相手 — ログインする **Browser**、token を使う **lore CLI**、それを検証する **`loreserver`** — の間に立つ認証サービスです。
+
+ユーザーから見ると、システム全体は次の 2 ステップです:
 
 ```text
-Browser + IdP
-    <---- OIDC login ----> bridge HTTP
-                            /login, /device, /.well-known/jwks.json
-                                      |
-                                      | signs authn/authz JWTs
-                                      v
-lore CLI <---- repository ops ----> loreserver
-    |                                  |
-    | UrcAuthApi: authn token ->       | RebacApi: repository create/delete
-    | repository authz token           | HTTP JWKS: JWT verification keys
-    +-----------> bridge gRPC <--------+
-                 epic_urc.UrcAuthApi
-                 ucs.auth.RebacApi
+ ① lore auth login を実行し、開いたブラウザで
+    IdP(Google など)のサインインを承認
+      │
+      ▼
+ ② あとは普段どおり lore clone / push
+    (token の取得・交換・更新は CLI と bridge が自動で処理。
+     ユーザーが token を直接扱うことはない)
+```
+
+次の図は、このステップの裏側でコンポーネントが Lore の UCS Auth / ReBAC protocol を通じてどう接続されるかを示した技術要素の図です。ユーザーが直接触れるのは上の ①② だけです。
+
+```text
+ Browser ◄──── (1) OIDC ログイン ────► IdP (Google / Entra ID / Keycloak)
+    │
+    │ (2) ログイン完了。bridge が authn token を発行
+    ▼
+ ┌──────────────────────────────────────────────────┐
+ │ bridge                                           │
+ │   HTTP: /login, /device, /.well-known/jwks.json  │
+ │   gRPC: epic_urc.UrcAuthApi, ucs.auth.RebacApi   │
+ └──────────────────────────────────────────────────┘
+    ▲                            ▲
+    │ (3) authn token を         │ (4) repository の作成/削除を同期
+    │     repository 単位の      │     (RebacApi)
+    │     authz token に交換     │ (5) JWT 検証鍵を取得
+    │     (UrcAuthApi)           │     (JWKS)
+    │                            │
+ lore CLI ◄── (6) authz token で clone / push ──► loreserver
 ```
 
 ユーザーはまず、ログイン済みであることを示す **authn token** を取得します。
@@ -56,6 +67,7 @@ repository 操作時、Lore はその authn token を `UrcAuthApi` で短命の 
 
 - OIDC IdP による browser login
 - 管理 CLI による user、group、repository、grant、signing key の管理
+- 任意で有効化できる[管理 Web UI](doc/setup/admin-ui.ja.md): アクセスモデルの閲覧・検索、grant / group / user / repository の操作、check simulator による判定確認。全書き込みは監査ログに記録
 - authn token と repository scoped authz token の RS256 署名
 - JWKS endpoint による public key 配信
 - Lore の UCS Auth / ReBAC protocol による token exchange と resource sync
@@ -83,7 +95,9 @@ repository 操作時、Lore はその authn token を `UrcAuthApi` で短命の 
 - [Authctl](doc/setup/authctl.ja.md)
 - [管理 Web UI](doc/setup/admin-ui.ja.md)
 - [Identity Providers](doc/setup/identity-providers.ja.md)
-- [Google OIDC](doc/setup/google-oidc.ja.md)
+  - [Google OIDC](doc/setup/google-oidc.ja.md)
+  - [Microsoft Entra ID](doc/setup/entra-id.ja.md)
+  - [Keycloak](doc/setup/keycloak.ja.md)
 
 ## 実行ファイル
 
