@@ -32,7 +32,9 @@ Production setup pages:
 If you use IdP integration, also read:
 
 - [Identity Providers](setup/identity-providers.md)
-- [Google OIDC](setup/google-oidc.md) for the Google-specific example
+  - [Google OIDC](setup/google-oidc.md) for the Google-specific example
+  - [Microsoft Entra ID](setup/entra-id.md) for Entra tenant setup
+  - [Keycloak](setup/keycloak.md) for Keycloak realm and client setup
 
 If you expose the bridge and Lore remote through Tailscale, read [Deployment](setup/deployment.md#tailscale--vpn-mesh) first, then [Tailscale](setup/tailscale.md).
 

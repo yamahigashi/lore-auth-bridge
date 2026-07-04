@@ -32,7 +32,9 @@ Google OIDC は、この文書セットで扱う具体例の一つです。
 IdP 連携を使う場合は、次も読みます。
 
 - [Identity Providers](setup/identity-providers.ja.md)
-- [Google OIDC](setup/google-oidc.ja.md)（Google を使う場合の例）
+  - [Google OIDC](setup/google-oidc.ja.md)（Google を使う場合の例）
+  - [Microsoft Entra ID](setup/entra-id.ja.md)（Entra tenant の設定）
+  - [Keycloak](setup/keycloak.ja.md)（Keycloak realm と client の設定）
 
 Tailscale 越しに bridge と Lore remote を公開する場合は、先に [Deployment](setup/deployment.ja.md#tailscale--vpn-mesh) を読み、その後に [Tailscale](setup/tailscale.ja.md) を読みます。
 

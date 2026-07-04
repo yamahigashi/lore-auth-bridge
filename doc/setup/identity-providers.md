@@ -8,15 +8,21 @@ The bridge matches the identity returned by the IdP against users in the bridge 
 
 When an operation does not use an IdP, an administrator can issue authn tokens with the CLI.
 
-Google OIDC is the concrete IdP setup example in this documentation set.
-
-Keycloak, Auth0, or an internal OIDC provider can use the generic `oidc` adapter when they expose standard OIDC discovery and authorization code flow endpoints.
-
 Each configured provider key is a provider instance ID.
 
-Use stable keys such as `google`, `keycloak-prod`, or `auth0-main`, not only the adapter type `oidc`.
+Use stable keys such as `google`, `entra`, or `keycloak-prod`, not only the adapter type `oidc`.
 
-## IdP login
+## Provider Pages
+
+Use the provider-specific page that matches the IdP you operate:
+
+- [Google OIDC](google-oidc.md): Google Cloud OAuth client and Google Workspace trust checks.
+- [Microsoft Entra ID](entra-id.md): Entra app registration with `profile: entra`.
+- [Keycloak](keycloak.md): Keycloak realm and OIDC client setup with `profile: keycloak`.
+
+The exact `trust.email_binding` and `trust.allowed_email_domains` behavior is documented in [Configuration](configuration.md#identity_providers).
+
+## IdP Login
 
 With IdP login, the user signs in through the IdP in a browser.
 
@@ -32,7 +38,13 @@ With `trust.email_binding: verified_email_invitation`, first login can bind the 
 
 When `identity_providers` is configured, `user invite` requires `--idp`.
 
-See [Google OIDC](google-oidc.md) for concrete Google OIDC settings.
+## Google OIDC
+
+Use `profile: google` with `subject.strategy: oidc_sub`.
+
+Google-specific checks use the ID token `hd` claim for Workspace hosted-domain policy and `trust.personal_accounts` for personal Google account policy.
+
+See [Google OIDC](google-oidc.md) for the complete setup.
 
 ## Microsoft Entra ID
 
@@ -40,35 +52,19 @@ Use `profile: entra` with `subject.strategy: entra_oid_tid`.
 
 The subject is built from the ID token `tid` and `oid` claims.
 
-```yaml
-identity_providers:
-  default: entra
-  providers:
-    entra:
-      type: oidc
-      profile: entra
-      display_name: "Microsoft Entra ID"
-      issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
-      client_id: "<application-client-id>"
-      client_secret_file: "/etc/lore-auth/entra_client_secret"
-      redirect_url: "https://auth.example.com/auth/entra/callback"
-      scopes:
-        - openid
-        - email
-        - profile
-      pkce: required
-      subject:
-        strategy: entra_oid_tid
-        required_tid: "<tenant-id>"
-      trust:
-        email_binding: verified_email_invitation
-        allowed_email_domains:
-          - "example.com"
-```
+`subject.required_tid` is required because a multi-tenant Entra setup can otherwise mix subjects from different tenants.
 
-`subject.required_tid` pins the accepted tenant because a multi-tenant Entra setup can otherwise mix subjects from different tenants.
+See [Microsoft Entra ID](entra-id.md) for the complete setup.
 
-The same verified-email invitation rules from [Configuration](configuration.md#identity_providers) apply.
+## Keycloak
+
+Use `profile: keycloak` with `subject.strategy: oidc_sub`.
+
+Keycloak uses the generic OIDC path and does not use Google hosted-domain or personal-account checks.
+
+Do not set `trust.personal_accounts` for Keycloak.
+
+See [Keycloak](keycloak.md) for the complete setup.
 
 ## Authn Tokens Issued By The Administrative CLI
 

@@ -8,13 +8,19 @@ bridge は、IdP から受け取った identity を bridge DB のユーザーと
 
 IdP を使わない運用では、管理 CLI で authn token を発行できます。
 
-Google OIDC は、この文書セットで扱う IdP 設定の具体例です。
-
-Keycloak、Auth0、社内 OIDC などは、標準 OIDC discovery と authorization code flow を提供していれば generic `oidc` adapter で扱えます。
-
 config の provider key は provider instance ID です。
 
-`google`、`keycloak-prod`、`auth0-main` のような安定した key を使い、adapter 種別だけを表す `oidc` を key にしないでください。
+`google`、`entra`、`keycloak-prod` のような安定した key を使い、adapter 種別だけを表す `oidc` を key にしないでください。
+
+## Provider 別ページ
+
+運用する IdP に合わせて、provider 別ページを参照します。
+
+- [Google OIDC](google-oidc.ja.md)：Google Cloud OAuth client と Google Workspace trust check。
+- [Microsoft Entra ID](entra-id.ja.md)：`profile: entra` を使う Entra app registration。
+- [Keycloak](keycloak.ja.md)：`profile: keycloak` を使う Keycloak realm と OIDC client 設定。
+
+正確な `trust.email_binding` と `trust.allowed_email_domains` の挙動は [Configuration](configuration.ja.md#identity_providers) にあります。
 
 ## IdP login
 
@@ -32,7 +38,13 @@ IdP が確認済み email を返す場合、管理者は `lore-authctl --config 
 
 `identity_providers` を設定している場合、`user invite` には `--idp` が必要です。
 
-Google OIDC を使う場合の具体的な設定は [Google OIDC](google-oidc.ja.md) を参照してください。
+## Google OIDC
+
+`profile: google` と `subject.strategy: oidc_sub` を使います。
+
+Google 固有の check では、Workspace hosted-domain policy に ID token の `hd` claim を使い、個人 Google アカウントの扱いに `trust.personal_accounts` を使います。
+
+完全な設定は [Google OIDC](google-oidc.ja.md) を参照してください。
 
 ## Microsoft Entra ID
 
@@ -40,37 +52,19 @@ Google OIDC を使う場合の具体的な設定は [Google OIDC](google-oidc.ja
 
 subject は ID token の `tid` claim と `oid` claim から作られます。
 
-```yaml
-identity_providers:
-  default: entra
-  providers:
-    entra:
-      type: oidc
-      profile: entra
-      display_name: "Microsoft Entra ID"
-      issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
-      client_id: "<application-client-id>"
-      client_secret_file: "/etc/lore-auth/entra_client_secret"
-      redirect_url: "https://auth.example.com/auth/entra/callback"
-      scopes:
-        - openid
-        - email
-        - profile
-      pkce: required
-      subject:
-        strategy: entra_oid_tid
-        required_tid: "<tenant-id>"
-      trust:
-        email_binding: verified_email_invitation
-        allowed_email_domains:
-          - "example.com"
-```
+multi-tenant Entra setup で tenant が混ざると subject が衝突し得るため、`subject.required_tid` は必須です。
 
-`subject.required_tid` は accepted tenant を固定します。
+完全な設定は [Microsoft Entra ID](entra-id.ja.md) を参照してください。
 
-multi-tenant Entra setup では tenant が混ざると subject が衝突し得るためです。
+## Keycloak
 
-[Configuration](configuration.ja.md#identity_providers) の verified-email invitation rule が同じように適用されます。
+`profile: keycloak` と `subject.strategy: oidc_sub` を使います。
+
+Keycloak は generic OIDC path を使い、Google hosted-domain check と personal-account check は使いません。
+
+Keycloak では `trust.personal_accounts` を設定しないでください。
+
+完全な設定は [Keycloak](keycloak.ja.md) を参照してください。
 
 ## 管理 CLI で発行する authn token
 
